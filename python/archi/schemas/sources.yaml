@@ -35,13 +35,38 @@ classes:
       summary:
       description:
       project:
+        annotations:
+          filterable: 'true'
+          value_type: text
       status:
+        annotations:
+          filterable: 'true'
+          value_type: text
       priority:
       issue_type:
       assignee:
+        annotations:
+          filterable: 'true'
+          value_type: text
       reporter:
       created:
+        annotations:
+          filterable: 'true'
+          value_type: ts
       updated:
+        annotations:
+          filterable: 'true'
+          value_type: ts
+      resolution:
+        annotations:
+          filterable: 'true'
+          value_type: text
+      # Lists of names as JIRA records them; okg filters cannot match
+      # one element of a list, so these are for display and text search.
+      labels:
+        multivalued: true
+      components:
+        multivalued: true
       url:
       text:
     annotations:

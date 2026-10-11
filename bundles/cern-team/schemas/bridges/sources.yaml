@@ -47,6 +47,18 @@ classes:
           edge_archetype: references
           src_subtypes: DocumentChunk
           dst_subtypes: JiraIssue
+      jira_issue_linked_to_jira_issue:
+        description: >-
+          A JIRA issue link or sub-task parent (JiraIssueSource with
+          issue_link_edges on). attrs.link_kind is one of child,
+          blocks, relates, clones, duplicates, gantt; attrs.link_type
+          is the exact JIRA link type name (Child-Issue, Blocks,
+          Sub-task, ...). The source is the issue on the link's
+          outward side; for child, the parent.
+        annotations:
+          edge_archetype: linked_to
+          src_subtypes: JiraIssue
+          dst_subtypes: JiraIssue
       # chunk -> site and chunk -> infrastructure_service narrowings
       # ship in archi/schemas/bridges/operations.yaml (the catalogs
       # port); CMSSWRelease already ships in operations.yaml.

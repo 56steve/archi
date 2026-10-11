@@ -123,6 +123,8 @@ are required or ingest fails after a green lint:
             - {src_subtype: jira_issue, edge_type: reported_by, dst_subtype: person}
             - {src_subtype: jira_issue, edge_type: contains, dst_subtype: document_chunk}
             - {src_subtype: document_chunk, edge_type: references, dst_subtype: jira_issue}
+            # Uncomment together with `issue_link_edges: true` below:
+            # - {src_subtype: jira_issue, edge_type: linked_to, dst_subtype: jira_issue}
             # Uncomment together with the matching params below:
             # - {src_subtype: document_chunk, edge_type: references, dst_subtype: cmssw_release}
             # - {src_subtype: document_chunk, edge_type: references, dst_subtype: site}
@@ -135,6 +137,8 @@ are required or ingest fails after a green lint:
             - jira_issue reported_by person
             - jira_issue contains document_chunk
             - document_chunk references jira_issue
+            # Uncomment together with `issue_link_edges: true` below:
+            # - jira_issue linked_to jira_issue
             # Uncomment together with the matching params below:
             # - document_chunk references cmssw_release
             # - document_chunk references site
@@ -312,6 +316,9 @@ class JiraIssueRecord:
     issue_links: tuple[str, ...] = ()
     subtasks: tuple[str, ...] = ()
     recent_comments: tuple[str, ...] = ()
+    # (linked key, link type name, "outward" | "inward") for each link
+    # whose type and direction the cache records; feeds linked_to edges.
+    typed_links: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def node_id(self) -> str:
@@ -338,6 +345,7 @@ class JiraIssueSource:
         releases_path: str | None = None,
         services_path: str | None = None,
         chunker_name: str = DEFAULT_CHUNKER_NAME,
+        issue_link_edges: bool = False,
         base: str | None = None,
     ) -> None:
         self.records_path = records_path
@@ -363,12 +371,21 @@ class JiraIssueSource:
         self.releases_path = releases_path
         self.services_path = services_path
         self.chunker_name = chunker_name
+        # Issue links and sub-task parents as jira_issue linked_to
+        # jira_issue edges. Opt-in: the edge is a new output the
+        # deployment's output_signature must list, so a deployment that
+        # says nothing emits exactly what it emitted before.
+        self.issue_link_edges = bool(issue_link_edges)
         self.base = base
         self.change_probe = cache_or_forced_live_change_probe(
             cache_paths=self.cache_paths,
             config={
                 "records_path": self.records_path,
                 "meta_path": self.meta_path,
+                # Present only when on, so a deployment that never set
+                # the option keeps its old config hash.
+                **({"issue_link_edges": True}
+                   if self.issue_link_edges else {}),
             },
             emit_targets=JiraIssueSource,
             base=base,
@@ -479,10 +496,45 @@ class JiraIssueSource:
             base=self.base,
         )
 
+        cached_keys = {record.key for record in records}
+
         def _facts() -> Iterator[Any]:
             emitted_people: set[str] = set()
+            emitted_links: set[tuple[str, str, str]] = set()
             for record in records:
                 yield self._node_fact(record, revision)
+                for src, dst, link_type in (
+                    _issue_link_triples(record)
+                    if self.issue_link_edges else ()
+                ):
+                    # Both ends must be issues in this cache: a link to
+                    # a ticket outside the fetched projects would dangle.
+                    # Each link is cached on both of its issues, once as
+                    # outward and once as inward; emit it once.
+                    triple = (src, dst, link_type)
+                    if (
+                        src == dst
+                        or src not in cached_keys
+                        or dst not in cached_keys
+                        or triple in emitted_links
+                    ):
+                        continue
+                    emitted_links.add(triple)
+                    yield EdgeFact(
+                        src=f"jira:{src}",
+                        dst=f"jira:{dst}",
+                        edge_type="linked_to",
+                        attrs={
+                            "link_kind": link_kind(link_type),
+                            "link_type": link_type,
+                        },
+                        source_record_id={
+                            "issue_key": src,
+                            "linked_issue_key": dst,
+                            "link_type": link_type,
+                        },
+                        source_revision=revision,
+                    )
                 for role, display_name in (
                     ("assignee", record.assignee),
                     ("reporter", record.reporter),
@@ -632,6 +684,9 @@ class JiraIssueSource:
                 "reporter": record.reporter,
                 "created": record.created,
                 "updated": record.updated,
+                "resolution": record.resolution,
+                "labels": list(record.labels),
+                "components": list(record.components),
                 "url": self.issue_url(record.key),
                 "text": text,
             },
@@ -730,6 +785,10 @@ class JiraIssueSource:
                     or item.get("comments")
                     or (fields.get("comment") or {}).get("comments")
                 )),
+                typed_links=tuple(_typed_links(
+                    item.get("issue_links") or fields.get("issuelinks"),
+                    key_re,
+                )),
             ))
         return records, skipped
 
@@ -761,6 +820,89 @@ def _cache_bounded_key_pattern(
         return _MATCH_NO_KEY_RE
     alternation = "|".join(re.escape(prefix) for prefix in sorted(prefixes))
     return re.compile(rf"\b(?:{alternation})-\d+\b")
+
+
+SUBTASK_LINK_TYPE = "Sub-task"
+
+#: The small set a JIRA link type name collapses to. Instances define
+#: their own link types (and misspell them: "Duplibcate"), so the raw
+#: name stays on the edge as ``link_type`` and ``link_kind`` is the
+#: value to filter or group on.
+LINK_KINDS = ("child", "blocks", "relates", "clones", "duplicates", "gantt")
+_LINK_KIND_MARKERS = (
+    # First match wins. Gantt first: the WBS-Gantt plugin's types
+    # ("Hierarchy link (WBSGantt)") are scheduling links, not parents.
+    ("gantt", "gantt"),
+    ("sub-task", "child"),
+    ("child", "child"),
+    ("parent", "child"),
+    ("block", "blocks"),
+    ("clon", "clones"),
+    ("dupl", "duplicates"),
+)
+
+
+def link_kind(link_type: str) -> str:
+    """Collapse a JIRA link type name to one of :data:`LINK_KINDS`.
+
+    Anything unrecognised (Relates, Relation, Causal, Dependency,
+    Follows, ...) is ``relates``: the edge still says the two issues
+    are linked and ``link_type`` keeps the exact name.
+    """
+    name = link_type.lower()
+    for marker, kind in _LINK_KIND_MARKERS:
+        if marker in name:
+            return kind
+    return "relates"
+
+
+def _typed_links(
+    value: Any, key_re: re.Pattern[str]
+) -> list[tuple[str, str, str]]:
+    """``(key, link type, direction)`` for each typed issue link.
+
+    Reads both cache shapes: the downloader's flat
+    ``{"key", "type", "direction"}`` and the JIRA REST
+    ``{"type": {"name"}, "outwardIssue"|"inwardIssue": {"key"}}``.
+    A link with no direction, or whose key is not an issue key, is
+    left out; its key still reaches the chunk text via ``issue_links``.
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[tuple[str, str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("outwardIssue") or item.get("inwardIssue"):
+            direction = "outward" if item.get("outwardIssue") else "inward"
+            key = _name_or_key(item.get(f"{direction}Issue"))
+        else:
+            direction = str(item.get("direction") or "")
+            key = _pg_text(str(item.get("key") or ""))
+        if direction not in ("outward", "inward") or not key_re.fullmatch(key):
+            continue
+        out.append((key, _name_or_key(item.get("type")), direction))
+    return out
+
+
+def _issue_link_triples(
+    record: JiraIssueRecord,
+) -> Iterator[tuple[str, str, str]]:
+    """``(src key, dst key, link type)`` for every link this issue states.
+
+    The source is the issue on the link's outward side, so a link reads
+    the same from either end; a sub-task's parent is the source of a
+    ``Sub-task`` link, matching JIRA's Child-Issue direction.
+    """
+    for key, link_type, direction in record.typed_links:
+        if direction == "outward":
+            yield record.key, key, link_type
+        else:
+            yield key, record.key, link_type
+    if record.parent_key:
+        yield record.parent_key, record.key, SUBTASK_LINK_TYPE
+    for subtask in record.subtasks:
+        yield record.key, subtask, SUBTASK_LINK_TYPE
 
 
 def _checked_at() -> str:
