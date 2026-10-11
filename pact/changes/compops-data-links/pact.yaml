@@ -65,7 +65,7 @@ requirements:
 
     - acc.compops-data-links.commit-ticket.publish: On a copy of the comp-ops pilot graph, a publish
     makes one git_commit references jira_issue edge per resolvable (commit, key) pair and none for
-    a key with no ticket. [evidence: measured_publish]'
+    a key with no ticket. [evidence: published_generation]'
 - id: req.compops-data-links.twiki-link-urls
   statement: 'TwikiEOSSource can keep the URL of a labelled web link, and behaves identically to
     before when not asked.
@@ -87,7 +87,7 @@ requirements:
 
     - acc.compops-data-links.twiki-link-urls.publish: On a copy of the comp-ops pilot graph, re-ingesting
     the TWiki snapshot with link_urls="keep" raises documentation_page-to-jira_issue reach to the
-    corpus count of resolvable pairs. [evidence: measured_publish]'
+    corpus count of resolvable pairs. [evidence: published_generation]'
 - id: req.compops-data-links.jira-fields-links
   statement: 'JIRA issues carry filterable fields and, on request, typed link edges.
 
@@ -117,7 +117,7 @@ requirements:
 
     - acc.compops-data-links.jira-fields-links.publish: On a copy of the comp-ops pilot graph, a
     re-ingest publishes the link edges and a created-date range filter returns issues. [evidence:
-    measured_publish]'
+    published_generation]'
 tasks:
 - id: task.compops-data-links.commit-ticket
   requirement: req.compops-data-links.commit-ticket
@@ -146,5 +146,64 @@ tasks:
     Test plan:
 
     - python/tests [evidence: pytest]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.compops-data-links.commit-ticket
+  status: pass
+  command: python -m pytest tests -q
+  head: 05ea756f776625143dc0f7dc824a9b6348c5f48d
+  at: '2026-10-11T21:10:44+00:00'
+  note: 1790 passed (1757 before this change), including the route and narrowing tests in tests/enrichment/test_defaults.py
+    and the bridge portability suite.
+- kind: published_generation
+  requirement: req.compops-data-links.commit-ticket
+  status: pass
+  command: okg catalog load --apply; okg run --once --apply (copy of the comp-ops graph, okg b1f1b6fcc6)
+  head: 05ea756f776625143dc0f7dc824a9b6348c5f48d
+  at: '2026-10-11T18:01:31+00:00'
+  note: 'Before: 0 git_commit references jira_issue edges among 81,446 commits. After one publish: 66 edges
+    (66 commits, 26 tickets, 7 repositories); 20 citations of 8 keys with no ticket in the graph made
+    no edge and are link_retry rows. Records unchanged at 633,112. Publish lock held 1,782 s: a linker
+    config change makes okg re-scan every record once (the previous publish of that graph, with no
+    such change, held it 2,148 s).'
+- kind: executed_test
+  requirement: req.compops-data-links.twiki-link-urls
+  status: pass
+  command: python -m pytest tests -q
+  head: 05ea756f776625143dc0f7dc824a9b6348c5f48d
+  at: '2026-10-11T21:10:44+00:00'
+  note: 1790 passed, including the unchanged cms byte-parity test and the new default/keep tests in
+    tests/sources/test_twiki.py.
+- kind: published_generation
+  requirement: req.compops-data-links.twiki-link-urls
+  status: pass
+  command: okg ingest --include twiki_eos; okg run --once --apply (same copy, link_urls keep)
+  head: 05ea756f776625143dc0f7dc824a9b6348c5f48d
+  at: '2026-10-11T18:43:58+00:00'
+  note: 'The 637-page snapshot holds 749 page-ticket pairs whose ticket is in the graph. Linked before: 266.
+    After re-ingest and publish: 748 (one ticket cited on 19 pages went from 2 pages to 19). The
+    one pair still missing is a bare link glued to the next word, which the option does not touch.
+    documentation_page references jira_issue edges 278 to 760; 104 more chunks. Keeping URLs also
+    adds about 14,000 unresolved link_retry rows (host names and other identifiers inside URLs that
+    name nothing in the graph).'
+- kind: executed_test
+  requirement: req.compops-data-links.jira-fields-links
+  status: pass
+  command: python -m pytest tests -q
+  head: 05ea756f776625143dc0f7dc824a9b6348c5f48d
+  at: '2026-10-11T21:10:44+00:00'
+  note: 1790 passed, including the link, link-kind, sub-task, probe and off-by-default tests in tests/sources/test_jira.py.
+- kind: published_generation
+  requirement: req.compops-data-links.jira-fields-links
+  status: pass
+  command: okg ingest --include jira,twiki_eos; okg run --once --apply (same copy, issue_link_edges on)
+  head: 05ea756f776625143dc0f7dc824a9b6348c5f48d
+  at: '2026-10-11T21:03:05+00:00'
+  note: 'Before: 0 linked_to edges; no jira_issue carried resolution, labels or components. After: 955
+    jira_issue linked_to jira_issue edges (child 379, relates 223, gantt 199, clones 91, blocks 49,
+    duplicates 14; 6 pairs carry two or three link types on one edge); all 76,662 issues carry the
+    three attributes. One parent issue with 7 Child-Issue links has 7 outgoing child edges, which
+    confirms the direction. Through the read server, a filter on project plus a created range returns
+    the 16 issues of one project and month in created order. Issue, chunk and record counts equal
+    the starting graph plus the TWiki change. Publish lock held 2,100 s for the full JIRA rewrite.'
 decisions: []
