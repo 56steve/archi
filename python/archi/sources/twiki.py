@@ -283,6 +283,7 @@ from archi.sources._twiki_parse import (
     extract_wiki_links,
     is_real_page,
     parse_meta,
+    LINK_URL_MODES,
     strip_twiki,
     topic_page_id,
     twiki_node_id,
@@ -411,6 +412,7 @@ class TwikiEOSSource:
         skip_patterns: tuple[str, ...] | list[str] = DEFAULT_SKIP_PATTERNS,
         physics_filter: bool = False,
         page_index_path: str | None = None,
+        link_urls: str = "drop",
         records: list[TwikiRecord] | None = None,
         base: str | None = None,
     ) -> None:
@@ -457,6 +459,11 @@ class TwikiEOSSource:
         # that links INTO them later in the same ingest. Opt-in for the
         # same reason as physics_filter: unset changes nothing.
         self.page_index_path = page_index_path
+        # Keeping the URL of a labelled web link is opt-in too: "drop"
+        # (the default) writes the label alone, exactly as before.
+        if link_urls not in LINK_URL_MODES:
+            raise ValueError(f"link_urls must be one of {LINK_URL_MODES}")
+        self.link_urls = link_urls
         self.last_physics_report: PhysicsFilterReport | None = None
         #: Snapshot-relative paths of the empty topic files the last
         #: preflight() or run() skipped (zero bytes, or only
@@ -467,6 +474,10 @@ class TwikiEOSSource:
         self.change_probe = ContentHashProbe(
             content_items=self._probe_content_items,
             config={
+                # Present only when on, so a deployment that never set
+                # the option keeps its old config hash.
+                **({"link_urls": self.link_urls}
+                   if self.link_urls != "drop" else {}),
                 "eos_root": self.eos_root,
                 "eos_root_env": self.eos_root_env,
                 "web_root": self.web_root,
@@ -1138,6 +1149,7 @@ class TwikiEOSSource:
             whitespace=self.whitespace,
             preserve_tables=self.preserve_tables,
             preserve_images=self.preserve_images,
+            link_urls=self.link_urls,
         )
 
 
@@ -1692,6 +1704,7 @@ def _record_from_raw(
     whitespace: str,
     preserve_tables: bool,
     preserve_images: bool,
+    link_urls: str = "drop",
 ) -> TwikiRecord:
     meta = parse_meta(raw)
     return TwikiRecord(
@@ -1707,6 +1720,7 @@ def _record_from_raw(
             whitespace=whitespace,
             preserve_tables=preserve_tables,
             preserve_images=preserve_images,
+            link_urls=link_urls,
         ),
         last_modified=meta["last_modified"],
         author=meta["author"],

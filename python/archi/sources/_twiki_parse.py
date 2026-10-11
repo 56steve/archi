@@ -122,6 +122,10 @@ _HTML_CELL_RE = re.compile(
 _HTML_ATTR_RE = re.compile(
     r"([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>]+))"
 )
+LINK_URL_MODES = ("drop", "keep")
+_LABELLED_WEB_LINK_RE = re.compile(
+    r"\[\[\s*(https?://[^\]\s]+)\s*\]\[([^\]]+)\]\]"
+)
 _TWIKI_VIEW_MARKERS = ("/twiki/bin/viewauth/", "/twiki/bin/view/")
 
 
@@ -144,6 +148,7 @@ def strip_twiki(
     whitespace: str = "collapse",
     preserve_tables: bool = False,
     preserve_images: bool = False,
+    link_urls: str = "drop",
 ) -> str:
     """Strip raw TWiki markup down to text, with fidelity flags.
 
@@ -155,11 +160,18 @@ def strip_twiki(
     to one line; ``preserve_tables`` / ``preserve_images`` convert
     embedded HTML ``<table>`` / ``<img>`` to pipe tables / markdown
     images before generic tag stripping (the wisdqm behaviors).
+    ``link_urls="keep"`` writes a labelled web link ``[[URL][label]]``
+    as ``label (URL)`` instead of the label alone, so an identifier
+    that sits only in the URL (a JIRA key in a ``/browse/`` link)
+    reaches the text and the extractor. Wiki-topic and ``mailto:``
+    links keep the label alone in both modes.
     """
     if heading_style not in HEADING_STYLES:
         raise ValueError(f"heading_style must be one of {HEADING_STYLES}")
     if whitespace not in WHITESPACE_MODES:
         raise ValueError(f"whitespace must be one of {WHITESPACE_MODES}")
+    if link_urls not in LINK_URL_MODES:
+        raise ValueError(f"link_urls must be one of {LINK_URL_MODES}")
     text = re.sub(r"%META:[^%]+%", " ", text)
     text = re.sub(
         r"%[A-Z][A-Z0-9_]*\{([^}]*)\}%",
@@ -167,6 +179,8 @@ def strip_twiki(
         text,
     )
     text = re.sub(r"%[A-Z][A-Z0-9_]*%", " ", text)
+    if link_urls == "keep":
+        text = _LABELLED_WEB_LINK_RE.sub(_labelled_web_link_text, text)
     text = re.sub(r"\[\[[^\]]+\]\[([^\]]+)\]\]", r"\1", text)
     text = re.sub(r"\[\[([^\]]+)\]\]", r"\1", text)
     text = _HEADING_RE.sub(
@@ -193,6 +207,14 @@ def strip_twiki(
         return _clean_body_text(text)
     text = re.sub(r"\s+", " ", text).strip()
     return _pg_text(text)
+
+
+def _labelled_web_link_text(match: re.Match[str]) -> str:
+    """``[[URL][label]]`` -> ``label (URL)``; a label that is the URL once."""
+    url, label = match.group(1).strip(), match.group(2)
+    if label.strip() == url:
+        return url
+    return f"{label} ({url})"
 
 
 def _heading_replacement(match: re.Match[str], heading_style: str) -> str:
