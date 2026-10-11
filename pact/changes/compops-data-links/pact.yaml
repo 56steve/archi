@@ -11,8 +11,8 @@ why: 'A review of the CMS comp-ops graph (mitdbg/okg#3649) found three facts the
 
 
   2. strip_twiki writes a labelled link [[URL][label]] as its label alone, so a JIRA key that sits
-  only in the URL never reaches chunk text. 766 page-ticket pairs in the comp-ops TWiki snapshot,
-  278 in the graph.
+  only in the URL never reaches chunk text. The comp-ops TWiki snapshot (637 pages) holds 749 page-ticket
+  pairs whose ticket is in the graph; 266 of them are linked.
 
 
   3. JiraIssueSource keeps issue links, sub-task parents, resolution, labels and components only as
@@ -20,9 +20,12 @@ why: 'A review of the CMS comp-ops graph (mitdbg/okg#3649) found three facts the
   or sorted.
 
 
-  All three follow the standing rule that a consumer''s variant is an option, off by default. The
-  commit route is the exception that needs no option: it adds an edge only where a deployment already
-  ingests git commits AND JIRA issues, and its narrowing is optional when either subtype is missing.
+  The two reader changes follow the standing rule that a consumer''s variant is an option, off by
+  default. Two parts are not behind an option, on purpose. The commit route adds an edge only where
+  a deployment already ingests git commits AND JIRA issues, and its narrowing is optional when either
+  subtype is missing. The three new issue attributes (resolution, labels, components) are plain additions
+  to the node: a deployment''s next JIRA ingest rewrites each issue node once with them, and nothing
+  else changes.
 
 
   OUT OF SCOPE: a resolved date (the downloader never fetched resolutiondate; that needs a live JIRA
@@ -92,10 +95,14 @@ requirements:
     JiraIssue declares project, status, assignee and resolution as filterable text and created and
     updated as filterable timestamps; the issue node also carries resolution, labels and components
     (lists, display only). With issue_link_edges=True the source emits one jira_issue linked_to
-    jira_issue edge per issue link and per sub-task parent, from the link''s outward side (the parent,
-    for a child), with attrs link_kind (child, blocks, relates, clones, duplicates or gantt) and
-    link_type (the exact JIRA name). A link is cached on both of its issues and is emitted once;
-    a link to an issue outside the cache is not emitted. The option is off by default because the
+    jira_issue edge per ordered pair of linked issues (issue links and sub-task parents), from the
+    link''s outward side (the parent, for a child), with attrs link_kind (child, blocks, duplicates,
+    clones, gantt or relates; the most specific when a pair is linked by several types) and link_type
+    (the exact JIRA names, joined with "; "). The graph holds one edge per ordered pair, which is
+    why several link types share one edge. A link is cached on both of its issues and is emitted
+    once; a link to an issue outside the cache is not emitted. The cache keeps a link type''s name,
+    not its outward wording, so the outward side of an instance-defined parent/child type is taken
+    to be the parent; that holds for CERN JIRA''s Child-Issue and is stated in the reader. The option is off by default because the
     edge is a new output a strict output_signature must list.
 
 
@@ -104,8 +111,8 @@ requirements:
     - acc.compops-data-links.jira-fields-links.default: With issue_link_edges unset no linked_to
     edge is emitted and the existing jira suite passes unchanged. [evidence: executed_test]
 
-    - acc.compops-data-links.jira-fields-links.edges: With the option on, links and sub-task parents
-    become one directed edge each with link_kind and link_type, in both cache shapes. [evidence:
+    - acc.compops-data-links.jira-fields-links.edges: With the option on, each linked pair becomes
+    one directed edge with link_kind and link_type, in both cache shapes. [evidence:
     executed_test]
 
     - acc.compops-data-links.jira-fields-links.publish: On a copy of the comp-ops pilot graph, a

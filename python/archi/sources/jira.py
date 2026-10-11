@@ -182,7 +182,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 from okg.deployment import (
     EdgeFact,
@@ -496,42 +496,28 @@ class JiraIssueSource:
             base=self.base,
         )
 
-        cached_keys = {record.key for record in records}
+        links_by_src = (
+            _links_by_source(records) if self.issue_link_edges else {}
+        )
 
         def _facts() -> Iterator[Any]:
             emitted_people: set[str] = set()
-            emitted_links: set[tuple[str, str, str]] = set()
             for record in records:
                 yield self._node_fact(record, revision)
-                for src, dst, link_type in (
-                    _issue_link_triples(record)
-                    if self.issue_link_edges else ()
+                for dst, link_types in sorted(
+                    links_by_src.get(record.key, {}).items()
                 ):
-                    # Both ends must be issues in this cache: a link to
-                    # a ticket outside the fetched projects would dangle.
-                    # Each link is cached on both of its issues, once as
-                    # outward and once as inward; emit it once.
-                    triple = (src, dst, link_type)
-                    if (
-                        src == dst
-                        or src not in cached_keys
-                        or dst not in cached_keys
-                        or triple in emitted_links
-                    ):
-                        continue
-                    emitted_links.add(triple)
                     yield EdgeFact(
-                        src=f"jira:{src}",
+                        src=f"jira:{record.key}",
                         dst=f"jira:{dst}",
                         edge_type="linked_to",
                         attrs={
-                            "link_kind": link_kind(link_type),
-                            "link_type": link_type,
+                            "link_kind": _strongest_kind(link_types),
+                            "link_type": "; ".join(sorted(link_types)),
                         },
                         source_record_id={
-                            "issue_key": src,
+                            "issue_key": record.key,
                             "linked_issue_key": dst,
-                            "link_type": link_type,
                         },
                         source_revision=revision,
                     )
@@ -827,8 +813,9 @@ SUBTASK_LINK_TYPE = "Sub-task"
 #: The small set a JIRA link type name collapses to. Instances define
 #: their own link types (and misspell them: "Duplibcate"), so the raw
 #: name stays on the edge as ``link_type`` and ``link_kind`` is the
-#: value to filter or group on.
-LINK_KINDS = ("child", "blocks", "relates", "clones", "duplicates", "gantt")
+#: value to filter or group on. Ordered most specific first: a pair of
+#: issues linked by several types takes the first kind present.
+LINK_KINDS = ("child", "blocks", "duplicates", "clones", "gantt", "relates")
 _LINK_KIND_MARKERS = (
     # First match wins. Gantt first: the WBS-Gantt plugin's types
     # ("Hierarchy link (WBSGantt)") are scheduling links, not parents.
@@ -854,6 +841,38 @@ def link_kind(link_type: str) -> str:
         if marker in name:
             return kind
     return "relates"
+
+
+def _strongest_kind(link_types: Iterable[str]) -> str:
+    """The one kind for a pair of issues linked by several link types.
+
+    The graph holds one ``linked_to`` edge per ordered pair, so a pair
+    that is both a Sub-task and a Relates link gets the more specific
+    kind; :data:`LINK_KINDS` is in that order, ``relates`` last.
+    """
+    kinds = {link_kind(link_type) for link_type in link_types}
+    return next(kind for kind in LINK_KINDS if kind in kinds)
+
+
+def _links_by_source(
+    records: list[JiraIssueRecord],
+) -> dict[str, dict[str, set[str]]]:
+    """``{src key: {dst key: link type names}}`` over the whole cache.
+
+    Both ends must be issues in the cache: a link to a ticket outside
+    the fetched projects would dangle. Each link is cached on both of
+    its issues, once as outward and once as inward, and lands here
+    once. Several link types between the same ordered pair are kept
+    together, because the graph holds one edge per pair.
+    """
+    cached_keys = {record.key for record in records}
+    out: dict[str, dict[str, set[str]]] = {}
+    for record in records:
+        for src, dst, link_type in _issue_link_triples(record):
+            if src == dst or src not in cached_keys or dst not in cached_keys:
+                continue
+            out.setdefault(src, {}).setdefault(dst, set()).add(link_type)
+    return out
 
 
 def _typed_links(
@@ -892,7 +911,11 @@ def _issue_link_triples(
 
     The source is the issue on the link's outward side, so a link reads
     the same from either end; a sub-task's parent is the source of a
-    ``Sub-task`` link, matching JIRA's Child-Issue direction.
+    ``Sub-task`` link. The cache keeps a link type's name, not its
+    outward wording, so for an instance-defined parent/child type the
+    outward side is taken to be the parent (true of CERN JIRA's
+    Child-Issue, "is parent of"); check that before relying on the
+    direction of ``child`` edges on another instance.
     """
     for key, link_type, direction in record.typed_links:
         if direction == "outward":

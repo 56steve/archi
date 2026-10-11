@@ -702,10 +702,10 @@ def _linked(facts):
     )
 
 
-def test_issue_links_become_one_edge_each_from_the_outward_side(tmp_path):
+def test_issue_links_become_one_edge_per_pair_from_the_outward_side(tmp_path):
     # The downloader caches every link on both issues: outward on one,
-    # inward on the other. Each link becomes one edge, from the outward
-    # side, whichever record is read first.
+    # inward on the other. Each linked pair becomes one edge, from the
+    # outward side, whichever record is read first.
     records = [
         {"key": "CMSPROD-1", "issue_links": [
             _link("CMSPROD-2", "Child-Issue", "outward"),
@@ -716,7 +716,8 @@ def test_issue_links_become_one_edge_each_from_the_outward_side(tmp_path):
         ]},
         {"key": "CMSPROD-3", "issue_links": [
             _link("CMSPROD-1", "Blocks", "outward"),
-            # Same pair, another type: a separate link.
+            # Same pair, another type: the graph holds one edge per
+            # ordered pair, so both names ride on it.
             _link("CMSPROD-1", "Relates", "outward"),
         ]},
     ]
@@ -724,16 +725,18 @@ def test_issue_links_become_one_edge_each_from_the_outward_side(tmp_path):
     _, facts = _run_facts(source)
     assert _linked(facts) == [
         ("jira:CMSPROD-1", "jira:CMSPROD-2", "Child-Issue"),
-        ("jira:CMSPROD-3", "jira:CMSPROD-1", "Blocks"),
-        ("jira:CMSPROD-3", "jira:CMSPROD-1", "Relates"),
+        ("jira:CMSPROD-3", "jira:CMSPROD-1", "Blocks; Relates"),
     ]
+    both = next(
+        e for e in _edges(facts, "linked_to") if e.src == "jira:CMSPROD-3"
+    )
+    assert both.attrs["link_kind"] == "blocks"
     child = next(
         e for e in _edges(facts, "linked_to") if e.attrs["link_type"] == "Child-Issue"
     )
     assert child.source_record_id == {
         "issue_key": "CMSPROD-1",
         "linked_issue_key": "CMSPROD-2",
-        "link_type": "Child-Issue",
     }
     assert child.source_revision["run_id"] == "run-1"
 
@@ -815,6 +818,38 @@ def test_issue_node_carries_resolution_labels_and_components(tmp_path):
     assert flat["components"] == ["transfers"]
     api = issues["jira:CMSPROD-100"].attrs
     assert (api["resolution"], api["labels"], api["components"]) == ("", [], [])
+
+
+def test_a_subtask_that_is_also_linked_is_one_child_edge(tmp_path):
+    # Sub-task parent and a Relates link on the same ordered pair: one
+    # edge, the more specific kind, both names kept. The reverse
+    # direction is its own pair and its own edge.
+    records = [
+        {"key": "CMSPROD-30", "subtasks": ["CMSPROD-31"], "issue_links": [
+            _link("CMSPROD-31", "Relates", "outward"),
+            _link("CMSPROD-31", "Blocks", "inward"),
+        ]},
+        {"key": "CMSPROD-31", "parent_key": "CMSPROD-30"},
+    ]
+    source = _write_caches(tmp_path, records, issue_link_edges=True)
+    _, facts = _run_facts(source)
+    assert sorted(
+        (e.src, e.dst, e.attrs["link_kind"], e.attrs["link_type"])
+        for e in _edges(facts, "linked_to")
+    ) == [
+        ("jira:CMSPROD-30", "jira:CMSPROD-31", "child", "Relates; Sub-task"),
+        ("jira:CMSPROD-31", "jira:CMSPROD-30", "blocks", "Blocks"),
+    ]
+
+
+def test_issue_link_option_changes_the_probe_token_only_when_on(tmp_path):
+    def token(**kwargs):
+        return _write_caches(
+            tmp_path, [FLAT_ISSUE], **kwargs
+        ).change_probe.build_token()
+
+    assert token() == token(issue_link_edges=False)
+    assert token(issue_link_edges=True) != token()
 
 
 def test_issue_link_edges_are_off_unless_asked_for(tmp_path):

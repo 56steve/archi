@@ -50,11 +50,13 @@ classes:
       jira_issue_linked_to_jira_issue:
         description: >-
           A JIRA issue link or sub-task parent (JiraIssueSource with
-          issue_link_edges on). attrs.link_kind is one of child,
-          blocks, relates, clones, duplicates, gantt; attrs.link_type
-          is the exact JIRA link type name (Child-Issue, Blocks,
-          Sub-task, ...). The source is the issue on the link's
-          outward side; for child, the parent.
+          issue_link_edges on), one edge per ordered pair of issues.
+          attrs.link_kind is one of child, blocks, duplicates, clones,
+          gantt, relates; attrs.link_type is the exact JIRA link type
+          name (Child-Issue, Blocks, Sub-task, ...), several joined
+          with "; " when the pair is linked more than once. The source
+          is the issue on the link's outward side; for child, the
+          parent.
         annotations:
           edge_archetype: linked_to
           src_subtypes: JiraIssue

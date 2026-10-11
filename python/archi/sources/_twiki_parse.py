@@ -124,7 +124,8 @@ _HTML_ATTR_RE = re.compile(
 )
 LINK_URL_MODES = ("drop", "keep")
 _LABELLED_WEB_LINK_RE = re.compile(
-    r"\[\[\s*(https?://[^\]\s]+)\s*\]\[([^\]]+)\]\]"
+    r"\[\[\s*(https?://[^\]\s]+)\s*\]\[([^\]]+)\]\]",
+    re.IGNORECASE,
 )
 _TWIKI_VIEW_MARKERS = ("/twiki/bin/viewauth/", "/twiki/bin/view/")
 

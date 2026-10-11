@@ -60,9 +60,10 @@ jira:
     # the issue keys present in the records cache.
     # project_keys: [MYPROJECT, MYOTHERPROJECT]
     # Optional: emit issue links and sub-task parents as
-    # jira_issue linked_to jira_issue edges (attrs link_kind: child,
-    # blocks, relates, clones, duplicates or gantt; link_type: the
-    # exact JIRA name). Needs the two linked_to lines above.
+    # jira_issue linked_to jira_issue edges, one per ordered pair
+    # (attrs link_kind: child, blocks, duplicates, clones, gantt or
+    # relates; link_type: the exact JIRA name). Needs the two
+    # linked_to lines above.
     # issue_link_edges: true
   sync:
     triggers: [manual, reconcile]

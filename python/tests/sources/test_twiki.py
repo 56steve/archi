@@ -85,6 +85,10 @@ def test_strip_twiki_keeps_web_link_urls_only_when_asked():
         "CMSCOMPPR-2361) and https://its.cern.ch/jira/browse/CMSPROD-7; "
         "see the docs, Jane and https://cern.ch/x."
     )
+    # The scheme is matched in any case.
+    assert strip_twiki(
+        "[[HTTPS://its.cern.ch/jira/browse/CMSDM-1][x]]", link_urls="keep"
+    ) == "x (HTTPS://its.cern.ch/jira/browse/CMSDM-1)"
     with pytest.raises(ValueError, match="link_urls"):
         strip_twiki(raw, link_urls="yes")
 
