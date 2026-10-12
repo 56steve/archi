@@ -48,6 +48,33 @@ def test_extraction_rules_shape_and_regexes():
     assert re.search(by_type["cms_jira_key"][0], "see CMSCOMPPR-67026").group(1) == "CMSCOMPPR-67026"
 
 
+def test_jira_key_rules_cover_every_project_the_downloader_fetches():
+    # A project the downloader fetches but the key rule cannot match
+    # yields tickets nothing ever links to: PRCAMPAIGNS keys do not
+    # start with CMS and were missed that way.
+    from archi.downloaders.jira import DEFAULT_PROJECTS
+
+    extraction = dict(
+        (id_type, regex) for id_type, regex, _ in defaults.load_extraction_rules()
+    )["cms_jira_key"]
+    catalog = {
+        entry["id_type"]: entry["regex"]
+        for entry in defaults.load_identifier_patterns()
+    }["cms_jira_key"]
+    assert "PRCAMPAIGNS" in DEFAULT_PROJECTS
+    for project in DEFAULT_PROJECTS:
+        key = f"{project}-93"
+        assert re.search(extraction, f"fixes {key}.").group(1) == key, project
+        assert re.search(catalog, f"fixes {key}.").group(0) == key, project
+    # Still narrow: other dashed upper-case tokens are not ticket keys.
+    for text in (
+        "CMSSW_14_0_1", "UTF-8", "SHA-256", "ISO-8601", "T2_US_MIT",
+        "XPRCAMPAIGNS-93", "PRCAMPAIGNS-", "prcampaigns-93", "RUCIO-123",
+    ):
+        assert re.search(extraction, text) is None, text
+        assert re.search(catalog, text) is None, text
+
+
 def test_dqm_extraction_rules_are_the_wisdqm_extras():
     rules = defaults.load_dqm_extraction_rules()
     by_type = {id_type: regex for id_type, regex, _ in rules}

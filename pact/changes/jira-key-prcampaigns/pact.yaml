@@ -1,0 +1,45 @@
+pact_version: 5
+id: jira-key-prcampaigns
+title: JIRA-key rule also matches PRCAMPAIGNS keys
+tier: 1
+why: 'The cms_jira_key rule is CMS[A-Z0-9]*-[0-9]+, so it cannot match a key of PRCAMPAIGNS, the
+  one project the JIRA downloader fetches by default whose key does not start with CMS (493 issues
+  in the comp-ops copy). The linker therefore never links a commit, or any other routed record,
+  to a PRCAMPAIGNS ticket: on the comp-ops graph 17 commit citations of 7 PRCAMPAIGNS tickets made
+  no link, while the other 26 cited tickets were linked. Chunk links to these tickets exist only
+  because the JIRA and TWiki readers extract keys themselves from the cached project list.
+
+
+  The rule names PRCAMPAIGNS outright instead of accepting any upper-case prefix: a general
+  [A-Z]+-[0-9]+ rule would also match UTF-8, SHA-256 and the like, and every such match becomes an
+  unresolved-identifier row.'
+affected_code:
+- python/archi/enrichment/defaults/extraction_rules.yaml
+- python/archi/enrichment/defaults/identifier_patterns.yaml
+- python/tests/enrichment/test_defaults.py
+requirements:
+- id: req.jira-key-prcampaigns.main
+  statement: 'The cms_jira_key extraction rule and catalog pattern match a key of every project in
+    the JIRA downloader''s default project list, and nothing they did not match before except PRCAMPAIGNS-<number>.
+
+
+    Acceptance:
+
+    - acc.jira-key-prcampaigns.rule: Both shipped regexes match <PROJECT>-93 for every default project
+    and do not match CMSSW_14_0_1, UTF-8, SHA-256 or a lower-case key. [evidence: executed_test]
+
+    - acc.jira-key-prcampaigns.publish: On a copy of the comp-ops graph a publish links the commits
+    that cite PRCAMPAIGNS tickets and changes no other project''s link counts. [evidence: published_generation]'
+tasks:
+- id: task.jira-key-prcampaigns.deliver
+  requirement: req.jira-key-prcampaigns.main
+  verification: 'Change the two regexes; add a test tied to archi.downloaders.jira.DEFAULT_PROJECTS;
+    publish on a copy of the comp-ops graph and compare links into tickets per project before and
+    after.
+
+
+    Test plan:
+
+    - python/tests [evidence: pytest]'
+evidence: []
+decisions: []
