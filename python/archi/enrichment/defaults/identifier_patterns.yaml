@@ -14,8 +14,10 @@ patterns:
     description: CMS computing site name such as T2_US_MIT
 
   - id_type: cms_jira_key
-    regex: '\bCMS[A-Z0-9]*-[0-9]+\b'
-    description: CERN JIRA key for CMS projects such as CMSCOMPPR-67026
+    # PRCAMPAIGNS is the one CMS computing JIRA project whose key does
+    # not start with CMS; it is named outright so the rule stays narrow.
+    regex: '\b(?:CMS[A-Z0-9]*|PRCAMPAIGNS)-[0-9]+\b'
+    description: CERN JIRA key for CMS projects such as CMSCOMPPR-67026 or PRCAMPAIGNS-93
 
   - id_type: cmssw_release
     regex: '\bCMSSW_[0-9]+_[0-9]+_[0-9]+(?:_[A-Za-z0-9]+)*\b'

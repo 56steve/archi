@@ -10,8 +10,10 @@ rules:
   - - cms_site
     - '\b(T[0-3]_[A-Z]{2}(?:_[A-Za-z0-9]+)+)\b'
     - 0.95
+  # PRCAMPAIGNS is the one CMS computing JIRA project whose key does not
+  # start with CMS; it is named outright so the rule stays narrow.
   - - cms_jira_key
-    - '\b(CMS[A-Z0-9]*-[0-9]+)\b'
+    - '\b((?:CMS[A-Z0-9]*|PRCAMPAIGNS)-[0-9]+)\b'
     - 0.95
   - - cmssw_release
     - '\b(CMSSW_[0-9]+_[0-9]+_[0-9]+(?:_[A-Za-z0-9]+)*)\b'
