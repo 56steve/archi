@@ -65,6 +65,34 @@ def test_strip_twiki_cms_defaults_byte_parity():
     assert strip_twiki(META_FIXTURE) == META_FIXTURE_CMS_STRIP
 
 
+def test_strip_twiki_keeps_web_link_urls_only_when_asked():
+    raw = (
+        "Tracked in [[https://its.cern.ch/jira/browse/CMSCOMPPR-2361][the "
+        "ticket]] and [[https://its.cern.ch/jira/browse/CMSPROD-7]]; see "
+        "[[CMS.PhedexDocs][the docs]], [[mailto:someone@cern.ch][Jane]] "
+        "and [[https://cern.ch/x][https://cern.ch/x]].\n"
+    )
+    # Default: the label alone, as before the option existed.
+    assert strip_twiki(raw) == (
+        "Tracked in the ticket and https://its.cern.ch/jira/browse/CMSPROD-7; "
+        "see the docs, Jane and https://cern.ch/x."
+    )
+    # keep: a labelled web link also writes its URL, so the key in it
+    # reaches the text. Topic and mailto links keep the label alone; a
+    # label that is the URL is written once.
+    assert strip_twiki(raw, link_urls="keep") == (
+        "Tracked in the ticket (https://its.cern.ch/jira/browse/"
+        "CMSCOMPPR-2361) and https://its.cern.ch/jira/browse/CMSPROD-7; "
+        "see the docs, Jane and https://cern.ch/x."
+    )
+    # The scheme is matched in any case.
+    assert strip_twiki(
+        "[[HTTPS://its.cern.ch/jira/browse/CMSDM-1][x]]", link_urls="keep"
+    ) == "x (HTTPS://its.cern.ch/jira/browse/CMSDM-1)"
+    with pytest.raises(ValueError, match="link_urls"):
+        strip_twiki(raw, link_urls="yes")
+
+
 def test_strip_twiki_markdown_preserve_keeps_structure():
     out = strip_twiki(
         "---++ Alpha\nLine one.   \nLine two.\n\n\n\n"
@@ -367,6 +395,40 @@ def test_eos_configured_but_missing_reference_cache_raises(tmp_path):
     )
     with pytest.raises(FileNotFoundError, match="data/absent/sites.json"):
         source.run("r")
+
+
+def test_eos_link_urls_option_reaches_chunk_text_and_the_probe(tmp_path):
+    root = tmp_path / "snap"
+    root.mkdir()
+    (root / "MeetingNotes.txt").write_text(
+        "---+ Notes\nDone: [[https://its.cern.ch/jira/browse/"
+        "CMSCOMPPR-2361][reaper fix]].\n"
+    )
+
+    def chunk_text(**kwargs):
+        source = TwikiEOSSource(eos_root=str(root), **kwargs)
+        facts = list(source.run("run-1").facts)
+        return " ".join(
+            f.attrs["text"] for f in facts
+            if isinstance(f, NodeFact) and f.subtype == "document_chunk"
+        )
+
+    assert "CMSCOMPPR-2361" not in chunk_text()
+    assert "reaper fix (https://its.cern.ch/jira/browse/CMSCOMPPR-2361)" in (
+        chunk_text(link_urls="keep")
+    )
+    # Unset and "drop" share one probe token (no re-ingest for a
+    # deployment that never set it); "keep" changes it, because the
+    # same snapshot now yields different text.
+    def token(**kwargs):
+        return TwikiEOSSource(
+            eos_root=str(root), **kwargs
+        ).change_probe.build_token()
+
+    assert token() == token(link_urls="drop")
+    assert token(link_urls="keep") != token()
+    with pytest.raises(ValueError, match="link_urls"):
+        TwikiEOSSource(eos_root=str(root), link_urls="both")
 
 
 def test_eos_web_root_param(tmp_path):

@@ -69,11 +69,38 @@ def test_identifier_patterns_compile_and_cover_cms_ids():
 def test_linker_config_routes_reference_document_chunk():
     routes = defaults.load_linker_config()["routes"]
     for id_type, by_src in routes.items():
-        assert set(by_src) == {"document_chunk"}, id_type
-        route = by_src["document_chunk"]
-        assert route["edge_type"] == "references"
-        assert route["dst_template"] == "{resolved}"
-        assert 0 < route["confidence"] <= 1
+        # Every identifier is read from chunk text. A JIRA key is also
+        # read from a commit message (okg#3649).
+        expected = {"document_chunk"}
+        if id_type == "cms_jira_key":
+            expected.add("git_commit")
+        assert set(by_src) == expected, id_type
+        for route in by_src.values():
+            assert route["edge_type"] == "references"
+            assert route["dst_template"] == "{resolved}"
+            assert 0 < route["confidence"] <= 1
+
+
+def test_commit_to_ticket_route_has_its_narrowing():
+    # The route makes git_commit references jira_issue edges; okg
+    # rejects an edge whose triple no bridge allows.
+    import yaml
+    from importlib import resources
+
+    bridge = yaml.safe_load(
+        resources.files("archi.schemas").joinpath("bridges/operations.yaml")
+        .read_text(encoding="utf-8")
+    )
+    narrowing = next(
+        cls["attributes"]["git_commit_references_jira_issue"]["annotations"]
+        for cls in bridge["classes"].values()
+        if "git_commit_references_jira_issue" in (cls.get("attributes") or {})
+    )
+    assert narrowing["edge_archetype"] == "references"
+    assert narrowing["src_subtypes"] == "GitCommit"
+    assert narrowing["dst_subtypes"] == "JiraIssue"
+    # A deployment without the git_graph module still composes.
+    assert narrowing["optional_when_subtypes_missing"] == "true"
 
 
 def test_cross_link_rules_file_and_unknown_name():

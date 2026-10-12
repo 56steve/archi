@@ -30,6 +30,8 @@ jira:
         - {src_subtype: jira_issue, edge_type: reported_by, dst_subtype: person}
         - {src_subtype: jira_issue, edge_type: contains, dst_subtype: document_chunk}
         - {src_subtype: document_chunk, edge_type: references, dst_subtype: jira_issue}
+        # Uncomment together with `issue_link_edges: true` below:
+        # - {src_subtype: jira_issue, edge_type: linked_to, dst_subtype: jira_issue}
     output_scope_summary:
       summary: JIRA issues, participants, and issue-text chunks from the records cache
       nodes: [jira_issue, person, document_chunk]
@@ -38,6 +40,7 @@ jira:
         - jira_issue reported_by person
         - jira_issue contains document_chunk
         - document_chunk references jira_issue
+        # - jira_issue linked_to jira_issue
   source_class: mutable_api
   record_identity_kind: remote_id
   record_identity_fields: [issue_key]
@@ -56,6 +59,12 @@ jira:
     # Without it, extraction is bounded to the project prefixes of
     # the issue keys present in the records cache.
     # project_keys: [MYPROJECT, MYOTHERPROJECT]
+    # Optional: emit issue links and sub-task parents as
+    # jira_issue linked_to jira_issue edges, one per ordered pair
+    # (attrs link_kind: child, blocks, duplicates, clones, gantt or
+    # relates; link_type: the exact JIRA name). Needs the two
+    # linked_to lines above.
+    # issue_link_edges: true
   sync:
     triggers: [manual, reconcile]
     default_event_mode: scope_complete

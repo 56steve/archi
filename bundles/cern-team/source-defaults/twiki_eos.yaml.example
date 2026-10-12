@@ -57,6 +57,11 @@ twiki_eos:
     # parent-topic closure, and documentation page types -- and drops the
     # computing-operations roots this bundle is otherwise built around.
     # physics_filter: true
+    # Optional: also write the URL of a labelled web link
+    # ([[URL][label]] -> "label (URL)") so an identifier that sits only
+    # in the URL, such as a JIRA key in a /browse/ link, reaches the
+    # text and gets linked. Off by default (the label alone).
+    # link_urls: keep
   sync:
     triggers: [manual, reconcile]
     default_event_mode: scope_complete
