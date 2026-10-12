@@ -1,7 +1,7 @@
 pact_version: 5
 id: jira-key-prcampaigns
 title: JIRA-key rule also matches PRCAMPAIGNS keys
-tier: 1
+tier: 2
 why: 'The cms_jira_key rule is CMS[A-Z0-9]*-[0-9]+, so it cannot match a key of PRCAMPAIGNS, the
   one project the JIRA downloader fetches by default whose key does not start with CMS (493 issues
   in the comp-ops copy). The linker therefore never links a commit, or any other routed record,
@@ -41,5 +41,23 @@ tasks:
     Test plan:
 
     - python/tests [evidence: pytest]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.jira-key-prcampaigns.main
+  status: pass
+  command: python -m pytest tests -q
+  head: ba8b2b94624942c16f8632f208aee7696cd1e2f0
+  at: '2026-10-12T06:44:50+00:00'
+  note: 1791 passed (1790 before), including the new test over the downloader's default project list.
+- kind: published_generation
+  requirement: req.jira-key-prcampaigns.main
+  status: pass
+  command: okg catalog load --apply; okg run --once --apply (copy of the comp-ops graph, no ingest)
+  head: ba8b2b94624942c16f8632f208aee7696cd1e2f0
+  at: '2026-10-12T06:42:33+00:00'
+  note: 'Links into tickets were counted per JIRA project (10) and source record type before and after one
+    publish. 49 of 50 rows are unchanged, for all nine CMS-prefixed projects. PRCAMPAIGNS: git_commit references
+    0 to 17 (7 tickets), document_chunk references 177 to 178. Total 11,916 to 11,934. Records unchanged at
+    633,216; no new unresolved-identifier rows. Every string the wider rule newly matches in the graph text
+    is a PRCAMPAIGNS ticket that exists. The publish held the lock 291 s.'
 decisions: []
