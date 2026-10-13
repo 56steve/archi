@@ -244,12 +244,15 @@ classes:
       okg_title_from: title
 
   CMSSWRelease:
-    description: CMS software framework release.
+    description: CMS software framework release. One record per cms-bot releases.map label (id cmssw_release:<label>), plus one derived release-family record per major/minor series (id cmssw_release_family:CMSSW_<major>_<minor>).
     class_uri: archi:CMSSWRelease
     attributes:
       release:
         required: true
       release_type:
+        description: The source's own release type, unchanged (cms-bot writes Production or Development). Absent on release-family records.
+      release_kind:
+        description: okg's kind, derived from the label - release, patch, pre-release, hlt-patch, variant, integration-series (a CMSSW_<major>_<minor>_X row), or release_family.
       state:
       architecture:
       release_date:
@@ -260,12 +263,14 @@ classes:
       patch:
         range: integer
       suffix:
+      series:
+        description: On a release-family record only, the series label cms-bot uses (CMSSW_<major>_<minor>_X).
       text:
     annotations:
       archetype: artifact
       transient: "false"
       okg_alias_fields: release
-      okg_searchable_text_fields: release,release_type,architecture,text
+      okg_searchable_text_fields: release,release_type,release_kind,architecture,text
       okg_title_from: release
 
   GlobalTag:

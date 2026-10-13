@@ -392,11 +392,12 @@ def test_cmssw_source_runs_from_its_shipped_frozen_parameters(tmp_path):
     run, facts = _run(adapter)
     assert run.completed_scope is True
     releases = [f for f in facts if isinstance(f, NodeFact) and f.subtype == "cmssw_release"]
-    # The reader emits one node per release plus the family node they share.
+    # The reader emits one node per release plus the family node they share
+    # (`cmssw_release_family:CMSSW_14_0`, labelled `CMSSW_14_0`).
     assert {node.attrs["label"] for node in releases} == {
         "CMSSW_14_0_1",
         "CMSSW_14_0_2",
-        "CMSSW_14_0_X",
+        "CMSSW_14_0",
     }
     assert [f for f in facts if isinstance(f, EdgeFact) and f.edge_type == "supersedes"]
 

@@ -25,8 +25,15 @@ def _source(tmp_path, *, with_cmssw):
     if with_cmssw:
         cmssw = tmp_path / "data" / "cmssw-releases"
         cmssw.mkdir(parents=True)
+        # The cache lists the cms-bot integration-series row for 14.0, the
+        # record a global tag's `release: CMSSW_14_0_X` names.
         (cmssw / "records.json").write_text(
-            json.dumps([{"label": "CMSSW_14_0_1"}])
+            json.dumps(
+                [
+                    {"label": "CMSSW_14_0_1"},
+                    {"label": "CMSSW_14_0_X", "type": "Development", "state": "IB"},
+                ]
+            )
         )
     return CondDBGlobalTagSource(base=str(tmp_path))
 
@@ -35,8 +42,10 @@ def test_tag_nodes_supersedes_and_release_dependency(tmp_path):
     source = _source(tmp_path, with_cmssw=True)
     facts = list(source.run("run-1", mode="scope_complete").facts)
     nodes = {f.node_id: f for f in facts if isinstance(f, NodeFact)}
-    # CMSSW_14_0_X family is a known target (from the cmssw cache), so
-    # no conddb-only release-family node is emitted.
+    # CMSSW_14_0_X is a known target (the cmssw cache lists that row), so no
+    # conddb-only release node is emitted. A series value names the record
+    # with that label, the same record the GlobalTagReleaseLinker rule
+    # (global_tag.release = cmssw_release.release) reaches; never the family.
     assert set(nodes) == {
         "global_tag:140X_dataRun3_v2",
         "global_tag:140X_dataRun3_v1",
@@ -69,20 +78,60 @@ def test_tag_nodes_supersedes_and_release_dependency(tmp_path):
     }
 
 
-def test_missing_cmssw_cache_emits_conddb_only_family_node(tmp_path):
+def test_a_concrete_release_no_longer_implies_the_series_id(tmp_path):
+    """`cmssw_release:CMSSW_14_0_X` is known only when the cache lists that row.
+
+    The CMSSW source once minted a family node at that id from any concrete
+    14.0 release. Families now live at `cmssw_release_family:*`, so a cache
+    with only CMSSW_14_0_1 leaves the series id to a conddb placeholder.
+    """
+    source = _source(tmp_path, with_cmssw=False)
+    cmssw = tmp_path / "data" / "cmssw-releases"
+    cmssw.mkdir(parents=True)
+    (cmssw / "records.json").write_text(json.dumps([{"label": "CMSSW_14_0_1"}]))
+    facts = list(source.run("run-1").facts)
+    nodes = {f.node_id: f for f in facts if isinstance(f, NodeFact)}
+    assert "cmssw_release:CMSSW_14_0_X" in nodes
+    assert not any(n.startswith("cmssw_release_family:") for n in nodes)
+
+
+def test_missing_cmssw_cache_emits_conddb_only_release_node(tmp_path):
     source = _source(tmp_path, with_cmssw=False)
     facts = list(source.run("run-1").facts)
     nodes = {f.node_id: f for f in facts if isinstance(f, NodeFact)}
-    family = nodes["cmssw_release:CMSSW_14_0_X"]
-    assert family.subtype == "cmssw_release"
-    assert family.attrs["state"] == "referenced_by_conddb"
-    assert family.attrs["family"] is True
+    series = nodes["cmssw_release:CMSSW_14_0_X"]
+    assert series.subtype == "cmssw_release"
+    assert series.attrs["state"] == "referenced_by_conddb"
+    assert series.attrs["release"] == "CMSSW_14_0_X"
+    assert series.attrs["release_kind"] == "integration-series"
+    assert "release_type" not in series.attrs
+    assert "family" not in series.attrs
+    assert not any(n.startswith("cmssw_release_family:") for n in nodes)
     depends = {
         (e.src, e.dst)
         for e in facts
         if isinstance(e, EdgeFact) and e.edge_type == "depends_on"
     }
     assert ("global_tag:140X_dataRun3_v2", "cmssw_release:CMSSW_14_0_X") in depends
+
+
+def test_conddb_only_concrete_release_is_not_called_a_family(tmp_path):
+    """A concrete release CondDB names but the cache lacks keeps its label id.
+
+    It once got `release_type: release_family`; release_type now holds only the
+    CMSSW source's own value, which CondDB does not know.
+    """
+    source = _source(tmp_path, with_cmssw=False)
+    (tmp_path / "data" / "conddb-global-tags" / "records.json").write_text(
+        json.dumps([{"name": "141X_mcRun3_v1", "release": "CMSSW_14_1_0_pre2"}])
+    )
+    facts = list(source.run("run-1").facts)
+    nodes = {f.node_id: f for f in facts if isinstance(f, NodeFact)}
+    placeholder = nodes["cmssw_release:CMSSW_14_1_0_pre2"]
+    assert placeholder.attrs["release_kind"] == "pre-release"
+    assert placeholder.attrs["state"] == "referenced_by_conddb"
+    assert "release_type" not in placeholder.attrs
+    assert "family" not in placeholder.attrs
 
 
 # --- circleback-fixes regressions ---

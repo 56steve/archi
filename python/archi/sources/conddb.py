@@ -92,9 +92,9 @@ from archi.sources._run_modes import (
     input_content_checkpoint,
 )
 from archi.sources._sdk_adapter import ReaderAdapter
+from archi.sources.cmssw import release_kind
 
 _GT_VERSION_RE = re.compile(r"_v(\d+)$")
-_CMSSW_VERSION_RE = re.compile(r"^CMSSW_(\d+)_(\d+)_(\d+)")
 
 
 @dataclass(frozen=True)
@@ -198,7 +198,7 @@ class CondDBGlobalTagSource:
             for record in records:
                 yield _node_fact(record, revision)
             for node_id in sorted(conddb_only_release_targets):
-                yield _release_family_node_fact(node_id, revision)
+                yield _referenced_release_node_fact(node_id, revision)
             yield from _edge_facts(
                 records,
                 revision,
@@ -332,25 +332,31 @@ def _find_predecessor(name: str) -> str | None:
     return f"{name[:match.start()]}_v{version - 1}"
 
 
-def _release_family_node_fact(
+def _referenced_release_node_fact(
     node_id: str,
     revision: dict[str, Any],
 ) -> NodeFact:
-    _prefix, _sep, family = node_id.partition(":")
-    attrs = {
-        "label": family,
-        "name": family,
-        "release": family,
-        "release_type": "release_family",
-        "state": "referenced_by_conddb",
-        "text": family,
-    }
-    attrs.update(_parse_cmssw_family(family))
+    """A release CondDB names that the CMSSW cache does not list.
+
+    Keyed by the label CondDB wrote, so a series value (`CMSSW_14_0_X`)
+    names the integration-series record of that label, the record the
+    GlobalTagReleaseLinker rule (`release` = `release`, exact) also reaches.
+    It carries no `release_type`: that attribute holds only the CMSSW
+    source's own value, and CondDB does not know it.
+    """
+    _prefix, _sep, key = node_id.partition(":")
     return NodeFact(
         node_id=node_id,
         subtype="cmssw_release",
-        attrs=attrs,
-        source_record_id={"release_family": family},
+        attrs={
+            "label": key,
+            "name": key,
+            "release": key,
+            "release_kind": release_kind(key),
+            "state": "referenced_by_conddb",
+            "text": key,
+        },
+        source_record_id={"release": key},
         source_revision=revision,
     )
 
@@ -371,31 +377,12 @@ def _known_cmssw_targets(
         label = str(item.get("label") or "").strip()
         if not label:
             continue
+        # Only the label itself. The CMSSW source no longer mints a node at
+        # `cmssw_release:CMSSW_<m>_<n>_X` from concrete releases (families
+        # are `cmssw_release_family:*`), so that id is known only when the
+        # cache lists the integration-series row.
         targets.add(f"cmssw_release:{label}")
-        family = _cmssw_family(label)
-        if family:
-            targets.add(f"cmssw_release:{family}")
     return targets
-
-
-def _cmssw_family(label: str) -> str | None:
-    match = _CMSSW_VERSION_RE.match(label)
-    if not match:
-        return None
-    major, minor, _patch = match.groups()
-    return f"CMSSW_{major}_{minor}_X"
-
-
-def _parse_cmssw_family(label: str) -> dict[str, Any]:
-    match = re.match(r"^CMSSW_(\d+)_(\d+)_X$", label)
-    if not match:
-        return {}
-    major, minor = match.groups()
-    return {
-        "major": int(major),
-        "minor": int(minor),
-        "family": True,
-    }
 
 
 class CondDBGlobalTagAdapter(ReaderAdapter):
