@@ -130,7 +130,7 @@
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#release-test-and-build-tagyml">Release (test-and-build-tag.yml)</a>
     </li>
-    <li class="toctree-l3"><a class="reference internal" href="#publish-base-images-publish-base-imagesyml">Publish Base Images (publish-base-images.yml)</a>
+    <li class="toctree-l3"><a class="reference internal" href="#publish-images-publish-base-imagesyml">Publish Images (publish-base-images.yml)</a>
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#docker-layer-caching">Docker Layer Caching</a>
     </li>
@@ -446,8 +446,13 @@ export VECTORSTORE_QUERY=&quot;cms&quot;
 </ol>
 <h3 id="release-test-and-build-tagyml">Release (<code>test-and-build-tag.yml</code>)</h3>
 <p>Manually dispatched; builds Docker base images, pushes to DockerHub, runs smoke tests, then tags and releases.</p>
-<h3 id="publish-base-images-publish-base-imagesyml">Publish Base Images (<code>publish-base-images.yml</code>)</h3>
-<p>Triggered on push to <code>main</code>; rebuilds and pushes base images when requirements or Dockerfiles change.</p>
+<h3 id="publish-images-publish-base-imagesyml">Publish Images (<code>publish-base-images.yml</code>)</h3>
+<p>Triggered on push to <code>main</code> and pushes images to Docker Hub as <code>main-&lt;sha&gt;</code> and <code>latest</code>:</p>
+<ul>
+<li><strong>Base images</strong> (<code>a2rchi-python-base</code>, <code>a2rchi-pytorch-base</code>) are rebuilt only when <code>requirements/requirements-base.txt</code>, <code>requirements/*-requirementsHEADER.txt</code>, or <code>src/cli/templates/dockerfiles/base-{python,pytorch}-image/</code> change.</li>
+<li><strong>Helm service images</strong> (<code>archi-chat</code>, <code>archi-data-manager</code>, <code>archi-postgres</code>, <code>archi-grafana</code>) are rebuilt whenever <code>src/</code>, <code>pyproject.toml</code>, <code>LICENSE</code>, the image build scripts, or this workflow change, and always after a base image rebuild (they build <code>FROM</code> the python base).</li>
+</ul>
+<p>It can also be run manually (<code>workflow_dispatch</code>) with <code>group</code> set to <code>services</code>, <code>base</code>, or <code>all</code> to force a rebuild.</p>
 <h3 id="docker-layer-caching">Docker Layer Caching</h3>
 <p>All workflows that build Docker images use <code>docker/setup-buildx-action</code> with <code>actions/cache</code> for layer caching, reducing rebuild times on cache hits.</p>
 <h3 id="local-development">Local Development</h3>
@@ -476,6 +481,8 @@ export VECTORSTORE_QUERY=&quot;cms&quot;
 <li>PyTorch: <a href="https://hub.docker.com/r/a2rchi/a2rchi-pytorch-base">https://hub.docker.com/r/a2rchi/a2rchi-pytorch-base</a></li>
 </ul>
 <p>To rebuild a base image, navigate to the relevant <code>base-xxx-image</code> directory under <code>src/cli/templates/dockerfiles/</code>. Each directory contains the Dockerfile, requirements, and license information.</p>
+<p>The Helm chart rendered by <code>archi install</code> uses the service images <code>a2rchi/archi-chat</code>, <code>a2rchi/archi-data-manager</code>, <code>a2rchi/archi-postgres</code>, and <code>a2rchi/archi-grafana</code>, built from <code>src/cli/templates/dockerfiles/base-helm-images/</code>.</p>
+<p>To build or push locally, use <code>scripts/dev/build_docker_images.sh</code> and <code>scripts/dev/push_docker_images.sh</code>. Both accept <code>--group all|base|services</code> and a repeatable <code>-i &lt;image&gt;</code>; images are always built base-first so service images pick up a freshly built python base.</p>
 <p>Regenerate the requirements files with:</p>
 <pre><code class="language-bash"># Python image
 cat requirements/cpu-requirementsHEADER.txt requirements/requirements-base.txt &gt; src/cli/templates/dockerfiles/base-python-image/requirements.txt
