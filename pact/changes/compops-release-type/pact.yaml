@@ -67,15 +67,34 @@ evidence:
   requirement: req.compops-release-type.main
   status: pass
   command: python -m pytest tests/sources/test_cmssw.py tests/sources/test_conddb.py -q; python -m pytest
-    tests -q (python/, submit75, okg d87b50397725)
+    tests -q (python/, shared lab host, okg d87b50397725)
   head: e852c5ee59893c8b5e8e809b18c39c6823e59e6d
   at: '2026-10-13T22:48:31+00:00'
   note: 'cmssw and conddb tests: 59 passed. The new and changed tests fail on main''s code: 10 failed,
     including test_patch_release_keeps_source_type (patch != Production). Full suite, run twice at this
     head: 1795 passed, 1 failed each time. The failure is the wall-clock test
-    test_anonymizer::test_redact_email_addresses_quoted_local_part_is_linear (1.0 s limit; submit75 load
+    test_anonymizer::test_redact_email_addresses_quoted_local_part_is_linear (1.0 s limit; lab host load
     average about 19). It fails the same way on main''s code under the same load (1.23 s), and this change
     does not touch the anonymizer. On the first branch (bc73cf18) the suite first ran with 2 failures:
     that timing test and test_bundle_source_adapters, whose stale family label assertion this change
     then updated.'
+- kind: published_generation
+  requirement: req.compops-release-type.main
+  status: pass
+  command: okg catalog load --apply; okg ingest --include cmssw_releases --no-predecessors --inline --no-publish;
+    okg run --once --apply --inline; okg doctor (copy of the comp-ops graph)
+  head: 1e7c3d1e73d5de349b6443e7e4e5cb59f7d8ab2a
+  at: '2026-10-13T23:33:10+00:00'
+  note: 'Generation okg:cms-compops:branch:default:gen:20261013T233300598698Z:ab7bde4ebb93, from the frozen
+    2026-09-18 releases.map (sha256:cd10e1e195124346cab659c290ef13578423ac7dac0e5b4f1774b964c0c64b4e,
+    pinned with map_cache_digest). Records from the source went from 2,415 to 2,473: 2,386 releases plus
+    87 families under cmssw_release_family:. CMSSW_15_0 releases by release_type went from Production
+    22, patch 23, pre-release 3, release_family 1 to Production 45, Development 4. release_type is now
+    only Production (1,674), Development (712) or absent (the 87 families). All 58 integration-series
+    records are present: 55 reuse an old family id and carry no family attributes, and the other 32 old
+    family ids were retracted. Supersedes edges 2,110 to 2,110. No edge into a cmssw_release record
+    dangles, no release value is shared by two records, doctor is ok, and there is no cmssw_release alias
+    collision. Extractor retry queue 0; the runtime is disabled on this deployment. One read of
+    cmssw_release:CMSSW_15_0_19_patch2 returns release_type Production, release_kind patch. The publish
+    took 137 s.'
 decisions: []
