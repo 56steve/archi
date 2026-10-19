@@ -1,4 +1,6 @@
 verbosity: {{ verbosity }}
+# CPU threads torch uses in the data-manager and chatbot (OMP_NUM_THREADS).
+torch_threads: {{ torch_threads }}
 archi:
   name: {{ archi_name }}
 

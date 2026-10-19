@@ -243,6 +243,7 @@ Controls data ingestion, vectorstore behaviour, and retrieval settings.
 | `parallel_workers` | int | `32` | Parallel ingestion workers |
 | `reset_collection` | bool | `true` | Wipe collection on startup |
 | `distance_metric` | string | `cosine` | Similarity metric: `cosine`, `l2`, `ip` |
+| `torch_threads` | int | `8` | CPU threads torch uses in the data-manager and chatbot, set in both as `OMP_NUM_THREADS` (compose and Helm). Unset, torch starts one thread per host core, and CPU quotas (Docker `--cpus`, Kubernetes limits) don't change that; on a shared 32-core host each embedding call then took ~3 s instead of ~16 ms. Must be a positive integer; anything else fails `archi create` |
 
 ### Retrieval Settings
 
