@@ -340,3 +340,282 @@ def test_a_category_that_returns_events_still_completes():
 
     assert ids == ["999"]
     assert source._empty_categories == []
+
+
+# --- one record per contribution (option `contributions`) ---------------
+#
+# Fixtures are trimmed copies of the public export for indico.cern.ch
+# event 1716863 (fixtures/indico/), not hand-written shapes.
+
+from pathlib import Path
+
+from okg.deployment import EdgeFact, NodeFact
+
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "indico"
+
+
+def _fixture(name):
+    return json.loads((_FIXTURES / name).read_text())
+
+
+def _live_routes(monkeypatch, *, contributions=True):
+    event = _fixture("event_1716863_contributions.json")
+    if not contributions:
+        event["results"][0]["contributions"] = []
+    plain = dict(event["results"][0])
+    plain.pop("contributions")
+    _routes(monkeypatch, {
+        "detail=contributions": event,
+        "/export/timetable/1716863.json": _fixture("timetable_1716863.json"),
+        "/export/event/1716863.json": {"results": [plain]},
+    })
+
+
+def _talks(facts):
+    return {
+        f.attrs["title"]: f for f in facts
+        if isinstance(f, NodeFact) and f.attrs.get("event_type") == "contribution"
+    }
+
+
+def test_off_by_default_emits_what_it_always_did(monkeypatch):
+    _live_routes(monkeypatch)
+    source = IndicoLiveSource(event_ids=["1716863"])
+    assert source.contributions is False
+    facts, _run = _facts(source)
+    assert len(_meetings(facts)) == 1
+    assert not [f for f in facts if isinstance(f, EdgeFact)]
+    # the talks are still flattened into the event text, as before
+    assert "Towards a Standardized Benchmark" in _meetings(facts)[0].attrs["text"]
+
+
+def test_each_contribution_becomes_a_linked_record(monkeypatch):
+    _live_routes(monkeypatch)
+    source = IndicoLiveSource(event_ids=["1716863"], contributions=True)
+    facts, run = _facts(source)
+    meetings = _meetings(facts)
+    event = next(m for m in meetings if m.node_id == "meeting_minutes:1716863")
+    assert len(meetings) == 5  # the event + four talks
+    assert source.last_harvest_report["contributions"] == 4
+    assert run.completed_scope is True
+
+    talk = _talks(facts)[
+        "Towards a Standardized Benchmark for Vision-Language Models in CMS "
+        "Data Quality Monitoring"
+    ]
+    assert talk.node_id == "meeting_minutes:1716863:contribution:7317468"
+    assert talk.attrs["url"] == (
+        "https://indico.cern.ch/event/1716863/contributions/7317468/"
+    )
+    assert talk.attrs["session"] == "Ongoing efforts: AI+autonomous ops"
+    assert talk.attrs["date"] == "2026-10-21T15:10:00"
+    assert talk.attrs["end_date"] == "2026-10-21T15:30:00"
+    assert talk.attrs["speakers"] == ["Soha, Aron", "Yu, David"]
+    assert talk.attrs["parent_event_id"] == "1716863"
+    assert "Fermi National Accelerator Lab." in talk.attrs["text"]
+    assert "Compact Muon Solenoid" in talk.attrs["text"]  # the abstract
+    assert "emailHash" not in json.dumps(talk.attrs)
+    assert talk.source_record_id == {"path": "event/1716863/contribution/7317468"}
+
+    edges = [f for f in facts if isinstance(f, EdgeFact)]
+    assert len(edges) == 4
+    assert {(e.src, e.edge_type) for e in edges} == {
+        ("meeting_minutes:1716863", "contains")
+    }
+    assert {e.dst for e in edges} == {
+        f.node_id for f in meetings if f is not event
+    }
+    # the event no longer repeats every talk's text
+    assert "Towards a Standardized Benchmark" not in event.attrs["text"]
+
+
+def test_attachment_names_and_urls_are_recorded_but_not_fetched(monkeypatch):
+    _live_routes(monkeypatch)
+    facts, _run = _facts(
+        IndicoLiveSource(event_ids=["1716863"], contributions=True)
+    )
+    talk = _talks(facts)["What OpenSearch offers & how CERN runs it"]
+    assert talk.attrs["attachment_names"][0].endswith(".pdf")
+    assert talk.attrs["attachment_urls"][0].startswith(
+        "https://indico.cern.ch/event/1716863/contributions/7317484/attachments/"
+    )
+    assert [f for f in facts if getattr(f, "subtype", None) == "document"] == []
+
+
+def test_a_talk_without_session_or_speakers_is_still_a_record(monkeypatch):
+    _live_routes(monkeypatch)
+    facts, _run = _facts(
+        IndicoLiveSource(event_ids=["1716863"], contributions=True)
+    )
+    talk = next(
+        t for t in _talks(facts).values() if t.node_id.endswith(":7332585")
+    )
+    assert talk.attrs["session"] == ""
+    assert talk.attrs["speakers"] == []
+    assert talk.attrs["title"]
+
+
+def test_timetable_fallback_also_yields_per_talk_records(monkeypatch):
+    _live_routes(monkeypatch, contributions=False)
+    source = IndicoLiveSource(event_ids=["1716863"], contributions=True)
+    facts, _run = _facts(source)
+    assert source.last_harvest_report["timetable_fallbacks"] == 1
+    talks = _talks(facts)
+    assert len(talks) == 2
+    talk = next(t for t in talks.values() if t.node_id.endswith(":7322581"))
+    assert talk.attrs["session"] == (
+        "Security and AI tools for exploration and development"
+    )
+    assert talk.attrs["speakers"] == ["Bendavid, Josh"]
+    assert talk.attrs["date"] == "2026-10-19T14:30:00"
+    assert talk.attrs["url"] == (
+        "https://indico.cern.ch/event/1716863/contributions/7322581/"
+    )
+    assert talk.attrs["attachment_urls"][0].startswith("https://indico.cern.ch/")
+
+
+def test_the_option_changes_the_probe_config_and_the_hash(monkeypatch):
+    off = IndicoLiveSource(event_ids=["1"])
+    on = IndicoLiveSource(event_ids=["1"], contributions=True)
+    assert off.change_probe._config_hash != on.change_probe._config_hash
+    # off hashes the same config it hashed before the option existed
+    from okg.deployment import ContentHashProbe
+    config = {"base_url": off.base_url, "event_ids": ["1"],
+              "category_ids": [], "max_events": None}
+    if hasattr(off, "since"):  # archi-okg#29 adds this key, always
+        config["since"] = off.since
+    before = ContentHashProbe(
+        content_items=off._probe_content_items,
+        config=config,
+        emit_targets=_emit_targets_of(off),
+    )
+    assert off.change_probe._config_hash == before._config_hash
+
+    from archi.sources.indico_live import _records_hash
+    event = _fixture("event_1716863_contributions.json")["results"][0]
+    items = event["contributions"]
+    plain = _record_from_event(event, "1716863", items, "https://indico.cern.ch")
+    rich = _record_from_event(event, "1716863", items, "https://indico.cern.ch",
+                              with_contributions=True)
+    assert _records_hash([plain]) != _records_hash([rich])
+    moved = [dict(items[0], session="Elsewhere")] + items[1:]
+    rich2 = _record_from_event(event, "1716863", moved, "https://indico.cern.ch",
+                               with_contributions=True)
+    assert _records_hash([rich]) != _records_hash([rich2])
+    for key, value in (("room", "Elsewhere"),
+                       ("endDate", {"date": "2026-10-21", "time": "23:00:00"})):
+        changed = [dict(items[0], **{key: value})] + items[1:]
+        other = _record_from_event(
+            event, "1716863", changed, "https://indico.cern.ch",
+            with_contributions=True)
+        assert _records_hash([rich]) != _records_hash([other]), key
+
+
+def _emit_targets_of(source):
+    from archi.sources.indico_live import IndicoLiveSource as cls
+    import archi.sources.indico_live as module
+    return [cls, module]
+
+
+def test_the_probe_fingerprints_the_fact_builders_too():
+    """The talk-emitting code is module-level, outside the class."""
+    import archi.sources.indico_live as module
+    probe = IndicoLiveSource(event_ids=["1"], contributions=True).change_probe
+    # same targets reproduce the same fingerprint; the class alone does not
+    same = ContentHashProbe_for(module, [IndicoLiveSource, module])
+    class_only = ContentHashProbe_for(module, IndicoLiveSource)
+    assert probe._emit_version == same._emit_version
+    assert probe._emit_version != class_only._emit_version
+
+
+def ContentHashProbe_for(module, targets):
+    from okg.deployment import ContentHashProbe
+    return ContentHashProbe(
+        content_items=lambda: [], config={"x": 1}, emit_targets=targets
+    )
+
+
+# --- a failed read is a failed event, not "no talks" -------------------
+
+def test_a_failed_contributions_and_timetable_read_is_a_failed_event(monkeypatch):
+    _routes(monkeypatch, {
+        "/export/event/1716863.json": {"results": [{"id": "1716863", "title": "T"}]},
+    }, fail=("detail=contributions", "/export/timetable/"))
+    source = IndicoLiveSource(event_ids=["1716863"], contributions=True)
+    facts, run = _facts(source)
+    assert source.last_harvest_report["failed_events"] == ["1716863"]
+    assert _talks(facts) == {}
+    assert run.completed_scope is False
+    assert run.health.status == "endpoint_failed"
+
+
+def test_a_failed_contributions_read_never_falls_back_to_the_timetable(monkeypatch):
+    """The timetable has no abstracts and omits unscheduled talks, so a
+    silent fallback would rewrite and then retract records."""
+    _routes(monkeypatch, {
+        "/export/timetable/1716863.json": _fixture("timetable_1716863.json"),
+        "/export/event/1716863.json": {"results": [{"id": "1716863", "title": "T"}]},
+    }, fail=("detail=contributions",))
+    source = IndicoLiveSource(event_ids=["1716863"], contributions=True)
+    facts, run = _facts(source)
+    assert source.last_harvest_report["failed_events"] == ["1716863"]
+    assert source.last_harvest_report["timetable_fallbacks"] == 0
+    assert _talks(facts) == {}
+    assert run.completed_scope is False
+
+
+def test_option_off_keeps_the_old_forgiving_behaviour(monkeypatch):
+    _routes(monkeypatch, {
+        "/export/event/1716863.json": {"results": [{"id": "1716863", "title": "T"}]},
+    }, fail=("detail=contributions", "/export/timetable/"))
+    source = IndicoLiveSource(event_ids=["1716863"])
+    _facts_, run = _facts(source)
+    assert source.last_harvest_report["failed_events"] == []
+    assert run.completed_scope is True
+
+
+# --- text handling and read-path parity --------------------------------
+
+def test_html_entities_decode_and_plain_angle_brackets_survive():
+    from archi.sources.indico_live import _contribution_records
+    items = [{
+        "id": "1", "db_id": 11, "title": "R&amp;D <b>news</b>",
+        "description": "<p>if a < b > c then&nbsp;x &lt;= y</p>",
+        "session": "Q&amp;A",
+    }]
+    (talk,) = _contribution_records({}, "9", items, "https://indico.cern.ch")
+    assert talk.title == "R&D news"
+    assert talk.description == "if a < b > c then x <= y"
+    assert talk.session == "Q&A"
+
+
+def test_an_untitled_talk_is_kept_under_a_fallback_title():
+    from archi.sources.indico_live import _contribution_records
+    items = [
+        {"id": "1", "db_id": 11, "title": "", "description": "An abstract only."},
+        {"id": "2", "db_id": 12, "title": "  "},
+    ]
+    one, two = _contribution_records({}, "9", items, "https://indico.cern.ch")
+    assert one.title == "An abstract only." and one.description == "An abstract only."
+    assert two.title == "Contribution 12"
+
+
+def test_a_talk_names_its_event_in_its_text(monkeypatch):
+    _live_routes(monkeypatch)
+    facts, _run = _facts(IndicoLiveSource(event_ids=["1716863"], contributions=True))
+    for talk in _talks(facts).values():
+        assert "Part of Knowledge Bases and Agents for CERN" in talk.attrs["text"]
+
+
+def test_one_talk_reads_the_same_on_both_paths(monkeypatch):
+    """Speaker and room text must match between the contributions
+    endpoint and the timetable fallback, or a fallback run rewrites the
+    talk and the next run rewrites it back."""
+    _live_routes(monkeypatch)
+    from_endpoint, _ = _facts(IndicoLiveSource(event_ids=["1716863"], contributions=True))
+    _live_routes(monkeypatch, contributions=False)
+    from_timetable, _ = _facts(IndicoLiveSource(event_ids=["1716863"], contributions=True))
+    a = next(t for t in _talks(from_endpoint).values() if t.node_id.endswith(":7322581"))
+    b = next(t for t in _talks(from_timetable).values() if t.node_id.endswith(":7322581"))
+    for key in ("speakers", "room", "session", "date", "end_date", "url", "title"):
+        assert a.attrs[key] == b.attrs[key], key

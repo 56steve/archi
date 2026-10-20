@@ -38,12 +38,18 @@ indico_live:
         - {subtype: document_chunk}
       edges:
         - {src_subtype: meeting_minutes, edge_type: contains, dst_subtype: document}
+        # Only emitted with `contributions: true` (below); declared so
+        # turning the option on needs no second edit. A deployment that
+        # copied an older indico_live.yaml must add this line first, or
+        # okg refuses the edges.
+        - {src_subtype: meeting_minutes, edge_type: contains, dst_subtype: meeting_minutes}
         - {src_subtype: document_chunk, edge_type: member_of, dst_subtype: document}
     output_scope_summary:
       summary: Indico events and their contributions, read live from the API
       nodes: [meeting_minutes, document, document_chunk]
       edges:
         - meeting_minutes contains document
+        - meeting_minutes contains meeting_minutes
         - document_chunk member_of document
   source_class: discovery_crawl
   record_identity_kind: scoped_locator
@@ -62,6 +68,11 @@ indico_live:
     # max_events bounds a category walk while trying it out. A bounded
     # run never claims complete scope, so leave it unset in production.
     # max_events: 25
+    # One meeting_minutes record per talk (title, speakers, session,
+    # time, abstract, own URL, attachment names and URLs), linked from
+    # the event. Off by default: on, the event record stops carrying
+    # every talk's text inline. Attachment text is not read.
+    # contributions: true
   sync:
     triggers: [manual, reconcile]
     default_event_mode: scope_complete

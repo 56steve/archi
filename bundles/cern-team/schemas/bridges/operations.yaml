@@ -226,6 +226,13 @@ classes:
           src_subtypes: MeetingMinutes
           dst_subtypes: Document
 
+      meeting_minutes_contains_meeting_minutes:
+        description: An Indico event owns one record per talk (indico_live with contributions on).
+        annotations:
+          edge_archetype: contains
+          src_subtypes: MeetingMinutes
+          dst_subtypes: MeetingMinutes
+
       meeting_minutes_references_site:
         annotations:
           edge_archetype: references
