@@ -718,6 +718,25 @@ The bundle ships JIRA, documentation sites, Indico and the TWiki EOS reader
 as `.yaml.example`. Rename one to `.yaml`, supply its credential by
 environment variable, and reinstall.
 
+**Indico talk images.** With `contributions: true` and `attachment_images: true`
+in `indico_live.yaml`, each talk record also lists its PDF, PNG and JPEG
+attachments as images that an agent can open with the MCP `inspect` tool
+(kind `image`; a PDF shows page 1). Nothing is downloaded at ingest. The
+deployment must allow the host, or okg refuses every fetch: add an
+`agent_surface` block to `deployment.yaml`. The block, with the prefix set to your
+Indico base URL, and what adding it changes (the served tool list, write
+launches, the old top-level `mcp:` keys) are in `indico_live.yaml.example`.
+Then, from the deployment folder:
+
+```bash
+git add -A && git commit -m "Indico talk images"   # an uncommitted edit makes publishes refuse
+okg catalog ownership claim --deployment . --json
+okg catalog load --deployment . --apply --json
+okg ingest --deployment myteam --include indico_live --progress
+```
+
+Restart `okg mcp-serve` (or reconnect your agent) so it reads the new block.
+
 For something the bundle does not ship, `okg add <source> --deployment
 myteam` only works for sources whose entry is already known to the
 deployment. For anything else it reports `activation_blocked` and writes

@@ -40,6 +40,14 @@ by a ``contains`` edge, so a search for a talk title returns that talk
 with its own citation. The event record then stops carrying every
 talk's text inline. Off, the output is exactly what it was.
 
+IMAGES OF ATTACHMENTS (option `attachment_images`, off by default, needs
+`contributions`). A talk's PDF, PNG and JPEG attachments become
+`okg_image` URL values on the talk record (attr `attachment_images`), so an
+agent can open them with okg's `inspect(kind="image")`. Nothing is fetched
+here: okg fetches the URL at read time, only from hosts the deployment
+allowlists under `agent_surface.images.url.prefixes`. Slide decks and other
+types stay names and URLs. See `indico_live.yaml.example`.
+
 Attachment text extraction (v2's MarkItDown slide conversion) is NOT
 ported here: it pulls a document-conversion dependency into the
 substrate path for a gain this connector can add later, and the
@@ -63,6 +71,7 @@ from okg.deployment import (
     ConnectorRun,
     ContentHashProbe,
     EdgeFact,
+    ImageRef,
     NodeFact,
     PreflightResult,
 )
@@ -78,6 +87,10 @@ from archi.sources.indico import (
 
 DEFAULT_BASE_URL = "https://indico.cern.ch"
 DEFAULT_TIMEOUT = 30.0
+#: okg fetches an image URL only up to its `agent_surface.images.url.max_bytes`
+#: (10 MiB by default); a larger attachment would only ever read as an error.
+DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_IMAGES_PER_TALK = 3
 
 
 #: Indico's category export path. It is ``/export/categ/``, NOT
@@ -107,6 +120,9 @@ class IndicoLiveSource:
         category_ids: list[str] | tuple[str, ...] = (),
         cookie_file_env: str | None = None,
         contributions: bool = False,
+        attachment_images: bool = False,
+        max_images_per_talk: int = DEFAULT_MAX_IMAGES_PER_TALK,
+        max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
         required: bool = False,
         max_events: int | None = None,
         timeout: float = DEFAULT_TIMEOUT,
@@ -127,6 +143,20 @@ class IndicoLiveSource:
         #: Off by default: it adds records and shortens the event record's
         #: text, which would change what a current user already has.
         self.contributions = contributions
+        #: PDF, PNG and JPEG attachments of a talk as `okg_image` URL values.
+        #: Off by default; needs `contributions` (the talk record carries them).
+        if attachment_images and not contributions:
+            raise ValueError(
+                "attachment_images needs contributions: true; the images are "
+                "attached to the per-talk records"
+            )
+        if max_images_per_talk < 1 or max_image_bytes < 1:
+            raise ValueError(
+                "max_images_per_talk and max_image_bytes must be >= 1"
+            )
+        self.attachment_images = attachment_images
+        self.max_images_per_talk = max_images_per_talk
+        self.max_image_bytes = max_image_bytes
         self.required = required
         if max_events is not None and max_events < 1:
             raise ValueError(
@@ -153,6 +183,14 @@ class IndicoLiveSource:
                 "max_events": self.max_events,
                 # Only when on, so an existing user's probe hash is unchanged.
                 **({"contributions": True} if self.contributions else {}),
+                **(
+                    {
+                        "attachment_images": True,
+                        "max_images_per_talk": self.max_images_per_talk,
+                        "max_image_bytes": self.max_image_bytes,
+                    }
+                    if self.attachment_images else {}
+                ),
             },
             # The class alone misses the module-level fact builders
             # (`_event_facts`, `_contribution_node`); fingerprint both.
@@ -414,12 +452,20 @@ class IndicoLiveSource:
             records.append(_record_from_event(
                 event, event_id, contributions, self.base_url,
                 with_contributions=self.contributions,
+                image_limit=(
+                    self.max_images_per_talk if self.attachment_images else 0
+                ),
+                image_max_bytes=self.max_image_bytes,
             ))
 
         return records, {
             "events": len(records),
             "contributions": sum(
                 len(getattr(r, "contributions", ())) for r in records
+            ),
+            "image_urls_refused": sum(
+                t.images_refused
+                for r in records for t in getattr(r, "contributions", ())
             ),
             "failed_events": failed,
             "truncated": truncated,
@@ -580,6 +626,8 @@ def _record_from_event(
     base_url: str,
     *,
     with_contributions: bool = False,
+    image_limit: int = 0,
+    image_max_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
 ) -> IndicoEventRecord:
     """Build the record shape the cache-backed source already emits.
 
@@ -618,7 +666,8 @@ def _record_from_event(
     record_class = IndicoLiveEventRecord if with_contributions else IndicoEventRecord
     extra = (
         {"contributions": _contribution_records(
-            event, str(event_id), contributions, base_url
+            event, str(event_id), contributions, base_url,
+            image_limit=image_limit, image_max_bytes=image_max_bytes,
         )}
         if with_contributions else {}
     )
@@ -660,6 +709,11 @@ class IndicoContribution:
     speaker_affiliations: tuple[str, ...] = ()
     attachment_urls: tuple[str, ...] = ()
     attachment_names: tuple[str, ...] = ()
+    #: URLs of attachments okg can render (see `_renderable`), capped.
+    #: Empty unless the `attachment_images` option is on.
+    image_urls: tuple[str, ...] = ()
+    #: Renderable attachments whose URL okg's rules refuse (skipped).
+    images_refused: int = 0
 
     @property
     def node_id(self) -> str:
@@ -692,11 +746,66 @@ def _absolute(url: str, base_url: str) -> str:
     return url if url.startswith("http") else f"{base_url}{url}"
 
 
+#: What okg can turn into an image: PNG, JPEG, and page 1 of a PDF.
+_RENDERABLE_TYPES = frozenset({"image/png", "image/jpeg", "application/pdf"})
+_RENDERABLE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".pdf")
+
+
+URL_REFUSED = "url_refused"
+
+
+def _renderable(
+    attachment: dict[str, Any],
+    url: str,
+    max_bytes: int,
+    *,
+    folder_protected: bool = False,
+) -> str | None:
+    """Whether okg can show this attachment through an anonymous fetch.
+
+    The contributions export names a `content_type`; the timetable export
+    does not, so the file name's extension decides there. A protected
+    attachment is skipped: okg sends no cookies or credentials, so it
+    could only read as an error. So is a link entry, a file reported over
+    `max_bytes`, and anything else (slide decks, archives).
+
+    Returns None when it is renderable, else the reason. `URL_REFUSED`
+    means okg's own URL rules refuse the URL (a `..` segment, a backslash
+    or `%5c`, `@` in the host, a non-https scheme, whitespace): the
+    attachment is skipped and counted, never allowed to fail the run."""
+    if attachment.get("is_protected") or folder_protected:
+        return "protected"
+    if attachment.get("type") not in (None, "file"):
+        return "not_a_file"
+    size = attachment.get("size")
+    if isinstance(size, int) and size > max_bytes:
+        return "too_large"
+    content_type = str(attachment.get("content_type") or "").split(";")[0]
+    if content_type:
+        if content_type.strip().lower() not in _RENDERABLE_TYPES:
+            return "not_renderable"
+    else:
+        name = str(attachment.get("filename") or attachment.get("title") or "")
+        path = url.split("?", 1)[0]
+        if not (name or path).lower().endswith(_RENDERABLE_EXTENSIONS):
+            return "not_renderable"
+    # The value is built again when the fact is emitted; if okg refuses it
+    # here it would raise there and fail the whole source run.
+    try:
+        ImageRef.url(url)
+    except Exception:
+        return URL_REFUSED
+    return None
+
+
 def _contribution_records(
     event: dict[str, Any],
     event_id: str,
     contributions: list[dict[str, Any]],
     base_url: str,
+    *,
+    image_limit: int = 0,
+    image_max_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
 ) -> tuple[IndicoContribution, ...]:
     """Turn the contribution dicts into per-talk records.
 
@@ -736,19 +845,34 @@ def _contribution_records(
             )
             affiliations.append(f"{name} ({affiliation})" if affiliation else name)
         files = [
-            attachment
+            (attachment, bool(folder.get("is_protected")))
             for folder in item.get("folders") or []
             for attachment in (folder.get("attachments") or [])
-        ] + list((item.get("attachments") or {}).get("files") or [])
+        ] + [
+            (attachment, False)
+            for attachment in (item.get("attachments") or {}).get("files") or []
+        ]
         urls: list[str] = []
         names: list[str] = []
-        for attachment in files:
+        images: list[str] = []
+        refused = 0
+        for attachment, folder_protected in files:
             url = attachment.get("download_url") or attachment.get("url")
             if url and _absolute(url, base_url) not in urls:
-                urls.append(_absolute(url, base_url))
+                absolute = _absolute(url, base_url)
+                urls.append(absolute)
                 names.append(str(
                     attachment.get("filename") or attachment.get("title") or ""
                 ))
+                if len(images) < image_limit:
+                    why = _renderable(
+                        attachment, absolute, image_max_bytes,
+                        folder_protected=folder_protected,
+                    )
+                    if why is None:
+                        images.append(absolute)
+                    elif why == URL_REFUSED:
+                        refused += 1
         records.append(IndicoContribution(
             event_id=event_id,
             contribution_id=contribution_id,
@@ -767,6 +891,8 @@ def _contribution_records(
             speaker_affiliations=tuple(affiliations),
             attachment_urls=tuple(urls),
             attachment_names=tuple(names),
+            image_urls=tuple(images),
+            images_refused=refused,
         ))
     return tuple(records)
 
@@ -827,6 +953,14 @@ def _contribution_node(
             "chairs": [],
             "attachment_urls": list(contribution.attachment_urls),
             "attachment_names": list(contribution.attachment_names),
+            # okg_image URL values, read by inspect(kind="image"). Only
+            # present when the `attachment_images` option found some.
+            **(
+                {"attachment_images": [
+                    ImageRef.url(url) for url in contribution.image_urls
+                ]}
+                if contribution.image_urls else {}
+            ),
             "session": contribution.session,
             "room": contribution.room,
             "parent_event_id": record.event_id,
@@ -875,7 +1009,8 @@ def _records_hash(records: list[IndicoEventRecord]) -> str:
             digest.update(json.dumps(
                 [talk.contribution_id, talk.title, talk.session, talk.date,
                  talk.end_date, talk.room, talk.speakers,
-                 talk.attachment_urls],
+                 talk.attachment_urls,
+                 *([talk.image_urls] if talk.image_urls else [])],
                 default=str,
             ).encode("utf-8"))
     return digest.hexdigest()

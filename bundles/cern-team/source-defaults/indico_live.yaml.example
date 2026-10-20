@@ -73,6 +73,40 @@ indico_live:
     # the event. Off by default: on, the event record stops carrying
     # every talk's text inline. Attachment text is not read.
     # contributions: true
+    # Images of talk attachments (needs contributions: true). A talk's
+    # PDF, PNG and JPEG attachments get `okg_image` URL values in its
+    # `attachment_images` attr, so an agent can open them with
+    # inspect(kind="image"): a PDF shows page 1. Nothing is downloaded
+    # at ingest; okg fetches the URL when an agent asks, so the
+    # deployment must allow the host (see below). Slide decks and other
+    # types stay names and URLs. Protected attachments and files over
+    # max_image_bytes are skipped. Off by default.
+    # attachment_images: true
+    # max_images_per_talk: 3
+    # max_image_bytes: 10485760
+    #
+    # ALSO REQUIRED, in deployment.yaml, for the images to open: okg serves
+    # the image kind only when the deployment has an `agent_surface` block,
+    # and fetches only from hosts listed in it. Read what adding the block
+    # changes before you copy it:
+    #   - `served` becomes EXACTLY the tools listed. Without any block a
+    #     read `okg mcp-serve` offers the six read tools plus `query`; the
+    #     list below reproduces that, so delete `query` only if you mean to.
+    #   - an `--allow-writes` launch is refused unless `served` also names
+    #     a write tool (for example `record`, `propose`).
+    #   - top-level `mcp:`, `mcp_instructions:` and
+    #     `tool_description_overrides:` become load errors. Move them to
+    #     `agent_surface.served`, `agent_surface.instructions` and
+    #     `agent_surface.projections.chat.description_overrides`.
+    #   - if you already have an `agent_surface` block, add only the
+    #     `images` part to it.
+    # Replace the prefix with your Indico base URL (the `base_url` above).
+    #
+    #   agent_surface:
+    #     served: [inspect, search, expand, filter, map, aggregate, query]
+    #     images:
+    #       url:
+    #         prefixes: ["https://indico.cern.ch/"]
   sync:
     triggers: [manual, reconcile]
     default_event_mode: scope_complete
