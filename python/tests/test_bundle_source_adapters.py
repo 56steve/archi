@@ -431,7 +431,7 @@ def test_a_misspelled_parameter_fails_when_the_adapter_is_bound():
 
 
 #: Entries that strict admission still refuses, and why. NOT about the
-#: adapter signature: these two author `source_name` in `params`, which is a
+#: adapter signature: this one authors `source_name` in `params`, which is a
 #: substrate-owned key (`RESERVED_ADAPTER_PARAM_NAMES`), so the substrate
 #: refuses them with `source_param_reserved` before it ever looks at the
 #: constructor. Pre-existing and dormant -- cern-team ships on the legacy
@@ -440,7 +440,6 @@ def test_a_misspelled_parameter_fails_when_the_adapter_is_bound():
 #: from this set when it is fixed; the test will tell you if you forget.
 STRICT_PATH_KNOWN_REFUSALS = {
     ("docsite.yaml.example", "docsite"): "source_param_reserved",
-    ("twiki_crawl.yaml.example", "twiki_crawl"): "source_param_reserved",
 }
 
 
@@ -549,6 +548,118 @@ def test_an_install_answer_reaches_the_source_byte_for_byte(tmp_path, answer):
     params = body["cmssw_releases"]["params"]
     assert params["map_cache_path"] == answer
     assert params["map_cache_digest"] == digest
+
+
+# --- TWiki comes from an EOS dump, and only from one -------------------------
+
+#: A tiny synthetic dump: one topic per file, raw markup with %META lines, as
+#: the EOS export lays them out. Invented text only; no real wiki content.
+_DUMP_TOPICS = {
+    "DemoHome": (
+        '%META:TOPICINFO{author="jdoe" date="1700000000" version="3"}%\n'
+        "---+ Demo home\n"
+        "Welcome. See [[DemoTransfers][the transfer notes]].\n"
+    ),
+    "DemoTransfers": (
+        '%META:TOPICINFO{author="jdoe" date="1700000000" version="1"}%\n'
+        '%META:TOPICPARENT{name="DemoHome"}%\n'
+        "---+ Demo transfers\n"
+        "Transfers are drained nightly by the demo team.\n"
+    ),
+}
+
+
+def test_twiki_in_the_bundle_is_the_eos_dump_reader_and_nothing_else():
+    """The decision: one TWiki parser path, no live crawl, no web fallback.
+
+    Every bundle entry that names a TWiki reader must be ``twiki_eos``, and its
+    ``eos_root`` must come from the install answer so an operator points it at
+    their dump rather than editing the file.
+    """
+    twiki_entries = [
+        (filename, name, entry)
+        for filename, name, entry in ALL_ENTRIES
+        if entry.get("module") == "archi.sources.twiki"
+    ]
+    assert [(f, n, e["class"]) for f, n, e in twiki_entries] == [
+        ("twiki_eos.yaml.example", "twiki_eos", "TwikiEOSAdapter")
+    ]
+    params = twiki_entries[0][2]["params"]
+    assert params["eos_root"] == "${twiki_eos_root}"
+    assert params["required"] is True
+    assert not (SOURCE_DEFAULTS / "twiki_crawl.yaml.example").exists()
+
+    profile = yaml.safe_load(
+        (SOURCE_DEFAULTS.parent / "profile.yaml").read_text(encoding="utf-8")
+    )
+    ids = {q["id"] for q in profile["init_questions"]}
+    assert "twiki_eos_root" in ids
+    assert not {"twiki_base_url", "twiki_seed_topic", "twiki_max_depth"} & ids
+
+
+@pytest.mark.parametrize(
+    "dump_name", ["dump", "a dump with spaces"], ids=["plain", "spaces"]
+)
+def test_the_twiki_eos_root_answer_reaches_the_reader_and_reads_the_dump(
+    tmp_path, monkeypatch, dump_name
+):
+    """Answer ``twiki_eos_root``, enable the example, and the reader reads it.
+
+    Goes through okg's own ``build_plan`` so the placeholder, the quoting and
+    the rename are the ones an installer hits, then runs the adapter on the
+    resolved parameters against a synthetic dump.
+    """
+    import shutil
+
+    from okg.substrate.deployment_bootstrap.profile_init import (
+        build_plan,
+        discover_profile,
+    )
+
+    dump = tmp_path / dump_name
+    dump.mkdir()
+    for topic, text in _DUMP_TOPICS.items():
+        (dump / f"{topic}.txt").write_text(text, encoding="utf-8")
+
+    profiles = tmp_path / "profiles"
+    shutil.copytree(SOURCE_DEFAULTS.parent.parent, profiles)
+    sd = profiles / "cern-team" / "source-defaults"
+    (sd / "twiki_eos.yaml.example").rename(sd / "twiki_eos.yaml")
+    monkeypatch.setenv("OKG_PROFILES_DIR", str(profiles))
+    plan = build_plan(
+        profile=discover_profile("cern-team"),
+        deployment_name="qt",
+        deployments_root=tmp_path / "deployments",
+        raw_answers={
+            "deployment_name": "qt",
+            "postgres_dsn": "postgresql://localhost/qt",
+            "twiki_eos_root": str(dump),
+        },
+    )
+    entry = yaml.safe_load(plan.source_defaults["twiki_eos"])["twiki_eos"]
+    assert entry["params"]["eos_root"] == str(dump)
+
+    adapter = _adapter_class(entry)(**entry["params"])
+    run, facts = _run(adapter)
+    assert run.completed_scope is True
+    pages = {
+        f.node_id for f in facts
+        if isinstance(f, NodeFact) and f.subtype == "documentation_page"
+    }
+    assert pages == {"twiki:CMS:DemoHome", "twiki:CMS:DemoTransfers"}
+
+
+def test_the_twiki_eos_reader_refuses_a_missing_dump_instead_of_shrinking(tmp_path):
+    entry = _entry("twiki_eos", "twiki_eos.yaml.example")
+    params = _params(
+        "twiki_eos",
+        "twiki_eos.yaml.example",
+        tmp_path,
+        extra={"${twiki_eos_root}": str(tmp_path / "no-such-dump")},
+    )
+    run = _adapter_class(entry)(**params).run("run-1", mode="scope_complete")
+    assert list(run.facts) == []
+    assert run.completed_scope is False
 
 
 # --- comp-ops readers with no bundle entry ---------------------------------

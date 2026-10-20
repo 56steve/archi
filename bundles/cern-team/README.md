@@ -3,8 +3,8 @@
 A generic CERN team knowledge instance, installable with the okg
 profile installer. It composes:
 
-- **Connectors** (source-defaults/): `twiki_eos` (EOS-snapshot TWiki
-  reader), `docsite` (documentation-site records cache), `jira`
+- **Connectors** (source-defaults/): `twiki_eos` (TWiki, from an EOS dump only;
+  no live crawl), `docsite` (documentation-site records cache), `jira`
   (issue records cache, credential by env-var reference only),
   `cmssw_releases` (live public cms-bot releases.map fetch, no auth).
   `indico` ships as an optional template

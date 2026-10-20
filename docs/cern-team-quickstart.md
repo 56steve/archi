@@ -16,8 +16,8 @@ was checked as follows: the archi suite gave 1795 passed and 1 failed (a timing 
 unmodified `main`), and the step 2 container was started on 2026-10-20 and
 listed timescaledb, pg_cron, pg_textsearch, vector and btree_gist among its extensions (see
 [okg alignment](okg-alignment.md)); steps 3–8 have not been re-run on it.
-Step 8 (TWiki) needs a CERN login today, even for public pages, and says so
-where it appears.
+Step 8 (TWiki, from an EOS dump) is covered by tests on a synthetic dump but
+has not been re-run end to end, and says so where it appears.
 
 **A note on okg versions.** This document pins AKMON v0.2.0, the public
 release of okg (`github.com/mitdbg/akmon`). The package and the `okg`
@@ -624,38 +624,97 @@ re-run:
 
 ```bash
 okg-venv/bin/okg ingest --deployment myteam --progress \
-  --exclude docsite,jira,twiki_eos,twiki_crawl
+  --exclude docsite,jira,twiki_eos
 ```
 
 ## 8. Adding a TWiki
 
-> **Not verified** — no CERN SSO cookie was available where this was
-> written. The requirement below is evidenced; the working configuration is
-> not.
+> **Not re-run end to end.** The reader and the config below are covered by
+> tests against a synthetic dump. A full install over a real dump has not
+> been repeated for this guide.
 
-**A CERN SSO cookie is required even for a public wiki page.** The
-connector reads a topic's source through `?raw=all`, and CERN redirects
-that to its login page even where the rendered page opens for anyone. The
-connector detects the login bounce and refuses to ingest it — correctly: a
-login page stored as wiki text is worse than a clean failure.
+TWiki reaches this bundle from an **EOS dump only**. There is no live crawl
+and no anonymous web fallback, so no login or cookie is involved: you point
+the bundle at a directory of files you already have.
 
-Run the CERN SSO login helper (it prompts for a code from your
-authenticator), then enable the connector and reinstall into a fresh
-deployment:
+**What the dump must look like.** One raw-markup file per topic, named
+`<Topic>.txt`, each including its `%META:` lines. Subdirectories are
+subwebs. Topics of the web named by `web_root` (`CMS` in the shipped file)
+sit directly in the dump directory. Do not wrap them in an extra `CMS/`
+folder, or every page id is double-prefixed (`twiki:CMS:CMS:<Topic>`).
+
+**Point `eos_root` at the dump.** Two steps: rename the example to enable
+the source, and answer the one install question it asks, `twiki_eos_root`.
+Use an absolute path, because a relative one resolves against the
+directory you run okg from.
 
 ```bash
-export CERN_TWIKI_COOKIE_FILE=/path/to/cookies.txt
-mv "$OKG_PROFILES_DIR/cern-team/source-defaults/twiki_crawl.yaml.example" \
-   "$OKG_PROFILES_DIR/cern-team/source-defaults/twiki_crawl.yaml"
+export TWIKI_DUMP=/path/to/your/twiki-eos-dump    # holds <Topic>.txt files
+mv "$OKG_PROFILES_DIR/cern-team/source-defaults/twiki_eos.yaml.example" \
+   "$OKG_PROFILES_DIR/cern-team/source-defaults/twiki_eos.yaml"
 ```
 
-Leave the crawl depth at `0`. At depth 1 it follows every link on the seed
-page, and one unreachable topic makes the whole run refuse to claim it saw
-everything.
+*First install.* Do the rename above in step 3, next to the repository
+renames, and add `--twiki-eos-root "$TWIKI_DUMP"` to the `okg install`
+command there. Keep the `--archi-data-root "$ARCHI_DATA_ROOT/data"` flag
+too: `twiki_eos_root` does not follow it, so it must be given on its own.
+
+*Already did step 3?* `okg install` will not re-run over an existing
+deployment (step 4), and the TWiki entry is not in your deployment until
+it is installed. Do the rename above, then reinstall with `--force --yes`,
+repeating every flag you gave in step 3 and adding the TWiki one:
+
+```bash
+okg-venv/bin/okg install --profile cern-team \
+  --deployment-name myteam \
+  --postgres-dsn "$OKG_DSN" \
+  --twiki-eos-root "$TWIKI_DUMP" \
+  --archi-data-root "$ARCHI_DATA_ROOT/data" \
+  --force --yes
+# plus the --github-repo-* / --gitlab-repo-* flags from step 3, if you used them
+```
+
+Keeping the data root outside `deployments/` (step 3) is what makes this
+safe: `--force` deletes the deployment directory, not your caches or dump.
+
+Either way, finish as in step 3. The install stops at the publish until
+the deployment config is committed; then read the sources and publish:
+
+```bash
+git -C deployments add -A
+git -C deployments commit -m "myteam deployment config"
+
+okg-venv/bin/okg ingest --deployment myteam --progress
+okg-venv/bin/okg run --once --deployment myteam --apply
+```
+
+`okg ingest` reads every source, the dump included, and stages the
+result. `okg run --once` does not read sources: it publishes what ingest
+staged.
+
+The answer lands in the source as `eos_root: <your path>`. To read part of
+the dump, edit the renamed file before installing: `seed_topics` and
+`max_depth` for a subtree, `physics_filter: true` for physics topics only,
+`page_index_path` to write the list of kept page ids. If the dump root is
+a web other than `CMS`, set `web_root` to its name.
+
+The source is `required`: a missing or empty dump blocks the publish
+instead of shrinking the graph without telling you.
+
+**Check it.** Count the topics you handed over, then confirm the graph
+returns one of them:
+
+```bash
+find "$TWIKI_DUMP" -name '*.txt' | wc -l        # topics in the dump
+okg-venv/bin/okg search --deployment myteam --query "<a word from one of your topics>"
+```
+
+The search should return a `twiki:<Web>:<Topic>` page whose text is that
+topic. A count of `0` means `eos_root` points at the wrong directory.
 
 ## Adding other sources
 
-The bundle ships JIRA, documentation sites, Indico and both TWiki readers
+The bundle ships JIRA, documentation sites, Indico and the TWiki EOS reader
 as `.yaml.example`. Rename one to `.yaml`, supply its credential by
 environment variable, and reinstall.
 
@@ -668,8 +727,8 @@ nothing, so write the entry in `source_registry.yaml` yourself (copy a
 **Replacing or removing a source does not remove its old records.** Records
 leave the graph only when the source that wrote them runs again and no longer
 sees them. A source you removed from the deployment never runs, so its old
-records stay and can show up next to the new ones (a retired TWiki reader's
-pages next to the crawler's, for instance). They live in the database, not in
+records stay and can show up next to the new ones (an old crawl's TWiki
+pages next to the EOS reader's, for instance). They live in the database, not in
 the deployment folder, so reinstalling the folder does not clear them; the
 run that was checked went away only with a fresh, empty database. So decide
 your sources before you start using the graph, and if you must change them
@@ -753,4 +812,3 @@ it will re-ingest happily and still fail to publish.
 - **`OKG_PROFILES_DIR`** — okg cannot find bundles inside an installed
   package, so the variable is required even though the wheel carries them.
 - **The role passwords**, when the server authenticates by password.
-- **The TWiki cookie** — the CERN SSO login is interactive by design.

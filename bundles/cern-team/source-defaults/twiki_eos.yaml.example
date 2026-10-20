@@ -1,17 +1,19 @@
-# TWiki connector — EOS-snapshot reader. Adapted from the registry
-# template in archi/sources/twiki.py (parser + emission proven against
-# the cms parity corpus). Reads raw topic .txt files (with %META
-# lines) from a local snapshot under
-# ${archi_data_root}/twiki-snapshot/<Topic>.txt and emits topic
-# pages, their text chunks, and topic-to-topic reference edges
-# (topic_parent / wiki_link / bare_wikiword). Layout note: web_root
-# names the web of the SNAPSHOT ROOT — topics of that web sit
-# directly in the root (subdirectories are subwebs). A root that
-# itself contains a <web_root>/ subdir double-prefixes every page id
-# (twiki:CMS:CMS:...).
+# TWiki connector — the ONLY way TWiki reaches the cern-team bundle:
+# an EOS dump read from disk. There is no live crawl and no anonymous
+# web fallback. Adapted from the registry template in
+# archi/sources/twiki.py (parser + emission proven against the cms
+# parity corpus). Reads raw topic .txt files (with %META lines) from
+# the directory you answer for `twiki_eos_root` (default
+# data/twiki-snapshot) and emits topic pages, their text chunks, and
+# topic-to-topic reference edges (topic_parent / wiki_link /
+# bare_wikiword). Layout note: web_root names the web of the DUMP
+# ROOT — topics of that web sit directly in the root (subdirectories
+# are subwebs). A root that itself contains a <web_root>/ subdir
+# double-prefixes every page id (twiki:CMS:CMS:...).
 #
-# eos_root is set explicitly (no TWIKI_EOS_ROOT env indirection), so
-# no credential_refs entry. `required: true`: a missing snapshot fails
+# To enable: rename this file to twiki_eos.yaml. eos_root comes from the
+# `twiki_eos_root` install answer (no TWIKI_EOS_ROOT env indirection),
+# so no credential_refs entry. `required: true`: a missing dump fails
 # preflight loudly instead of silently shrinking scope.
 twiki_eos:
   module: archi.sources.twiki
@@ -46,7 +48,7 @@ twiki_eos:
   publication_mode: published_generation
   required_for_baseline: false
   params:
-    eos_root: ${archi_data_root}/twiki-snapshot
+    eos_root: '${twiki_eos_root}'
     web_root: CMS
     required: true
     # Optional seeded subtree instead of the whole snapshot:
