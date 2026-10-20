@@ -78,10 +78,13 @@ init_questions:
     description: |
       Root for the connector cache files (jira/, docsite/,
       cmssw-releases/, twiki-snapshot/ by default). The default `data` is
-      deployment-dir-relative: run okg commands from the deployment
-      dir, or export ARCHI_DATA_ROOT=<deployment dir> so the archi
-      cache resolver anchors relative paths there. Pass an absolute
-      path to decouple the data root from the deployment dir.
+      relative. The archi cache readers anchor a relative root on
+      ARCHI_DATA_ROOT when it is set, but repository checkouts
+      (repo_root, `<data root>/repos/<name>`) resolve against the
+      directory okg runs from and do not follow ARCHI_DATA_ROOT. Pass
+      an absolute path (the quickstart uses
+      `--archi-data-root "$ARCHI_DATA_ROOT/data"`) and keep it outside
+      the deployment dir, which `okg install --force` deletes.
 
   - id: cmssw_map_path
     prompt: path to a reviewed, immutable CMSSW releases.map (frozen mode
