@@ -190,6 +190,27 @@ class CDSSource:
             records, complete, report = self._harvest()
         self.last_harvest_report = report
 
+        if report["truncated"] and not report["incomplete_sets"]:
+            # The operator's own max_records bound stopped the walk. That is
+            # a choice, not a failure: report healthy so admission lets the
+            # publish through, but claim no complete scope (a partial harvest
+            # must never retract the records it did not fetch).
+            return ConnectorRun(
+                facts=self._facts(records, run_id),
+                completed_scope=False,
+                run_mode=mode,
+                health=ConnectorHealth(
+                    status="ok", mode="live",
+                    endpoint=self.base_url, record_count=len(records),
+                    content_hash=_records_hash(records),
+                    reason=(
+                        f"bounded by max_records={self.max_records}: "
+                        f"harvested {len(records)} records of "
+                        f"{', '.join(self.sets)}; the rest of the set was "
+                        f"not fetched, so no complete scope is claimed"
+                    ),
+                ),
+            )
         if not complete:
             # A resumption chain that broke mid-walk: the records that
             # did arrive look fine, so claiming complete scope here would

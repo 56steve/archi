@@ -46,7 +46,9 @@ cds:
       - cerncds:cms-notes
     required: false
     # Bound the harvest while trying it out. Unset harvests the sets
-    # whole; a bounded run never claims complete scope.
+    # whole. A run that stops at this bound is healthy (the publish goes
+    # ahead) but claims no complete scope, so it never retracts records
+    # it did not fetch. A harvest that breaks mid-way is still a failure.
     # max_records: 200
   sync:
     triggers: [manual, reconcile]
