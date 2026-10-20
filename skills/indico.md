@@ -19,6 +19,11 @@ graph, and say so when the graph's snapshot is older than the question needs.
   about a talk, speaker or session wants `event_type: "contribution"`. Talks
   carry their event's category, so an unfiltered category search returns both.
   Attachment names and URLs are in attrs; attachment text is not.
+  With `attachment_images: true`, a talk's PDF/PNG/JPEG attachments are also
+  `okg_image` URL values in its `attachment_images` attr: open one with
+  `inspect(target={"kind":"image","node_id":<talk id>})` (a PDF shows page 1;
+  `panel` picks another). It works only if the deployment allows the Indico
+  host for images; an unavailable panel says why.
 - `document` nodes for PDF attachments whose text was extracted, with
   `contains` edges from the meeting, and `document_chunk` nodes carrying the
   extracted text (`member_of` / `contains` chunk edges). Non-PDF attachments

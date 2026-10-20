@@ -20,6 +20,14 @@ reimplementation of OKG services.
 
 ## Current state (update this section when it changes)
 
+**First use of okg's image SDK (2026-10-21).** `archi.sources.indico_live` imports
+`okg.deployment.ImageRef` and, with the off-by-default `attachment_images`
+option, puts `ImageRef.url` values on talk records so an agent can open a
+talk's PDF, PNG or JPEG attachment with `inspect(kind="image")`. okg fetches
+the URL at read time, only from hosts in the deployment's
+`agent_surface.images.url.prefixes`; archi downloads and stores nothing. Tested
+against the v0.2.0 release (no pin change).
+
 **CI and the quickstart now use the public AKMON v0.2.0 release instead of
 private `mitdbg/okg` (2026-10-20).** AKMON (`github.com/mitdbg/akmon`) is the
 public release of okg. The Python package and the `okg` command keep their
@@ -397,7 +405,7 @@ below it is still private substrate, and all of it is enricher-side.
 
 ```
 okg.deployment:
-    NodeFact, EdgeFact, ProgressMarker,
+    NodeFact, EdgeFact, ImageRef, ProgressMarker,
     ConnectorRun, ConnectorHealth, PreflightResult, Checkpoint,
     ConnectorAdapter,
     ContentHashProbe, MutableApiProbe,

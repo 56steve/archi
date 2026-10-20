@@ -619,3 +619,224 @@ def test_one_talk_reads_the_same_on_both_paths(monkeypatch):
     b = next(t for t in _talks(from_timetable).values() if t.node_id.endswith(":7322581"))
     for key in ("speakers", "room", "session", "date", "end_date", "url", "title"):
         assert a.attrs[key] == b.attrs[key], key
+
+
+# --- images of attachments (option `attachment_images`) ----------------
+#
+# Attachment shapes below are the real export's (fixtures/indico/); the
+# png/jpg/protected/oversized entries are the same shape with another
+# file name, type, flag or size.
+
+_BASE = "https://indico.cern.ch/event/1716863/contributions/7317484/attachments/1/"
+
+
+def _attachment(name, content_type, **extra):
+    return dict(
+        {"_type": "attachment", "type": "file", "is_protected": False,
+         "download_url": _BASE + name.replace(" ", "%20"),
+         "title": name, "filename": name, "content_type": content_type,
+         "size": 1000},
+        **extra,
+    )
+
+
+def _image_routes(monkeypatch, attachments):
+    event = _fixture("event_1716863_contributions.json")
+    talk = next(
+        c for c in event["results"][0]["contributions"]
+        if str(c.get("db_id")) == "7317484"
+    )
+    talk["folders"] = [{"attachments": attachments}]
+    plain = dict(event["results"][0])
+    plain.pop("contributions")
+    _routes(monkeypatch, {
+        "detail=contributions": event,
+        "/export/event/1716863.json": {"results": [plain]},
+    })
+
+
+def _talk_node(facts):
+    return next(
+        f for f in facts
+        if isinstance(f, NodeFact)
+        and f.node_id == "meeting_minutes:1716863:contribution:7317484"
+    )
+
+
+MIXED = [
+    ("slides.pdf", "application/pdf"),
+    ("deck.pptx", "application/vnd.openxmlformats-officedocument."
+                  "presentationml.presentation"),
+    ("plot.png", "image/png"),
+    ("photo.jpg", "image/jpeg"),
+]
+
+
+def test_renderable_attachments_become_image_values(monkeypatch):
+    _image_routes(monkeypatch, [_attachment(n, t) for n, t in MIXED])
+    source = IndicoLiveSource(
+        event_ids=["1716863"], contributions=True, attachment_images=True
+    )
+    facts, run = _facts(source)
+    talk = _talk_node(facts)
+    assert talk.attrs["attachment_images"] == [
+        {"okg_image": "url", "url": _BASE + "slides.pdf"},
+        {"okg_image": "url", "url": _BASE + "plot.png"},
+        {"okg_image": "url", "url": _BASE + "photo.jpg"},
+    ]
+    # the deck is still a name and a URL, as before
+    assert talk.attrs["attachment_names"] == [n for n, _ in MIXED]
+    assert len(talk.attrs["attachment_urls"]) == 4
+    assert run.completed_scope is True
+
+
+def test_images_per_talk_are_capped(monkeypatch):
+    _image_routes(monkeypatch, [_attachment(n, t) for n, t in MIXED])
+    facts, _run = _facts(IndicoLiveSource(
+        event_ids=["1716863"], contributions=True, attachment_images=True,
+        max_images_per_talk=2,
+    ))
+    urls = [v["url"] for v in _talk_node(facts).attrs["attachment_images"]]
+    assert urls == [_BASE + "slides.pdf", _BASE + "plot.png"]
+
+
+def test_protected_oversized_link_and_unknown_attachments_are_skipped(monkeypatch):
+    _image_routes(monkeypatch, [
+        _attachment("secret.pdf", "application/pdf", is_protected=True),
+        _attachment("huge.pdf", "application/pdf", size=10 * 1024 * 1024 + 1),
+        _attachment("page", "text/html", type="link"),
+        _attachment("data.zip", "application/zip"),
+        _attachment("ok.png", "image/png", size=10 * 1024 * 1024),
+    ])
+    facts, _run = _facts(IndicoLiveSource(
+        event_ids=["1716863"], contributions=True, attachment_images=True
+    ))
+    assert [v["url"] for v in _talk_node(facts).attrs["attachment_images"]] == [
+        _BASE + "ok.png"
+    ]
+
+
+def test_a_talk_without_renderable_attachments_has_no_image_attr(monkeypatch):
+    _image_routes(monkeypatch, [_attachment(
+        "deck.pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml."
+        "presentation")])
+    facts, _run = _facts(IndicoLiveSource(
+        event_ids=["1716863"], contributions=True, attachment_images=True
+    ))
+    assert "attachment_images" not in _talk_node(facts).attrs
+
+
+def test_the_timetable_export_is_typed_by_file_extension(monkeypatch):
+    # The timetable fallback names no content_type, so the extension decides.
+    from archi.sources.indico_live import _renderable
+    pdf = {"title": "a.PDF", "download_url": "/x/a.PDF"}
+    pptx = {"title": "a.pptx", "download_url": "/x/a.pptx"}
+    big = 10 * 1024 * 1024
+    assert _renderable(pdf, "https://indico.cern.ch/x/a.PDF", big) is None
+    assert _renderable(
+        pptx, "https://indico.cern.ch/x/a.pptx", big) == "not_renderable"
+    records = _contributions_from_timetable(
+        _fixture("timetable_1716863.json"), "1716863")
+    from archi.sources.indico_live import _contribution_records
+    talks = _contribution_records(
+        {}, "1716863", records, "https://indico.cern.ch", image_limit=3)
+    with_pdf = [t for t in talks if t.image_urls]
+    assert with_pdf and all(
+        u.startswith("https://indico.cern.ch/event/") and u.endswith(".pdf")
+        for t in with_pdf for u in t.image_urls
+    )
+
+
+def test_option_off_changes_nothing(monkeypatch):
+    _image_routes(monkeypatch, [_attachment(n, t) for n, t in MIXED])
+    off, _ = _facts(IndicoLiveSource(
+        event_ids=["1716863"], contributions=True))
+    assert "attachment_images" not in _talk_node(off).attrs
+    # the exact attr set of a talk before this option existed
+    assert set(_talk_node(off).attrs) == {
+        "label", "title", "url", "date", "end_date", "event_type", "category",
+        "category_id", "speakers", "chairs", "attachment_urls",
+        "attachment_names", "session", "room", "parent_event_id",
+        "parent_event_title", "parent_event_url", "text",
+    }
+    plain = IndicoLiveSource(event_ids=["1716863"], contributions=True)
+    on = IndicoLiveSource(
+        event_ids=["1716863"], contributions=True, attachment_images=True)
+    assert plain.change_probe._config_hash != on.change_probe._config_hash
+    from archi.sources.indico_live import _records_hash
+    event = _fixture("event_1716863_contributions.json")["results"][0]
+    items = event["contributions"]
+    base = "https://indico.cern.ch"
+    a = _record_from_event(event, "1716863", items, base,
+                           with_contributions=True)
+    b = _record_from_event(event, "1716863", items, base,
+                           with_contributions=True, image_limit=0)
+    assert _records_hash([a]) == _records_hash([b])
+    c = _record_from_event(event, "1716863", items, base,
+                           with_contributions=True, image_limit=3)
+    assert _records_hash([a]) != _records_hash([c])
+
+
+def test_images_need_per_talk_records():
+    with pytest.raises(ValueError, match="contributions"):
+        IndicoLiveSource(event_ids=["1"], attachment_images=True)
+    with pytest.raises(ValueError):
+        IndicoLiveSource(event_ids=["1"], contributions=True,
+                         attachment_images=True, max_images_per_talk=0)
+
+
+def test_okg_reads_the_values_as_images(monkeypatch):
+    # okg's own reader must find exactly what the source wrote.
+    from okg.substrate.images.values import classify, iter_image_values
+    _image_routes(monkeypatch, [_attachment(n, t) for n, t in MIXED])
+    facts, _run = _facts(IndicoLiveSource(
+        event_ids=["1716863"], contributions=True, attachment_images=True))
+    sites = list(iter_image_values(_talk_node(facts).attrs))
+    assert [(s.attr, s.index) for s in sites] == [
+        ("attachment_images", 0), ("attachment_images", 1),
+        ("attachment_images", 2)]
+    assert [classify(s.value).state for s in sites] == ["url"] * 3
+
+
+@pytest.mark.parametrize("url", [
+    _BASE + "%2e%2e/a.pdf",
+    _BASE + "x/../a.pdf",
+    _BASE + "a%5Cb.pdf",
+    "https://user@indico.cern.ch/event/1/a.pdf",
+])
+def test_a_url_okg_refuses_is_skipped_and_counted_not_fatal(monkeypatch, url):
+    good = _attachment("ok.pdf", "application/pdf")
+    _image_routes(monkeypatch, [
+        _attachment("odd.pdf", "application/pdf", download_url=url), good])
+    source = IndicoLiveSource(
+        event_ids=["1716863"], contributions=True, attachment_images=True)
+    facts, run = _facts(source)
+    assert [v["url"] for v in _talk_node(facts).attrs["attachment_images"]] == [
+        _BASE + "ok.pdf"]
+    # still a name and a URL, as without the option
+    assert url in _talk_node(facts).attrs["attachment_urls"]
+    assert source.last_harvest_report["image_urls_refused"] == 1
+    assert run.completed_scope is True
+
+
+def test_a_protected_folder_hides_its_attachments_from_images(monkeypatch):
+    event = _fixture("event_1716863_contributions.json")
+    talk = next(c for c in event["results"][0]["contributions"]
+                if str(c.get("db_id")) == "7317484")
+    talk["folders"] = [
+        {"is_protected": True,
+         "attachments": [_attachment("hidden.pdf", "application/pdf")]},
+        {"is_protected": False,
+         "attachments": [_attachment("open.pdf", "application/pdf")]},
+    ]
+    plain = dict(event["results"][0])
+    plain.pop("contributions")
+    _routes(monkeypatch, {
+        "detail=contributions": event,
+        "/export/event/1716863.json": {"results": [plain]},
+    })
+    facts, _run = _facts(IndicoLiveSource(
+        event_ids=["1716863"], contributions=True, attachment_images=True))
+    assert [v["url"] for v in _talk_node(facts).attrs["attachment_images"]] == [
+        _BASE + "open.pdf"]
