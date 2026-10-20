@@ -5,19 +5,11 @@
 # exist here -- so no push to `main` ran CI at all. Pull requests were
 # unaffected, which is why it went unnoticed.
 #
-# SECURITY — read before editing. This repository is PUBLIC and the okg
-# substrate is PRIVATE. The tests import okg, so the job needs a credential
-# (OKG_DEPLOY_KEY, the private half of a read-only SSH deploy key on
-# mitdbg/okg). A secret exposed to a pull_request run from a fork is
-# readable by anyone who can open a PR, so:
-#
-#   * the job is guarded on the head repo being this repository, and
-#   * `pull_request` is used rather than `pull_request_target`, which would
-#     run untrusted code with access to secrets by design.
-#
-# A fork PR therefore reports "skipped", not "passed": no green tick is
-# claimed for tests that never ran. A maintainer re-runs it from a branch in
-# this repo before merge.
+# The tests import okg, so the job installs the public AKMON release wheel
+# (github.com/mitdbg/akmon, v0.2.0). The Python package and CLI are still
+# named `okg`. The URL carries the wheel's sha256, so pip refuses any other
+# okg wheel (its dependencies still resolve from PyPI). No secret is involved,
+# so fork PRs run the full suite too.
 name: ci
 
 on:
@@ -33,11 +25,6 @@ jobs:
   tests:
     name: tests (python 3.12)
     runs-on: ubuntu-latest
-    # Fork PRs cannot see OKG_DEPLOY_KEY. Skip rather than fail, and never
-    # fall back to a partial run that could read as full coverage.
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
 
@@ -48,28 +35,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install okg (private substrate, pinned)
-        env:
-          OKG_DEPLOY_KEY: ${{ secrets.OKG_DEPLOY_KEY }}
+      - name: Install okg (AKMON v0.2.0 release wheel, hash-pinned)
         run: |
           set -euo pipefail
-          if [ -z "${OKG_DEPLOY_KEY}" ]; then
-            echo "::error::secret OKG_DEPLOY_KEY is not set in this repository; it must hold the private half of the read-only deploy key on mitdbg/okg. Refusing to run a partial suite."
-            exit 1
-          fi
-          # The key lives only in this step's ssh-agent, never on disk, and the
-          # agent is killed when the step ends. GitHub's published host key is
-          # pinned rather than trusted on first use (api.github.com/meta).
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
-          eval "$(ssh-agent -s)" > /dev/null
-          trap 'ssh-agent -k > /dev/null' EXIT
-          printf '%s\n' "${OKG_DEPLOY_KEY}" | ssh-add -
-          # The pin is the commit archi is tested against. Keep it equal to the
-          # commit in the *Last updated* line of docs/okg-alignment.md; if they
-          # differ, the page is describing a build that never ran.
+          # The release is the version archi is tested against. Keep it equal
+          # to the release in the *Last updated* line of docs/okg-alignment.md;
+          # if they differ, the page is describing a build that never ran.
           python -m pip install --upgrade pip
-          pip install "okg @ git+ssh://git@github.com/mitdbg/okg.git@ac078aabd5d00b25fcba3a5f82c5edbdbb1a9b62"
+          pip install "okg @ https://github.com/mitdbg/akmon/releases/download/v0.2.0/okg-0.2.0-py3-none-any.whl#sha256=72bac3b67cf29cccd27e77e58ad309104f19fcce255a04a4a6f23b8318b88e12"
 
       - name: Install archi with dev extras
         run: pip install -e "./python[dev]"
@@ -93,9 +66,9 @@ jobs:
           isort --check-only --diff . || true
           echo "::endgroup::"
 
-  # The two tests that do not import okg, so they run for anyone -- including
-  # fork PRs that the guarded job skips. Small on purpose: it is a smoke check
-  # that the repo is coherent, not a substitute for the suite.
+  # The two tests that do not import okg, run without installing it. Small on
+  # purpose: a fast smoke check that the repo is coherent, not a substitute for
+  # the suite.
   no-substrate:
     name: substrate-free checks
     runs-on: ubuntu-latest

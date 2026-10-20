@@ -42,12 +42,12 @@ stale instruction talking.
 
 ## Standing rules
 
-- **This repository is public; the okg substrate is private.** Nothing
-  here may carry a credential, a site hostname or an instance's
-  configuration. The tests import `okg`, so CI installs it from a
-  read-only deploy key — which is why a fork PR reports *skipped*
-  rather than *passed*: no green tick is claimed for tests that never
-  ran. A maintainer re-runs it from a branch in this repo before merge.
+- **This repository and the okg substrate (AKMON) are both public.**
+  Nothing here may carry a credential, a site hostname or an instance's
+  configuration. The tests import `okg`, so CI installs the AKMON
+  release wheel, pinned by version and sha256 in
+  `.github/workflows/ci.yml`. No secret is involved, so fork PRs run
+  the full suite.
 - **A consumer's variant is an option here, off by default.** When a
   deployment needs a source to behave differently, add the option to
   the source with a default that preserves existing behaviour, and let
@@ -64,8 +64,8 @@ stale instruction talking.
   commit tested against, or moves program state must update its
   "Current state" section and its pins **in the same PR**.
   `python/tests/test_alignment_page.py` enforces the import-surface
-  half mechanically; the prose half is on you. The okg pin in
-  `.github/workflows/ci.yml` must equal the commit in that page's
+  half mechanically; the prose half is on you. The AKMON release in
+  `.github/workflows/ci.yml` must equal the release in that page's
   *Last updated* line, or the page describes a build that never ran.
 
 ## Running the suite
