@@ -32,6 +32,14 @@ so a deployment can swap one source for the other without a schema
 change and neither can drift from the other. Only the acquisition
 differs, which is the whole point.
 
+ONE RECORD PER TALK (option `contributions`, off by default). With
+`contributions=True` each contribution also becomes its own
+``meeting_minutes`` record -- title, speakers, session, time, abstract,
+its own URL, attachment names and URLs -- linked from the event record
+by a ``contains`` edge, so a search for a talk title returns that talk
+with its own citation. The event record then stops carrying every
+talk's text inline. Off, the output is exactly what it was.
+
 Attachment text extraction (v2's MarkItDown slide conversion) is NOT
 ported here: it pulls a document-conversion dependency into the
 substrate path for a gain this connector can add later, and the
@@ -41,7 +49,11 @@ does. Attachment URLs are emitted; their contents are not fetched.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
+import re
+import sys
+from dataclasses import dataclass, replace
 from typing import Any, Iterator
 
 import requests
@@ -50,6 +62,8 @@ from okg.deployment import (
     ConnectorHealth,
     ConnectorRun,
     ContentHashProbe,
+    EdgeFact,
+    NodeFact,
     PreflightResult,
 )
 
@@ -92,6 +106,7 @@ class IndicoLiveSource:
         event_ids: list[str] | tuple[str, ...] = (),
         category_ids: list[str] | tuple[str, ...] = (),
         cookie_file_env: str | None = None,
+        contributions: bool = False,
         required: bool = False,
         max_events: int | None = None,
         timeout: float = DEFAULT_TIMEOUT,
@@ -108,6 +123,10 @@ class IndicoLiveSource:
                 "with neither has no scope to read"
             )
         self.cookie_file_env = cookie_file_env
+        #: One ``meeting_minutes`` record per talk, linked from its event.
+        #: Off by default: it adds records and shortens the event record's
+        #: text, which would change what a current user already has.
+        self.contributions = contributions
         self.required = required
         if max_events is not None and max_events < 1:
             raise ValueError(
@@ -132,8 +151,12 @@ class IndicoLiveSource:
                 "event_ids": list(self.event_ids),
                 "category_ids": list(self.category_ids),
                 "max_events": self.max_events,
+                # Only when on, so an existing user's probe hash is unchanged.
+                **({"contributions": True} if self.contributions else {}),
             },
-            emit_targets=IndicoLiveSource,
+            # The class alone misses the module-level fact builders
+            # (`_event_facts`, `_contribution_node`); fingerprint both.
+            emit_targets=[IndicoLiveSource, sys.modules[__name__]],
         )
 
     # ── session ────────────────────────────────────────────────────────
@@ -229,10 +252,7 @@ class IndicoLiveSource:
 
         def _facts() -> Iterator[Any]:
             for record in records:
-                yield _meeting_node(record, revision)
-                yield from _pdf_document_facts(
-                    record, revision, self.chunker_name
-                )
+                yield from _event_facts(record, revision, self.chunker_name)
 
         if not complete:
             # An event that failed to read, or a bound that truncated the
@@ -382,16 +402,25 @@ class IndicoLiveSource:
                 failed.append(event_id)
                 continue
             event = _first_result(payload)
-            contributions, from_timetable = self._contributions(
-                session, event_id
-            )
+            try:
+                contributions, from_timetable = self._contributions(
+                    session, event_id
+                )
+            except (requests.RequestException, _LoginRedirect):
+                # Only reachable with `contributions` on (see below).
+                failed.append(event_id)
+                continue
             fallbacks += int(from_timetable)
             records.append(_record_from_event(
-                event, event_id, contributions, self.base_url
+                event, event_id, contributions, self.base_url,
+                with_contributions=self.contributions,
             ))
 
         return records, {
             "events": len(records),
+            "contributions": sum(
+                len(getattr(r, "contributions", ())) for r in records
+            ),
             "failed_events": failed,
             "truncated": truncated,
             "timetable_fallbacks": fallbacks,
@@ -408,6 +437,11 @@ class IndicoLiveSource:
         returns an empty list for them. v2 handled this and so does
         this: an empty answer is indistinguishable from a meeting with
         no talks unless you look.
+
+        With `contributions` on, a FAILED request (not an empty answer)
+        is raised, so the event counts as failed and the run claims no
+        complete scope: a silent fallback would drop abstracts and
+        unscheduled talks, and a complete scope would retract them.
         """
         try:
             payload = self._get_json(
@@ -415,6 +449,8 @@ class IndicoLiveSource:
             )
             contributions = _first_result(payload).get("contributions") or []
         except (requests.RequestException, _LoginRedirect):
+            if self.contributions:
+                raise
             contributions = []
         if contributions:
             return list(contributions), False
@@ -424,6 +460,8 @@ class IndicoLiveSource:
                 session, f"/export/timetable/{event_id}.json"
             )
         except (requests.RequestException, _LoginRedirect):
+            if self.contributions:
+                raise
             return [], False
         return _contributions_from_timetable(payload, event_id), True
 
@@ -466,6 +504,13 @@ def _contributions_from_timetable(
         if not isinstance(day, dict):
             continue
         for entry in day.values():
+            # The enclosing session block names the session its talks
+            # belong to; a bare contribution has none.
+            session = (
+                (entry.get("title") or "").strip()
+                if isinstance(entry, dict)
+                and entry.get("entryType") == "Session" else ""
+            )
             for item in _timetable_items(entry):
                 contribution_id = str(
                     item.get("contributionId") or item.get("id") or ""
@@ -480,8 +525,37 @@ def _contributions_from_timetable(
                     "speakers": item.get("speakers", []),
                     "folders": item.get("folders", []),
                     "_from_timetable": True,
+                    # Read only by the per-contribution records. The
+                    # keys above feed the event record and are unchanged.
+                    "db_id": contribution_id,
+                    "startDate": item.get("startDate"),
+                    "endDate": item.get("endDate"),
+                    "session": session,
+                    # The endpoint says "40/S2-C01"; the timetable says
+                    # "40/S2-C01 - Salle ...". Same talk, same text.
+                    "room": (item.get("room") or "").split(" - ")[0].strip(),
+                    "url": item.get("url", ""),
+                    "presenters": [
+                        _presenter_like_speaker(p)
+                        for p in item.get("presenters") or []
+                    ],
+                    "attachments": item.get("attachments") or {},
                 })
     return contributions
+
+
+def _presenter_like_speaker(person: Any) -> Any:
+    """Write a timetable presenter the way the contributions endpoint
+    writes a speaker (``Family, First``), so one talk reads the same on
+    both paths."""
+    if not isinstance(person, dict):
+        return person
+    family = (person.get("familyName") or "").strip()
+    first = (person.get("firstName") or "").strip()
+    full = f"{family}, {first}" if family and first else (
+        family or first or (person.get("name") or "").strip()
+    )
+    return {"fullName": full, "affiliation": person.get("affiliation") or ""}
 
 
 def _timetable_items(entry: Any) -> Iterator[dict[str, Any]]:
@@ -504,8 +578,14 @@ def _record_from_event(
     event_id: str,
     contributions: list[dict[str, Any]],
     base_url: str,
+    *,
+    with_contributions: bool = False,
 ) -> IndicoEventRecord:
-    """Build the record shape the cache-backed source already emits."""
+    """Build the record shape the cache-backed source already emits.
+
+    With `with_contributions` the result is the subclass that also
+    carries one :class:`IndicoContribution` per talk; without it the
+    result is exactly what it always was."""
     speakers: list[str] = []
     attachments: list[str] = []
     contribution_text: list[str] = []
@@ -535,7 +615,14 @@ def _record_from_event(
         ) if name
     ]
     category_id = event.get("categoryId")
-    return IndicoEventRecord(
+    record_class = IndicoLiveEventRecord if with_contributions else IndicoEventRecord
+    extra = (
+        {"contributions": _contribution_records(
+            event, str(event_id), contributions, base_url
+        )}
+        if with_contributions else {}
+    )
+    return record_class(
         event_id=str(event_id),
         title=event.get("title", "") or "",
         url=event.get("url", "") or f"{base_url}/event/{event_id}/",
@@ -549,6 +636,206 @@ def _record_from_event(
         chairs=tuple(chairs),
         attachment_urls=tuple(attachments),
         contributions_text="\n".join(contribution_text),
+        **extra,
+    )
+
+
+@dataclass(frozen=True)
+class IndicoContribution:
+    """One talk, poster or paper inside an event.
+
+    Attachment NAMES and URLs only: their text is not fetched here.
+    """
+
+    event_id: str
+    contribution_id: str
+    title: str
+    url: str
+    description: str = ""
+    date: str = ""
+    end_date: str = ""
+    session: str = ""
+    room: str = ""
+    speakers: tuple[str, ...] = ()
+    speaker_affiliations: tuple[str, ...] = ()
+    attachment_urls: tuple[str, ...] = ()
+    attachment_names: tuple[str, ...] = ()
+
+    @property
+    def node_id(self) -> str:
+        return f"meeting_minutes:{self.event_id}:contribution:{self.contribution_id}"
+
+    @property
+    def source_path(self) -> str:
+        return f"event/{self.event_id}/contribution/{self.contribution_id}"
+
+
+@dataclass(frozen=True)
+class IndicoLiveEventRecord(IndicoEventRecord):
+    """An event record that also carries its talks as records."""
+
+    contributions: tuple[IndicoContribution, ...] = ()
+
+
+_TAG_RE = re.compile(r"</?[A-Za-z!][^>]*>")
+
+
+def _talk_text(value: Any) -> str:
+    """Plain text of an Indico field: drop real tags only, decode
+    entities, collapse whitespace. Unlike `_strip_html` this keeps text
+    such as "a < b > c" and turns "&amp;" into "&"."""
+    text = _TAG_RE.sub(" ", str(value or ""))
+    return re.sub(r"\s+", " ", html.unescape(text)).replace("\x00", " ").strip()
+
+
+def _absolute(url: str, base_url: str) -> str:
+    return url if url.startswith("http") else f"{base_url}{url}"
+
+
+def _contribution_records(
+    event: dict[str, Any],
+    event_id: str,
+    contributions: list[dict[str, Any]],
+    base_url: str,
+) -> tuple[IndicoContribution, ...]:
+    """Turn the contribution dicts into per-talk records.
+
+    The contributions endpoint and the timetable fallback name things
+    differently (`speakers` / `presenters`, a `folders` list /
+    an `attachments.files` list); both are read here. `id` on the
+    contributions endpoint is the per-event number, while the URL uses
+    `db_id`, so `db_id` names the record when it is present.
+    """
+    records: list[IndicoContribution] = []
+    seen: set[str] = set()
+    for item in contributions:
+        contribution_id = str(item.get("db_id") or item.get("id") or "").strip()
+        if not contribution_id or contribution_id in seen:
+            continue
+        description = _talk_text(item.get("description"))
+        # An untitled talk keeps its abstract: with the option on the
+        # event record no longer carries it.
+        title = _talk_text(item.get("title")) or (
+            description[:80].rstrip() if description
+            else f"Contribution {contribution_id}"
+        )
+        seen.add(contribution_id)
+        people = list(item.get("speakers") or []) + list(
+            item.get("presenters") or []
+        )
+        speakers: list[str] = []
+        affiliations: list[str] = []
+        for person in people:
+            name = _person_name(person)
+            if not name or name in speakers:
+                continue
+            speakers.append(name)
+            affiliation = (
+                str(person.get("affiliation") or "").strip()
+                if isinstance(person, dict) else ""
+            )
+            affiliations.append(f"{name} ({affiliation})" if affiliation else name)
+        files = [
+            attachment
+            for folder in item.get("folders") or []
+            for attachment in (folder.get("attachments") or [])
+        ] + list((item.get("attachments") or {}).get("files") or [])
+        urls: list[str] = []
+        names: list[str] = []
+        for attachment in files:
+            url = attachment.get("download_url") or attachment.get("url")
+            if url and _absolute(url, base_url) not in urls:
+                urls.append(_absolute(url, base_url))
+                names.append(str(
+                    attachment.get("filename") or attachment.get("title") or ""
+                ))
+        records.append(IndicoContribution(
+            event_id=event_id,
+            contribution_id=contribution_id,
+            title=title,
+            url=_absolute(
+                item.get("url")
+                or f"/event/{event_id}/contributions/{contribution_id}/",
+                base_url,
+            ),
+            description=description,
+            date=_stamp(item.get("startDate")),
+            end_date=_stamp(item.get("endDate")),
+            session=_talk_text(item.get("session")),
+            room=str(item.get("room") or "").strip(),
+            speakers=tuple(speakers),
+            speaker_affiliations=tuple(affiliations),
+            attachment_urls=tuple(urls),
+            attachment_names=tuple(names),
+        ))
+    return tuple(records)
+
+
+def _event_facts(
+    record: IndicoEventRecord, revision: dict[str, Any], chunker_name: str
+) -> Iterator[Any]:
+    """The event's facts, then (option on) one record per talk."""
+    contributions = getattr(record, "contributions", ())
+    if contributions:
+        # The talks are records of their own now; repeating all of their
+        # text in the event record would make a search for a talk return
+        # the whole meeting first.
+        yield _meeting_node(replace(record, contributions_text=""), revision)
+    else:
+        yield _meeting_node(record, revision)
+    yield from _pdf_document_facts(record, revision, chunker_name)
+    for contribution in contributions:
+        yield _contribution_node(record, contribution, revision)
+        yield EdgeFact(
+            src=record.node_id,
+            dst=contribution.node_id,
+            edge_type="contains",
+            attrs={"relationship": "indico_contribution"},
+            source_record_id={"path": contribution.source_path},
+            source_revision=revision,
+        )
+
+
+def _contribution_node(
+    record: IndicoEventRecord,
+    contribution: IndicoContribution,
+    revision: dict[str, Any],
+) -> NodeFact:
+    text = " ".join(filter(None, [
+        contribution.title,
+        f"Part of {record.title}." if record.title else "",
+        f"Session: {contribution.session}." if contribution.session else "",
+        "Speakers: " + "; ".join(contribution.speaker_affiliations)
+        if contribution.speaker_affiliations else "",
+        contribution.description,
+        "Attachments: " + ", ".join(n for n in contribution.attachment_names if n)
+        if any(contribution.attachment_names) else "",
+    ])).strip()
+    return NodeFact(
+        node_id=contribution.node_id,
+        subtype="meeting_minutes",
+        attrs={
+            "label": contribution.title,
+            "title": contribution.title,
+            "url": contribution.url,
+            "date": contribution.date,
+            "end_date": contribution.end_date,
+            "event_type": "contribution",
+            "category": record.category,
+            "category_id": record.category_id,
+            "speakers": list(contribution.speakers),
+            "chairs": [],
+            "attachment_urls": list(contribution.attachment_urls),
+            "attachment_names": list(contribution.attachment_names),
+            "session": contribution.session,
+            "room": contribution.room,
+            "parent_event_id": record.event_id,
+            "parent_event_title": record.title,
+            "parent_event_url": record.url,
+            "text": text,
+        },
+        source_record_id={"path": contribution.source_path},
+        source_revision=revision,
     )
 
 
@@ -557,7 +844,7 @@ def _person_name(person: Any) -> str:
         return person.strip()
     if not isinstance(person, dict):
         return ""
-    full = (person.get("fullName") or "").strip()
+    full = (person.get("fullName") or person.get("name") or "").strip()
     if full:
         return full
     parts = [
@@ -582,6 +869,15 @@ def _records_hash(records: list[IndicoEventRecord]) -> str:
         digest.update(record.event_id.encode("utf-8"))
         digest.update(record.title.encode("utf-8"))
         digest.update(record.contributions_text.encode("utf-8"))
+        # Only when per-talk records are on: a session, time or speaker
+        # change then changes the hash. Off, the hash is what it was.
+        for talk in getattr(record, "contributions", ()):
+            digest.update(json.dumps(
+                [talk.contribution_id, talk.title, talk.session, talk.date,
+                 talk.end_date, talk.room, talk.speakers,
+                 talk.attachment_urls],
+                default=str,
+            ).encode("utf-8"))
     return digest.hexdigest()
 
 

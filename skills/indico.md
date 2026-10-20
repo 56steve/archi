@@ -10,6 +10,15 @@ graph, and say so when the graph's snapshot is older than the question needs.
 
 - `meeting_minutes` nodes per ingested event (title, date, category, canonical
   `https://indico.cern.ch/event/<event_id>/` URL in attrs).
+- With the live source's `contributions: true` option, every talk is ALSO a
+  `meeting_minutes` node with `event_type: "contribution"` (title, speakers,
+  session, time, abstract, its own URL, `parent_event_id`/`parent_event_url`),
+  linked from its event by a `contains` edge. Filter on `event_type` to tell
+  them apart: a question about whole meetings, counts, or the latest meeting
+  in a series wants events (`event_type` other than `contribution`); a question
+  about a talk, speaker or session wants `event_type: "contribution"`. Talks
+  carry their event's category, so an unfiltered category search returns both.
+  Attachment names and URLs are in attrs; attachment text is not.
 - `document` nodes for PDF attachments whose text was extracted, with
   `contains` edges from the meeting, and `document_chunk` nodes carrying the
   extracted text (`member_of` / `contains` chunk edges). Non-PDF attachments
@@ -29,7 +38,7 @@ graph, and say so when the graph's snapshot is older than the question needs.
   `meeting_minutes` / `document_chunk` subtypes, then expand promising chunks
   to their parent meeting for date/context before synthesizing.
 - **"Latest <recurring meeting>"**: search the meeting-series name, order hits
-  by the meeting date attr, and check the pinned generation's freshness — if
+  by the meeting date attr, excluding `event_type: "contribution"` (a talk is dated later than its meeting starts), and check the pinned generation's freshness — if
   the newest meeting in the graph predates the series cadence, the snapshot is
   behind; report that explicitly instead of presenting the newest ingested
   meeting as current.
