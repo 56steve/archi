@@ -4,9 +4,15 @@ Moved from okg-deployments ``cms/scripts/download_jira.py`` (main
 ``32f2b4e3c2``). It writes ``records.json`` and ``meta.json`` atomically,
 so the JIRA reader can ingest the cache without talking to the network.
 
-Run it from an operator environment that has the ``jira`` package::
+Run it from an operator environment that has the ``jira`` package
+(``pip install jira``)::
 
+    python -m archi.downloaders.jira --project ADAPTYST --output-dir <dir>
     CERN_JIRA_TOKEN=... python -m archi.downloaders.jira --output-dir <dir>
+
+The token is optional. Without one the download is anonymous and sees only
+public projects; a project that is not visible stops the run with a message
+that says so. The default project list is the CMS set, which needs a token.
 
 Without ``--output-dir`` the cache goes to ``data/jira`` under
 ``ARCHI_DATA_ROOT`` (or under the current directory when that variable is
@@ -14,8 +20,10 @@ unset), the path the reader's defaults and ``docs/connector-caches.md`` name.
 
 Changes from the okg-deployments copy: the default output directory follows
 ``ARCHI_DATA_ROOT`` instead of the old repository layout
-(``<repo>/data/cms/jira``), and a missing ``jira`` package stops with a
-message that names it. Records and metadata are written byte for byte as
+(``<repo>/data/cms/jira``), a missing ``jira`` package stops with a
+message that names it, the token is optional (anonymous when unset), and a
+search JIRA refuses stops the run with a plain message (status and JIRA's
+own text only). Records and metadata are written byte for byte as
 before.
 """
 from __future__ import annotations
@@ -62,10 +70,18 @@ class DownloadStats:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    # The token is optional: a public project reads without one. With no
+    # token the client runs anonymously, and a project that is not public
+    # fails with a message that says so (see _project_error).
     token = _token(args.token_env)
     if not token:
-        aliases = ", ".join(args.token_env)
-        raise SystemExit(f"missing JIRA token env; checked: {aliases}")
+        print(
+            "no JIRA token set (checked: "
+            f"{', '.join(args.token_env)}); reading anonymously, so only "
+            "public projects are visible",
+            file=sys.stderr,
+            flush=True,
+        )
 
     projects = tuple(args.projects or DEFAULT_PROJECTS)
     records = list(_fetch_records(
@@ -185,10 +201,14 @@ def _fetch_records(
     except ImportError as exc:
         raise SystemExit(
             "the 'jira' Python package is not installed in this environment; "
-            "install it (pip install jira) to download the JIRA cache"
+            "install it with: pip install jira "
+            "to download the JIRA cache"
         ) from exc
 
-    client = JIRA(server=server.rstrip("/"), token_auth=token)
+    if token:
+        client = JIRA(server=server.rstrip("/"), token_auth=token)
+    else:
+        client = JIRA(server=server.rstrip("/"))
     remaining = max_issues if max_issues > 0 else None
     for project in projects:
         start = 0
@@ -198,12 +218,15 @@ def _fetch_records(
                 if remaining <= 0:
                     return
                 batch_size = min(batch_size, remaining)
-            results = client.search_issues(
-                f"project={project} ORDER BY updated DESC",
-                startAt=start,
-                maxResults=batch_size,
-                fields=FIELDS,
-            )
+            try:
+                results = client.search_issues(
+                    f"project={project} ORDER BY updated DESC",
+                    startAt=start,
+                    maxResults=batch_size,
+                    fields=FIELDS,
+                )
+            except Exception as exc:  # jira.exceptions.JIRAError et al.
+                raise SystemExit(_project_error(project, exc, bool(token))) from exc
             if not results:
                 break
             for issue in results:
@@ -228,6 +251,47 @@ def _fetch_records(
             )
             if fetched < batch_size:
                 break
+
+
+def _project_error(project: str, exc: Exception, has_token: bool) -> str:
+    """A plain message for a search that JIRA refused.
+
+    JIRA answers an unreadable project with "The value 'X' does not exist
+    for the field 'project'", the same text it gives a project that is not
+    there. Without a token the likely cause is visibility, so say that.
+    """
+    # Keep only the status and JIRA's own message. str(exc) of a JIRAError
+    # carries response headers (for example Set-Cookie), so never fall back
+    # to it.
+    status = getattr(exc, "status_code", None)
+    message = str(getattr(exc, "text", None) or "").strip()
+    said = f" JIRA said: {message}" if message else ""
+    if status == 401:
+        if has_token:
+            return (
+                f"JIRA rejected the request for project {project} (HTTP 401): "
+                f"the token was rejected or lacks access.{said}"
+            )
+        return (
+            f"JIRA project {project} needs a login (HTTP 401). Set "
+            "CERN_JIRA_TOKEN to a personal access token that can read it, "
+            f"or pass --project with a public project key.{said}"
+        )
+    if status in (400, 403, 404):
+        if has_token:
+            return (
+                f"JIRA project {project} could not be read with the token "
+                f"given (HTTP {status}): it may not exist, or the token may "
+                f"not have access to it.{said}"
+            )
+        return (
+            f"JIRA project {project} is not visible without a token (HTTP "
+            f"{status}): it is either not public or does not exist. Set "
+            "CERN_JIRA_TOKEN to a personal access token that can read it, "
+            f"or pass --project with a public project key.{said}"
+        )
+    where = f"HTTP {status}" if status else type(exc).__name__
+    return f"JIRA search for project {project} failed ({where}).{said}"
 
 
 def _issue_record(

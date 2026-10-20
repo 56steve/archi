@@ -170,6 +170,55 @@ def test_max_records_bounds_and_does_not_claim_complete_scope(monkeypatch):
     facts, run = _facts(source)
     assert len(facts) == 2
     assert run.completed_scope is False
+    # The operator's own bound is not a failure: admission must let the
+    # publish through, so health is ok and the reason says it was bounded.
+    assert run.health.status == "ok"
+    assert run.health.record_count == 2
+    assert "bounded by max_records=2" in (run.health.reason or "")
+    assert source.last_harvest_report["truncated"] is True
+    assert source.last_harvest_report["incomplete_sets"] == []
+
+
+def test_max_records_larger_than_the_set_is_a_complete_harvest(monkeypatch):
+    _pager(monkeypatch, [PAGE1, PAGE2])
+    source = CDSSource(sets=["cerncds:cms-pas"], max_records=100)
+    _facts_list, run = _facts(source)
+    assert run.completed_scope is True
+    assert run.health.status == "ok"
+    assert source.last_harvest_report["truncated"] is False
+
+
+def test_a_failure_before_the_bound_is_still_endpoint_failed(monkeypatch):
+    """A broken chain is a failure even when max_records is also set."""
+    _pager(monkeypatch, [PAGE1, PAGE2], fail_after=1)
+    source = CDSSource(sets=["cerncds:cms-pas"], max_records=100)
+    _facts_list, run = _facts(source)
+    assert run.completed_scope is False
+    assert run.health.status == "endpoint_failed"
+
+
+def test_first_set_fails_and_second_hits_the_bound_is_endpoint_failed(monkeypatch):
+    """A set that failed is missing from the harvest. The second set's
+    bound must not make the run look merely bounded."""
+    calls = {"n": 0}
+
+    def fake_get(url, params=None, timeout=None, headers=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise requests.ConnectionError("connection reset")
+        return _FakeResponse(PAGE1)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    source = CDSSource(
+        sets=["cerncds:cms-pas", "cerncds:cms-notes"], max_records=2
+    )
+    facts, run = _facts(source)
+    assert len(facts) == 2
+    assert source.last_harvest_report["truncated"] is True
+    assert source.last_harvest_report["incomplete_sets"] == ["cerncds:cms-pas"]
+    assert run.completed_scope is False
+    assert run.health.status == "endpoint_failed"
+    assert "cerncds:cms-pas" in (run.health.reason or "")
 
 
 def test_a_record_in_two_sets_is_emitted_once(monkeypatch):

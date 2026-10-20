@@ -26,6 +26,14 @@ dev = [
     "isort>=5.13",
     "hatchling>=1.21",
 ]
+# The JIRA downloader (archi.downloaders.jira) needs the `jira` client. It is
+# optional: only operators who run that downloader install it
+# (`pip install jira`, or the `jira` extra of this checkout). Do not run
+# `pip install archi[jira]`: the name `archi` on PyPI is an unrelated package.
+# The readers never import it.
+jira = [
+    "jira>=3.8",
+]
 
 [tool.black]
 line-length = 88

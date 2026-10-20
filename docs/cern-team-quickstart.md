@@ -16,8 +16,8 @@ was checked as follows: the archi suite gave 1795 passed and 1 failed (a timing 
 unmodified `main`), and the step 2 container was started on 2026-10-20 and
 listed timescaledb, pg_cron, pg_textsearch, vector and btree_gist among its extensions (see
 [okg alignment](okg-alignment.md)); steps 3–8 have not been re-run on it.
-Step 8 (TWiki) is the one part never verified, and says so where
-it appears.
+Step 8 (TWiki) needs a CERN login today, even for public pages, and says so
+where it appears.
 
 **A note on okg versions.** This document pins AKMON v0.2.0, the public
 release of okg (`github.com/mitdbg/akmon`). The package and the `okg`
@@ -41,8 +41,13 @@ git clone --branch v0.2.0 --depth 1 https://github.com/mitdbg/akmon.git okg
 okg-venv/bin/pip install -e ./okg    # -e: the only path proven with this bundle
 
 okg-venv/bin/pip install \
-  "archi @ git+https://github.com/archi-physics/archi@archi_v3#subdirectory=python"
+  "archi @ git+https://github.com/archi-physics/archi-okg@04460a5d11fed11fb52ff41ad2b4d8365a595975#subdirectory=python"
 ```
+
+The pin above is the commit this document was written against. The code-symbols
+examples (`code_structure.yaml.example` and its GitLab twin, in "Code symbols"
+below) need an archi release that contains them; at an older commit those files
+do not exist.
 
 **Why `-e`.** On okg `1475c87d5`, okg stamps every published generation with the Git
 revision of the code that produced it, and it finds that revision by looking
@@ -113,7 +118,9 @@ Then install:
 ```bash
 export OKG_PROFILES_DIR="$(okg-venv/bin/archi-profiles-dir)"
 export OKG_DEPLOYMENTS_DIR="$PWD/deployments"
-export ARCHI_DATA_ROOT="$PWD/deployments/myteam"
+# Keep the data root OUTSIDE deployments/: reinstalling with --force deletes
+# everything under the deployment directory, caches and checkouts included.
+export ARCHI_DATA_ROOT="$PWD/archi-data"
 export OKG_DSN='postgresql://postgres:okg@127.0.0.1:5433/myteam'
 
 # Want the two repository connectors? Enable them first — they ship as
@@ -128,8 +135,15 @@ okg-venv/bin/okg install --profile cern-team \
   --postgres-dsn "$OKG_DSN" \
   --github-repo-name click --github-repo-url https://github.com/pallets/click \
   --gitlab-repo-name ci-example \
-  --gitlab-repo-url https://gitlab.cern.ch/gitlabci-examples/build_docker_image.git
+  --gitlab-repo-url https://gitlab.cern.ch/gitlabci-examples/build_docker_image.git \
+  --archi-data-root "$ARCHI_DATA_ROOT/data"
 ```
+
+**Where the repository checkouts go.** They land at
+`<archi-data-root>/repos/<name>`. The default answer is the relative path
+`data`, which means "under whichever directory you run okg from", and
+exporting `ARCHI_DATA_ROOT` does not change that. So pass an absolute
+`--archi-data-root`, as above, and keep it outside `deployments/`.
 
 `$OKG_PROFILES_DIR` has to be a writable copy of the bundle for the rename to
 work, not the directory inside the installed wheel. Skip the rename block and
@@ -142,7 +156,7 @@ CMSSW too. Both steps or neither.
 
 **This command will fail, and that is expected.** It creates the extensions,
 migrates the database, materialises the distribution's schemas, loads the
-catalog, clones both repositories and ingests them — then stops at the final
+catalog and may ingest some sources — then stops at the final
 publish with `repository provenance inputs are not committed`, listing the
 files it just wrote. It exits non-zero. Nothing is wrong: okg requires the
 deployment's configuration to be committed before it will publish a
@@ -153,11 +167,19 @@ them. You are the one who commits them.
 git -C deployments add -A
 git -C deployments commit -m "myteam deployment config"
 
+okg-venv/bin/okg ingest --deployment myteam --progress
 okg-venv/bin/okg run --once --deployment myteam --apply
 ```
 
-That last command publishes the work the install staged, and is the one that
-must exit zero.
+`okg ingest` reads every source and stages the result; the repositories are
+cloned by the first ingest after the commit, not by the install. `okg run
+--once` does not read sources: it publishes what ingest staged, and is the
+command that must exit zero.
+
+**With the code-symbols source (below) the first `okg ingest` fails for that
+source**, because it runs before the repository is cloned. Run the same
+`okg ingest` line a second time; it passes. Only the first time. Then run
+`okg run --once`.
 
 *If the install fails for some other reason, do not commit and re-run — see
 "Starting over". A half-finished deployment stays wedged behind `staged
@@ -205,6 +227,14 @@ podman exec myteam-pg psql -U postgres -d myteam \
   -c "ALTER ROLE app_ro PASSWORD 'okg_ro'"
 ```
 
+**Before `inspect`, `filter` or the MCP server,** set the read-role passwords
+okg generates for itself. Without this they fail with
+`mcp_role_cannot_login`. `okg search` works without it.
+
+```bash
+okg-venv/bin/okg db role-passwords --apply --deployment myteam
+```
+
 ## 4. Changing or adding repositories later
 
 **`okg install` will not re-run over an existing deployment** — it refuses
@@ -249,6 +279,49 @@ again:
 okg-venv/bin/okg ingest --deployment myteam --progress \
   --exclude github_repo,gitlab_repo
 ```
+
+### Code symbols, not only file paths
+
+By default a repository gives you its **file paths** (the `git_graph` module):
+an agent can find that `src/click/core.py` exists, but not the functions and
+classes in it. Symbols come from the core `code_graph` module, which the
+bundle leaves out on purpose. To turn it on:
+
+1. Before the install (step 3), in your writable `$OKG_PROFILES_DIR/cern-team/`,
+   replace the module list in `modules.yaml` with this one (it adds five
+   lines to the bundle's list; `code_graph` alone fails the catalog load,
+   because its links point at subtypes from the other modules):
+
+   ```yaml
+   modules:
+     - document_starter
+     - person
+     - extraction
+     - git_graph
+     - code_graph
+     - agent_sessions
+     - ci
+     - compute_env
+     - openspec
+   ```
+
+   Then rename `source-defaults/code_structure.yaml.example` to
+   `code_structure.yaml` (next to the two repository files you renamed). It
+   reads the checkout the GitHub source makes, so that source must be
+   enabled too. For the GitLab repository, rename
+   `code_structure_gitlab.yaml.example` the same way.
+2. Install, commit, ingest **twice**, then publish, as in step 3 (the first
+   ingest fails for this source only; see the note after the commit there).
+   Already installed? Make the same edits and reinstall with
+   `--force --yes` (step 4).
+
+Check it: `okg-venv/bin/okg search --deployment myteam --query "Context"`
+should return `symbol:click:...` nodes next to the `file:click:...` ones.
+The module list was found by dry-run catalog loads (`okg catalog load`,
+without `--apply`) removing one module at a time; the list is the smallest
+that loads on AKMON v0.2.0. A publish with exactly this list has not been
+run; a wider list (adding `quality_evidence`, `reasoning`, `agent_memory`)
+was published and queried, and found 2,116 symbols in `click`.
 
 ## 5. Confirm it published
 
@@ -587,10 +660,48 @@ as `.yaml.example`. Rename one to `.yaml`, supply its credential by
 environment variable, and reinstall.
 
 For something the bundle does not ship, `okg add <source> --deployment
-myteam` writes a registry entry — deliberately an incomplete one, reporting
-`activation_blocked` rather than activating a source it cannot fully
-describe. You finish it in `source_registry.yaml`, then re-claim and
-re-load.
+myteam` only works for sources whose entry is already known to the
+deployment. For anything else it reports `activation_blocked` and writes
+nothing, so write the entry in `source_registry.yaml` yourself (copy a
+`.yaml.example` and change it), commit, then re-claim and re-load.
+
+**Replacing or removing a source does not remove its old records.** Records
+leave the graph only when the source that wrote them runs again and no longer
+sees them. A source you removed from the deployment never runs, so its old
+records stay and can show up next to the new ones (a retired TWiki reader's
+pages next to the crawler's, for instance). They live in the database, not in
+the deployment folder, so reinstalling the folder does not clear them; the
+run that was checked went away only with a fresh, empty database. So decide
+your sources before you start using the graph, and if you must change them
+later, start again on an empty database (see "Starting over").
+
+**A documentation site without a sitemap.** The `docsite` source reads a cache
+file; the shipped downloader fills it from a manifest. For a site that has no
+sitemap, write your own manifest that lists the page URLs (public pages only)
+and point the downloader at it:
+
+```yaml
+# my-docs-manifest.yaml
+targets:
+  public_docs:
+    urls:
+      - name: cmssw_coding_rules
+        status: ready
+        url: https://cms-sw.github.io/cms_coding_rules.html
+      - name: cmssw_build_release
+        status: ready
+        url: https://cms-sw.github.io/build-release.html
+```
+
+```bash
+ARCHI_DATA_ROOT="$ARCHI_DATA_ROOT" okg-venv/bin/python -m archi.downloaders.static_docs \
+  --manifest my-docs-manifest.yaml --skip-gitlab
+```
+
+It writes `$ARCHI_DATA_ROOT/data/docsite/records.json`, which is where the
+`docsite` source looks when `--archi-data-root` is `$ARCHI_DATA_ROOT/data`.
+Pages are listed one by one; nothing is crawled. Entries whose status is not `ready` are skipped without a message; pages that
+are not HTML are skipped and listed in the summary the command prints.
 
 ## Starting over
 
@@ -606,7 +717,7 @@ rm -rf deployments
 ```
 
 `rm -rf deployments` removes the Git repository along with the configuration,
-so step 3 starts again from `git init`. That is intended — the deployment
+so step 3 starts again from `git init`. The data root (`archi-data/`) sits outside `deployments/` on purpose, so it survives: keep it to avoid re-cloning, or remove it for a fully clean start. That is intended — the deployment
 repository records one deployment's history, and you are discarding the
 deployment.
 
