@@ -20,8 +20,19 @@ reimplementation of OKG services.
 
 ## Current state (update this section when it changes)
 
+**CI and the quickstart now use the public AKMON v0.2.0 release instead of
+private `mitdbg/okg` (2026-10-20).** AKMON (`github.com/mitdbg/akmon`) is the
+public release of okg. The Python package and the `okg` command keep their
+names, so no `import okg` line changed. CI installs the v0.2.0 wheel by URL and
+sha256, with no deploy key, so fork PRs now run the full suite instead of being
+skipped. The release was cut from okg `54e6cf44ee`, which contains the old pin
+`ac078aabd`, so this is a move forward, not a downgrade. The full archi suite
+gives 1795 passed and 1 failed against the wheel with no source change; the one failure is a 1-second timing assertion in `test_anonymizer.py` that also fails on unmodified `main` on a loaded host. Files okg left out of the public
+tree (agent-memory and enterprise-RAG benchmarks, two persona prompts, part of
+the operator console) are not used by archi. v0.2.0 also includes okg#3317 (`COMPLETED_SCOPE_RUN_MODES` is exported from `okg.deployment`), so the "known limit under an okg without mitdbg/okg#3317" below no longer applies to this release; switching `archi.sources._run_modes` to import the set is a follow-up, not done here.
+
 **Reference catalogs are no longer refused under okg's release modes
-(2026-10-05).** Since okg `d84f8fd275` (in the pinned `ac078aabd`), okg runs a
+(2026-10-05).** Since okg `d84f8fd275` (in `ac078aabd`, the pin at the time), okg runs a
 `reference_catalog` source in run mode `release_new`, which it picks
 automatically; `release_unchanged` comes only from an explicit mode setting.
 Both complete the scope in okg's table. CMSSW releases, CondDB global tags, DBS
@@ -67,11 +78,10 @@ The scope-completing modes live in one archi module, `archi.sources._run_modes`,
 which a test holds equal to okg's `COMPLETED_SCOPE_RUN_MODES` and to the
 `reference_catalog` profile's accepted modes. Connectors may not import
 `okg.substrate` (`okg lint deployments`, DEPLOYMENT-001), so the set is copied,
-not imported. Once the okg pin moves past okg's change that exports the set
-from `okg.deployment` (mitdbg/okg#3317, branch
-`claude/connector-complete-scope-modes`, not merged yet), the readers should import it from there. The cursor uses the
-public `okg.deployment.Checkpoint`, added to the import block below. The okg
-pin does not change.
+not imported. AKMON v0.2.0 now exports the set from `okg.deployment` (mitdbg/okg#3317, merged),
+so the readers can import it from there; that switch is a follow-up, not done
+here. The cursor uses the public `okg.deployment.Checkpoint`, added to the
+import block below.
 
 **Cache downloaders and a snapshot builder moved in (2026-09-28, comp-ops A4).**
 The JIRA, static-docs and SSO-login downloaders and the download manifest moved
@@ -104,7 +114,7 @@ and okg `dev` @ `fdf5638bf`. HyperNews, SITECONF, the four MONIT readers and
 `CERNPreflightSource` still have no adapter.
 
 **CI reads `mitdbg/okg` directly; pin bumped `5b2fd076c` → `ac078aabd`
-(2026-09-27, OKG#1906).** Every CI run since 2026-09-24 failed at the okg install
+(2026-09-27, OKG#1906). Superseded 2026-10-20 by the AKMON wheel above.** Every CI run since 2026-09-24 failed at the okg install
 with `Authentication failed`: the fork token no longer worked. CI now installs okg
 over SSH from `mitdbg/okg` with a read-only deploy key held in the repository
 secret `OKG_DEPLOY_KEY`; CI no longer uses the fork or `OKG_REPO_TOKEN`. The pin moved
@@ -124,8 +134,8 @@ path and SHA256 binding that never fetches in frozen mode. It preserves the live
 profile. The historical CMSSW cache is still unavailable; unit fixtures are not
 real-deployment baseline evidence. See [frozen CMSSW inputs](frozen-cmssw-input.md).
 
-*Last updated 2026-10-05, tested against okg `dev` @ `ac078aabd`; archi branch
-`main` @ `46d3daef`.*
+*Last updated 2026-10-20, tested against AKMON v0.2.0 @ `e2c618010b` (cut from okg `54e6cf44ee`); archi branch
+`main` @ `e1c28860`.*
 
 **Pin bumped `34efbad1b` → `5b2fd076c` (2026-09-15), OKG#1906.** The fork was
 synced to okg `dev` first; it had no commits of its own. Full archi suite
@@ -144,11 +154,11 @@ claim here was true of local runs only. Nothing failed, which is why nobody noti
 Found only because the connector SDK migration failed CI on `ImportError: cannot
 import name 'EdgeFact'` — the SDK did not exist in the pinned commit.
 
-**CI stopped using the fork on 2026-09-27.** It could not do so while CI
+**CI stopped using the fork on 2026-09-27 (deploy key since superseded by the AKMON wheel, 2026-10-20).** It could not do so while CI
 authenticated with `OKG_REPO_TOKEN`, a fine-grained token scoped to the fork's
 account (reading `mitdbg/okg` returned 403, run `34494575759`). The read-only
 deploy key on `mitdbg/okg` replaces both, so a pin bump no longer needs a fork sync.
-The workflow pin must still equal the commit in the *Last updated* line above.
+The workflow release must still equal the release in the *Last updated* line above.
 
 **Our migration debt, now measured rather than estimated.** 43 imports of
 `okg.substrate.*` across ten private modules:

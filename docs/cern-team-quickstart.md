@@ -11,17 +11,21 @@ repositories you want indexed, and a password for the chat database.
 database on 2026-09-08, with okg at `1475c87d5`, and their results are quoted
 inline. Step 6 (chat) was proven on 2026-08-27 and its mechanics are
 unchanged since — okg's chat modules are byte-identical between the two
-revisions. Step 8 (TWiki) is the one part never verified, and says so where
+revisions. The move to AKMON v0.2.0 (2026-10-20) changed step 1 and step 2 and
+was checked as follows: the archi suite gave 1795 passed and 1 failed (a timing test that also fails on
+unmodified `main`), and the step 2 container was started on 2026-10-20 and
+listed timescaledb, pg_cron, pg_textsearch, vector and btree_gist among its extensions (see
+[okg alignment](okg-alignment.md)); steps 3–8 have not been re-run on it.
+Step 8 (TWiki) is the one part never verified, and says so where
 it appears.
 
-**A note on okg versions.** This document does not pin one, so `git clone`
-gives you whatever `dev` is that day. okg changes quickly, and the install
-requirements in step 3 are recent additions — if a command here fails in a
-way this document does not describe, check whether okg has moved before
-assuming you did something wrong.
+**A note on okg versions.** This document pins AKMON v0.2.0, the public
+release of okg (`github.com/mitdbg/akmon`). The package and the `okg`
+command keep the name `okg`. If you move to a newer release, a command here
+may change — check the release notes before assuming you did something wrong.
 
-**You need:** a machine with `podman` (or `docker`), Python 3.12+, `git`,
-and read access to the private `mitdbg/okg` repository. No root required.
+**You need:** a machine with `podman` (or `docker`), Python 3.12+, and
+`git`. All code and images are public; no GitHub account or key is needed. No root required.
 
 ---
 
@@ -32,26 +36,28 @@ mkdir -p ~/archi-quickstart && cd ~/archi-quickstart
 
 python3.12 -m venv okg-venv          # 3.12+; archi refuses anything older
 
-git clone git@github.com:mitdbg/okg.git
-okg-venv/bin/pip install -e ./okg    # -e is REQUIRED, not a preference
+# The clone is named okg/ so later steps read the same as before.
+git clone --branch v0.2.0 --depth 1 https://github.com/mitdbg/akmon.git okg
+okg-venv/bin/pip install -e ./okg    # -e: the only path proven with this bundle
 
 okg-venv/bin/pip install \
   "archi @ git+https://github.com/archi-physics/archi@archi_v3#subdirectory=python"
 ```
 
-**Why `-e` is required.** okg stamps every published generation with the Git
+**Why `-e`.** On okg `1475c87d5`, okg stamps every published generation with the Git
 revision of the code that produced it, and it finds that revision by looking
 for a Git checkout around its own installed module. A plain
-`pip install ./okg` copies the code into `site-packages`, outside any
-checkout, and okg then refuses to publish — with five failed authority
-checks and a message about `release.pin.code_repository` that does not
+`pip install ./okg` copied the code into `site-packages`, outside any
+checkout, and okg then refused to publish — with five failed authority
+checks and a message about `release.pin.code_repository` that did not
 mention the cause. `-e` keeps the running code inside the clone, where it
 can see its own revision. Leave the clone in place afterwards; it is now
 part of the installation, not a build artefact.
 
-**Why a clone for okg but not for archi.** okg is a private repository and
-is not on PyPI, so pip cannot fetch it for you. archi is public, so pip
-takes it straight from git — no clone, no wheel build.
+**Why a clone for okg but not for archi.** okg is not on PyPI, and the clone + `-e` path is the one last proven. v0.2.0
+can also identify itself from an installed wheel when no Git checkout exists;
+that path has not been tried with this bundle, so clone the tagged release. archi needs no checkout, so pip takes it
+straight from git — no clone, no wheel build.
 
 **Do not `pip install archi`.** That name on PyPI belongs to an unrelated
 archive library. Ours is unpublished; the git URL above is the only correct
@@ -64,27 +70,29 @@ actually failed before assuming it did.*
 ## 2. Start a Postgres
 
 okg needs six extensions, three of which must be loaded at server start, so
-a stock Postgres cannot be adapted afterwards. okg ships an image with them.
+a stock Postgres cannot be adapted afterwards. AKMON publishes an image with
+them.
 
 **One Postgres server per deployment**, not one database on a shared
 server — `pg_cron` is single-database.
 
 ```bash
-( cd okg/ops/pg && podman build -t okg-pg17:local . )
+podman pull ghcr.io/mitdbg/akmon-postgres:v0.2.0
 
-podman run -d --name myteam-pg --shm-size 2g \
+podman run -d --name myteam-pg --init --shm-size 2g \
   -e POSTGRES_PASSWORD=okg \
   -e POSTGRES_DB=myteam \
   -e POSTGRES_INITDB_ARGS="--locale=C --encoding=UTF8" \
   -p 127.0.0.1:5433:5432 \
-  okg-pg17:local \
+  ghcr.io/mitdbg/akmon-postgres:v0.2.0 \
   postgres -c shared_preload_libraries=timescaledb,pg_cron,pg_textsearch \
            -c cron.database_name=myteam \
-           -c max_connections=100
+           -c max_connections=100 \
+           -c max_worker_processes=32
 ```
 
-The build pulls a large TimescaleDB base image, so it takes a while the
-first time. `--shm-size 2g` is not optional: the 64 MB default is too small
+The image is large (it carries TimescaleDB), so the first pull takes a while.
+It is public and needs no login. `--shm-size 2g` is not optional: the 64 MB default is too small
 for the index builds and fails partway through.
 
 ## 3. Install the bundle
