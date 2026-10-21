@@ -43,7 +43,7 @@ requirements:
     title and abstract ranking cannot change.
 
 
-    The compose test skips until CI's okg includes okg#4020. Check that it runs once CI
+    The compose test skips until the okg in CI includes okg#4020. Check that it runs once CI
     moves to a release that does.
 
 
