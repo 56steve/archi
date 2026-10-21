@@ -41,7 +41,7 @@ git clone --branch v0.2.0 --depth 1 https://github.com/mitdbg/akmon.git okg
 okg-venv/bin/pip install -e ./okg    # -e: the only path proven with this bundle
 
 okg-venv/bin/pip install \
-  "archi @ git+https://github.com/archi-physics/archi-okg@04460a5d11fed11fb52ff41ad2b4d8365a595975#subdirectory=python"
+  "archi @ git+https://github.com/archi-physics/archi-okg@9c6192d471eda9c2ec2eace3d0ccb804070e2a30#subdirectory=python"
 ```
 
 If you will run the SSO cookie helper (`archi.downloaders.sso_login`), also
@@ -50,10 +50,9 @@ development headers (`libkrb5-dev` or `krb5-devel`) to build. okg's old `cern`
 extra used to install this package. The JIRA downloader needs `jira` instead.
 From an archi-okg checkout, `pip install -e "./python[cern]"` does the same.
 
-The pin above is the commit this document was written against. The code-symbols
-examples (`code_structure.yaml.example` and its GitLab twin, in "Code symbols"
-below) need an archi release that contains them; at an older commit those files
-do not exist.
+The pin above is the commit this document was written against. It contains the
+code-symbols examples (`code_structure.yaml.example` and its GitLab twin, in
+"Code symbols" below); an older pin does not have them.
 
 **Why `-e`.** On okg `1475c87d5`, okg stamps every published generation with the Git
 revision of the code that produced it, and it finds that revision by looking
