@@ -35,11 +35,16 @@ requirements:
     and a space, which okg does not split).
 
 
-    Costs, from okg#4020 disclosures 2 and 5: once any type declares identifier fields,
-    a plain digit token such as python3 or amd64 also runs the exact-id step, which
-    adds tens of milliseconds on a large graph (not measured on a real-size copy);
-    and adding analysis_code to the searchable fields restamps the text of existing
-    cds_record rows on the next publish.
+    Costs: once any type declares identifier fields, a plain digit token also runs the
+    exact-id step (without declarations it runs none). Measured on a 250,000-record
+    copy: amd64 adds 122 ms, python3 19 ms, sha256 2 ms. Adding analysis_code to the
+    searchable fields changed no cds_record text (0 records updated on the staging
+    copy), because the report number in the text already holds the analysis code, so
+    title and abstract ranking cannot change.
+
+
+    The compose test skips until CI's okg includes okg#4020. Check that it runs once CI
+    moves to a release that does.
 
 
     Acceptance:
