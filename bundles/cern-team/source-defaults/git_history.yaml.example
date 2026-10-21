@@ -15,14 +15,16 @@
 #   git_tag       name, target commit, annotated or lightweight
 #   git_author    one node per author e-mail
 #   git_file_diff one redacted, size-capped unified diff per file changed in
-#                 a non-merge commit (`store_diffs: true`; searchable text)
+#                 a non-merge commit (`store_diffs: true`; text is searchable
+#                 when the search is typed, see the first caveat)
 #   (plus the branch node and the links between them, and an `affects` link
 #   from each commit to the source_file nodes github_repo emits)
 #
-# Measured cost, one mid-size repository (1,675 commits on the main branch,
-# 403 tags): ingest and publish together took 78 s and added 15,686 links.
-# Cost grows with the number of commits and with diff volume. For a very
-# large repository set `diffs_since` (a date) under params to bound the
+# Measured cost, one mid-size repository: 1,928 commits ingested (1,675 on
+# the main branch, the rest reachable only from tags), 403 tags, 3,309 diffs.
+# Ingest and publish together took 78 s and added 5,870 records and 15,686
+# links. Cost grows with the number of commits and with diff volume. For a
+# very large repository set `diffs_since` (a date) under params to bound the
 # diffs, or `history_since` to bound the commits read on the first run.
 #
 # Needs: the github_repo source enabled. `repo` and `repo_root` are the SAME
@@ -33,16 +35,30 @@
 # every source.
 #
 # Known caveats:
+#   * Plain search does not find git records. The default search profile
+#     (`content`, which the chat also uses) lists no git subtypes. Search
+#     with a type filter (`git_file_diff`, `git_commit`), or add the three
+#     subtypes to the profile. In deployment-defaults.yaml (before install)
+#     or the installed deployment.yaml, under `search: profiles: content:
+#     subtypes:`, add these lines next to the existing ones:
+#         - git_commit
+#         - git_file_diff
+#         - git_tag
 #   * `committed_at` is stored as text, so filtering or sorting on it is a
 #     string comparison (the tool warns "sorted as text"). Correct when all
 #     commits share a time zone; mixed offsets can misorder commits within
 #     a day.
-#   * `expand` on a file's `in` links also counts merge commits (the
-#     `affects` link carries `via_merge`), so it lists more commits than
-#     `git log -- <file>` does.
+#   * `expand` on a file's incoming links returns the file's per-file diffs
+#     as well as its commits, and the commits include merge commits (the
+#     `affects` link from a merge carries `via_merge: true`). On one file
+#     that gave 521 results: 217 commits, 87 merge commits and 217 diffs.
+#     To list commits only, follow `affects` and skip `via_merge`.
 #   * Tags are matched to commits by `references`. "Which tag first contains
-#     this commit" needs a recursive walk over parent links (the read-only
-#     SQL tool), not `expand`, which follows only a few hops.
+#     this commit" needs a recursive walk over parent links, which only the
+#     SQL `query` tool can do. This bundle's chat tool list does not include
+#     `query` (deployment-defaults.yaml, `chat: mcp: tools:`), so chat users
+#     cannot run it; use `okg query` or an agent connected to the MCP server
+#     with `query` enabled.
 #   * Remote branches and rename detection are off (`include_remotes`,
 #     `detect_renames`); turn them on in params only if a question needs them.
 

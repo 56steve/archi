@@ -301,8 +301,23 @@ def test_git_history_example_carries_the_strict_shape_and_follows_github_repo():
     assert entry["class"] == "GitHistorySource"
     assert entry["required_for_baseline"] is False
     assert importlib.util.find_spec(entry["module"]) is not None
-    declared = {n["subtype"] for n in policy["output_signature"]["nodes"]}
-    assert {"git_commit", "git_tag", "git_file_diff", "git_author"} <= declared
+    declared_nodes = {n["subtype"] for n in policy["output_signature"]["nodes"]}
+    assert declared_nodes == {
+        "git_commit", "git_author", "git_tag", "git_branch", "git_file_diff", "source_file",
+    }
+    declared_edges = {
+        (e["src_subtype"], e["edge_type"], e["dst_subtype"])
+        for e in policy["output_signature"]["edges"]
+    }
+    assert declared_edges == {
+        ("git_author", "assigned_to", "git_commit"),
+        ("git_commit", "derives_from", "git_commit"),
+        ("git_commit", "affects", "source_file"),
+        ("git_commit", "contains", "git_file_diff"),
+        ("git_file_diff", "references", "source_file"),
+        ("git_branch", "references", "git_commit"),
+        ("git_tag", "references", "git_commit"),
+    }
     params = entry["params"]
     assert params["store_diffs"] is True
     gh = yaml.safe_load((sd / "github_repo.yaml.example").read_text())["github_repo"]
