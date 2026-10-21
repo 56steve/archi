@@ -62,5 +62,28 @@ tasks:
     Test plan:
 
     - python/tests/test_identifier_field_declarations.py [evidence: pytest]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.cern-identifier-fields.declarations
+  status: pass
+  command: pytest python/tests/test_identifier_field_declarations.py python/tests/test_bundle_cern_team.py
+    python/tests/test_passage_rollup_declarations.py -> 30 passed (the new file fails 3 of
+    8 on the schemas before the change)
+  artifact: pact/changes/cern-identifier-fields/evidence/identifier_fields.junit.xml
+  sha256: a8da09db2ad9362642ead1c4d11e17578351c791a6e2124b4d8bdef4ef024e75
+  head: 8896f7f41b1e00f929f3546ba80fef408a42636b
+  at: '2026-10-21T22:29:20+00:00'
+  note: okg at 88e06a5f2a3 (PR 4020 head), editable install.
+- kind: executed_test
+  requirement: req.cern-identifier-fields.declarations
+  status: pass
+  command: okg search over synthetic cern-team deployments built before and after the declarations
+    (see artifact)
+  artifact: pact/changes/cern-identifier-fields/evidence/exact-id-before-after.txt
+  sha256: 8bc61801d25e569e9c4fc449c9fe59d695fc1b536ac48e96f3b75080509b2019
+  head: 8896f7f41b1e00f929f3546ba80fef408a42636b
+  at: '2026-10-21T22:29:21+00:00'
+  note: TWiki page, JIRA issue and CDS record bearing the id rank first with marker exact_name
+    after; second or lower, lexical, before. Real readers over invented caches; throwaway
+    Postgres.
 decisions: []
