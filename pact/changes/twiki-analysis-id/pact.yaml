@@ -97,5 +97,5 @@ evidence:
   sha256: 2b08450b2a0ea2ffecb9c530f8f4498d1c6fc1723fc7fe646b41674ed0dcd3ea
   head: 623abb5f5221e97ba49b0dde45d9639d91bd74c2
   at: '2026-10-21T14:40:00+00:00'
-  note: 'Full suite run on a lab host with hatchling added to the test environment. One timing test (test_redact_email_addresses_quoted_local_part_is_linear) failed in one of two two-worker full runs and passed alone and in the other. The artifact is the targeted junit file, not the full run.'
+  note: 'Full suite run on a lab host with hatchling added to the test environment. One timing test (test_redact_email_addresses_quoted_local_part_is_linear) failed in two-worker full runs while the host load average was about 18; it passes alone, and the serial full run passed. The artifact is the targeted junit file, not the full run.'
 decisions: []
