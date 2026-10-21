@@ -41,24 +41,24 @@ evidence:
   status: pass
   command: cd python && PYTHONPATH=. python -m pytest -q tests/test_bundle_cern_team.py tests/test_bundle_source_adapters.py --junitxml=pact/changes/ws-git-history-default/evidence/targeted.xml
   artifact: pact/changes/ws-git-history-default/evidence/targeted.xml
-  sha256: 9e7c0b86d42e1a574e7479d7edb69874a7124aefc209e9a937ed2a9ab646cd5c
-  head: 0845d6417b6f1cb07232ee35fff394b5620fdab3
+  sha256: b8c13a589726055c91c5cc06a03f131fa5132098e3922ba8e298ced150ed75ce
+  head: 65ee4bd8dc09dd959f05196da2a448b90c136e3a
   at: '2026-10-21T17:56:45+00:00'
-  note: '74 passed, including the new git_history example test. Host name and interpreter path in the XML were replaced by generic text.'
+  note: '74 passed, including the git_history example test with the full output set. Host name and interpreter path in the XML were replaced by generic text.'
 - kind: executed_test
   requirement: req.ws-git-history-default.main
   status: pass
   command: cd python && PYTHONPATH=. python -m pytest -q tests --ignore=tests/test_artifact_payload.py --junitxml=pact/changes/ws-git-history-default/evidence/full.xml
   artifact: pact/changes/ws-git-history-default/evidence/full.xml
-  sha256: e9b3a98382c47a3a9cc8a851d2b8ae5befb34edf082b954dab553d491901a9f6
-  head: 0845d6417b6f1cb07232ee35fff394b5620fdab3
+  sha256: b9c08976992b7560f6dfb8a760a1dcaf4f6e3373c343e08d845cf0a40f860b1d
+  head: 65ee4bd8dc09dd959f05196da2a448b90c136e3a
   at: '2026-10-21T17:57:50+00:00'
   note: '1879 passed, 2 failed. The failures are outside this change and the same two as on the previous bundle change: test_redact_email_addresses_quoted_local_part_is_linear (a timing test) and test_wheel_builds (hatchling is not installed in the test environment). test_artifact_payload.py was skipped for the same reason.'
 - kind: manual
   requirement: req.ws-git-history-default.main
   status: pass
   command: git diff --stat main...HEAD -- docs/cern-team-quickstart.md bundles/cern-team/source-defaults/git_history.yaml.example
-  head: 0845d6417b6f1cb07232ee35fff394b5620fdab3
+  head: 65ee4bd8dc09dd959f05196da2a448b90c136e3a
   at: '2026-10-21T17:58:00+00:00'
-  note: 'Read-through: the example header lists what it emits, the measured cost (1,675 commits, 403 tags: 78 s, 15,686 links), the github_repo requirement and the two known caveats; the quickstart subsection says how to enable it. The entry matches the one run on a staging deployment. A fresh install with the file renamed was not run.'
+  note: 'Read-through: the example header lists what it emits, the measured cost (1,928 commits ingested, 1,675 on main, 403 tags: 78 s, 15,686 links), the github_repo requirement and the two known caveats; the quickstart subsection says how to enable it. The entry matches the one run on a staging deployment; an independent review ran a fresh install with the file renamed and it published.'
 decisions: []
