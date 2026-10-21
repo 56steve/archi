@@ -1332,6 +1332,9 @@ def test_change_probes_fingerprint_the_emission_and_redaction_code():
         assert source_class in targets
         assert sys.modules["archi.sources.twiki"] in targets
         assert anonymizer in targets
+        from archi.sources import _twiki_analysis_id
+
+        assert _twiki_analysis_id in targets
 
 
 def test_crawl_email_addresses_removed_and_names_kept(monkeypatch):
