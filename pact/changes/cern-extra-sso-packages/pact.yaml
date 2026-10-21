@@ -38,4 +38,13 @@ evidence:
   sha256: db80aa4bb5259adc21375813a5ce629e79197b8883e5bc52ed66aa458270d552
   head: d76d6ddf67cd5a0584c5055ca4d488ba75af13d5
   at: '2026-10-21T00:06:34+00:00'
+- kind: executed_test
+  requirement: req.cern-extra-sso-packages.declared
+  status: pass
+  command: 'submit76: cd python && PYTHONPATH=. pytest tests/test_install_extras.py -q ->
+    2 passed; uv pip install --dry-run .[cern] resolves requests-kerberos'
+  artifact: pact/changes/cern-extra-sso-packages/evidence/test_install_extras.junit.xml
+  sha256: b5a89630162d4967837d836b1c32770e736f20b87e609c88229cbcf55f26a13a
+  head: 1052f4a305fd64a3c81f61f150362902903d956a
+  at: '2026-10-21T00:10:14+00:00'
 decisions: []
