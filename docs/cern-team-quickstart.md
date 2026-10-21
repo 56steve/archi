@@ -379,6 +379,31 @@ that loads on AKMON v0.2.0. A publish with exactly this list has not been
 run; a wider list (adding `quality_evidence`, `reasoning`, `agent_memory`)
 was published and queried, and found 2,116 symbols in `click`.
 
+### Function bodies, not only signatures
+
+Symbols give a function's name, signature, docstring and line numbers, but
+not its body, so "what does this function do when the name is empty" cannot
+be answered from the graph. To store the code itself, rename
+`source-defaults/code_text.yaml.example` to `code_text.yaml` (and
+`code_text_gitlab.yaml.example` for the GitLab repository) next to the
+repository files, then install or reinstall as above. No module change is
+needed. Each code file becomes a `doc:<repo>:<path>` document linked to its
+`file:` node, cut into one chunk per Python function or class with its line
+range. Leave the `code_extractors_dir` answer at its default.
+
+Proven on AKMON v0.2.0 with a throwaway install of a 99-file repository (77
+Python files): the install ended at its ingest stage with
+`install failed at stage ingest`, exactly as the same install without this
+source did; committing the deployment and running `okg run --once --apply`
+published it. This source added 77 documents and 613 chunks.
+
+Check it: search for a word that appears only inside a function body; the
+hit is a `document_chunk` whose `symbol` names the function and whose
+`start_line`-`end_line` range covers it. The range starts at the blank or
+comment lines above the function, so it can begin a line or two before the
+`def`: read the first line that holds code (the decorator or `def`) as the
+line where the function is defined.
+
 ## 5. Confirm it published
 
 ```bash

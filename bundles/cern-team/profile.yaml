@@ -191,6 +191,24 @@ init_questions:
       unavailable` and blocks the whole publish. Enable the file and
       answer this, or leave the file as an example.
 
+  - id: code_extractors_dir
+    prompt: directory holding extractors.yaml for the code-text sources
+      (leave the default)
+    type: string
+    required: false
+    default: ${deployment_dir}
+    description: |
+      Only used if you enabled source-defaults/code_text.yaml.example or
+      code_text_gitlab.yaml.example. Those sources store the code itself
+      (function bodies) and read their parser and chunk-size settings from
+      the extractors.yaml this bundle installs in the deployment directory.
+
+      Leave the default. It is the literal text ${deployment_dir}: the
+      installer does not expand it, and okg replaces it with the
+      deployment directory each time it reads the source registry, so the
+      deployment can move. Give an absolute path only to use an
+      extractors.yaml of your own.
+
   - id: chat_site_name
     prompt: name for the chat site
     type: string
@@ -221,3 +239,9 @@ skills: skills/
 # as it already does for skills/. This is what removes the manual
 # schema-copy step and with it the whole --no-publish interlude.
 schemas: schemas/
+# Installed at the deployment root, byte for byte. extractors.yaml holds the
+# parsers and chunk sizes the optional code-text sources read
+# (source-defaults/code_text.yaml.example); without one of those enabled
+# nothing reads it.
+files:
+  - extractors.yaml

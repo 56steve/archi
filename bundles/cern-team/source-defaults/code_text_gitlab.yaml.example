@@ -1,0 +1,109 @@
+# OPTIONAL — The text of the code in the GitLab repository that
+# gitlab_repo.yaml.example clones. The GitHub twin of this file is
+# code_text.yaml.example; see its header for what lands in the graph, the
+# size, and the credential warning.
+#
+# Rename to code_text_gitlab.yaml to enable, together with gitlab_repo.yaml
+# (rename gitlab_repo.yaml.example and answer `gitlab_repo_url` at install
+# time). This source reads that source's checkout and clones nothing itself.
+# It reads the same extractors.yaml as code_text.yaml.example.
+
+code_text_gitlab:
+  module: okg.substrate.library.sources.doc_corpus
+  class: DocCorpusSource
+  ownership_id: ${deployment_name}.code-text-gitlab
+  admission_policy:
+    producer_id: ${deployment_name}.code-text-gitlab
+    producer_kind: source
+    trust_label: implicit_legacy_trusted
+    admission_mode: fast_track
+    authority_scope:
+      source_family: cern-team
+      source_name: code_text_gitlab
+    output_signature:
+      nodes:
+        - {subtype: document}
+        - {subtype: document_chunk}
+      edges:
+        - {src_subtype: document, edge_type: derived_from, dst_subtype: source_file}
+        - {src_subtype: document, edge_type: contains, dst_subtype: document_chunk}
+        - {src_subtype: document_chunk, edge_type: member_of, dst_subtype: document}
+    output_scope_summary:
+      summary: the text of the code files in the configured GitLab repository, cut into function-sized chunks
+      nodes: [document, document_chunk]
+      edges:
+        - document derived_from source_file
+        - document contains document_chunk
+        - document_chunk member_of document
+  source_class: discovery_crawl
+  record_identity_kind: scoped_locator
+  record_identity_fields: [repo, path]
+  source_revision_kind: content_hash
+  deletion_semantics: missing_from_completed_scope
+  publication_mode: published_generation
+  required_for_baseline: false
+  params:
+    repo: '${gitlab_repo_name}'
+    # SINGLE-quoted, as in gitlab_repo.yaml.example (answers are substituted
+    # as text, then parsed as YAML).
+    repo_root: '${archi_data_root}/repos/${gitlab_repo_name}'
+    extractors_dir: '${code_extractors_dir}'
+    # Same extensions as code_structure.yaml.example.
+    include_globs:
+      - "**/*.py"
+      - "**/*.js"
+      - "**/*.jsx"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "**/*.go"
+      - "**/*.rs"
+      - "**/*.c"
+      - "**/*.cc"
+      - "**/*.cpp"
+      - "**/*.cxx"
+      - "**/*.h"
+      - "**/*.hpp"
+    # okg routes only `.py` to a code parser by default. Without these routes
+    # a matched file in any other language becomes a document with no text.
+    extension_to_format:
+      ".js": text
+      ".jsx": text
+      ".ts": text
+      ".tsx": text
+      ".go": text
+      ".rs": text
+      ".c": text
+      ".cc": text
+      ".cpp": text
+      ".cxx": text
+      ".h": text
+      ".hpp": text
+    exclude_globs:
+      # Paths whose contents are credentials.
+      - "**/.env"
+      - "**/.env.*"
+      - "**/secrets/**"
+      - "**/secret/**"
+      - "**/credentials/**"
+      - "**/*credentials*"
+      - "**/*.secret"
+      # What gitlab_repo skips.
+      - "**/__pycache__/**"
+      - "**/.venv/**"
+      - "**/node_modules/**"
+      - "**/.git/**"
+      - "**/*.pyc"
+    # Same caps as code_structure.yaml.example. A larger file is recorded as
+    # an `oversize` document with no text, counted, and the run continues.
+    max_files: 5000
+    max_bytes_per_file: 1000000
+    # A Python 2 file that does not parse is stored as plain text windows
+    # (warning `text_fallback:code`) instead of a document with no text.
+    text_fallback: true
+    # Run after gitlab_repo in the same cycle, so the file nodes exist and
+    # each document gets its `derived_from` link on the first run.
+    predecessor_source: '${deployment_name}.gitlab-repo'
+  sync:
+    triggers: [manual, reconcile]
+    default_event_mode: scope_complete
+    reconcile_mode: scope_complete
