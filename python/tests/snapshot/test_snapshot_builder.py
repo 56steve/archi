@@ -2680,3 +2680,28 @@ def test_wmstats_collection_shape_refuses_a_broken_export(tmp_path, sources, cas
     assert [r.group for r in info.value.refusals] == ["wmstats"]
     assert expected in info.value.refusals[0].reason
     assert not (tmp_path / "out").exists()
+
+
+def test_cmssw_group_builds_with_production_architecture_in_records_json(
+    tmp_path, sources
+):
+    group = sources["cmssw-releases"]
+    (group / "releases.map").unlink()
+    _write_json(
+        group / "records.json",
+        [
+            {"label": "CMSSW_14_0_1", "type": "Production", "state": "Announced",
+             "architecture": ["el8_amd64_gcc12"],
+             "production_architecture": "el8_amd64_gcc12"},
+        ],
+    )
+    (group / "meta.json").write_text('{"record_count": 1}')
+    out = tmp_path / "out"
+    lock = build(
+        load_config(write_config(tmp_path, sources, only=["cmssw-releases"])), out
+    )
+    assert lock["groups"]["cmssw-releases"]["record_count"] == 1
+    members = read_archive(out / "cmssw-releases.tar.zst")
+    records = json.loads(members["data/cmssw-releases/records.json"])
+    assert records[0]["production_architecture"] == "el8_amd64_gcc12"
+    assert verify(out / LOCK_NAME, out).ok

@@ -119,6 +119,8 @@ upstream or normalized names: `RequestName` / `request_name` /
 | `twiki_eos` | an EOS snapshot path | whatever populates that EOS area |
 | `monit_*` | none — queried live | a MONIT/Grafana token |
 
+Upgrade note for `cmssw_releases`: release records now carry `production_architecture`. An instance installed earlier keeps its own copy of `schemas/operations.yaml`; copy the new file over it (or reinstall) so the field is declared and searchable. The records themselves refresh on the next run.
+
 ## Reference caches are different
 
 `docsite` and `gitlab_docs` can also read *reference* caches to emit

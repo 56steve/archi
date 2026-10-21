@@ -255,6 +255,8 @@ classes:
         description: okg's kind, derived from the label - release, patch, pre-release, hlt-patch, variant, integration-series (a CMSSW_<major>_<minor>_X row), or release_family.
       state:
       architecture:
+      production_architecture:
+        description: The architecture cms-bot marks as the production architecture of this release (prodarch=1 in releases.map). Comma-separated when the map marks more than one (some old releases). Absent when the map marks none, and on release-family records.
       release_date:
       major:
         range: integer
@@ -270,7 +272,7 @@ classes:
       archetype: artifact
       transient: "false"
       okg_alias_fields: release
-      okg_searchable_text_fields: release,release_type,release_kind,architecture,text
+      okg_searchable_text_fields: release,release_type,release_kind,architecture,production_architecture,text
       okg_title_from: release
 
   GlobalTag:

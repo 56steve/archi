@@ -164,6 +164,8 @@ class CMSSWReleaseRecord:
     architecture: tuple[str, ...]
     release_notes: str = ""
     release_date: str = ""
+    # Architectures the map marks `prodarch=1`; empty when none is marked.
+    production_architecture: tuple[str, ...] = ()
 
     @property
     def node_id(self) -> str:
@@ -381,6 +383,9 @@ class CMSSWReleaseSource:
                     architecture=architecture,
                     release_notes=str(item.get("release_notes") or ""),
                     release_date=str(item.get("release_date") or ""),
+                    production_architecture=_as_tuple(
+                        item.get("production_architecture")
+                    ),
                 )
             )
         return records, skipped, False
@@ -489,11 +494,21 @@ def _parse_map_with_skips(
                 "type": fields.get("type", ""),
                 "state": fields.get("state", ""),
                 "architecture": [],
+                "production_architecture": [],
             },
         )
         arch = fields.get("architecture", "")
         if arch and arch not in rec["architecture"]:
             rec["architecture"].append(arch)
+        # `prodarch=1` marks the production architecture of the release.
+        # `prodarch=0`, or no `prodarch` key, marks nothing. Older releases
+        # can carry the marker on several architectures; all are kept.
+        if (
+            arch
+            and fields.get("prodarch", "").strip() == "1"
+            and arch not in rec["production_architecture"]
+        ):
+            rec["production_architecture"].append(arch)
     ordered = sorted(
         by_label.values(),
         key=lambda r: _sort_key(r["label"]),
@@ -504,6 +519,7 @@ def _parse_map_with_skips(
             xml_type=rec["type"],
             state=rec["state"],
             architecture=tuple(sorted(rec["architecture"])),
+            production_architecture=tuple(sorted(rec["production_architecture"])),
         )
         for rec in ordered
     ], skipped
@@ -519,6 +535,15 @@ def _sort_key(label: str) -> tuple[int, int, int, str]:
         return (0, 0, 0, label)
     major, minor, patch, _suffix = parts
     return (int(major), int(minor), int(patch), label)
+
+
+def _as_tuple(value: Any) -> tuple[str, ...]:
+    """A cache value that is a string or a list, as a tuple of strings."""
+    if not value:
+        return ()
+    if isinstance(value, str):
+        return tuple(sorted(part.strip() for part in value.split(",") if part.strip()))
+    return tuple(sorted(str(v) for v in value))
 
 
 def _checked_at() -> str:
@@ -577,12 +602,18 @@ def _node_fact(
     version = _parse_version(record.label)
     kind = release_kind(record.label)
     architecture = ",".join(record.architecture)
+    production_architecture = ",".join(record.production_architecture)
     text_parts = [
         record.label,
         record.xml_type,
         kind,
         record.state,
         architecture,
+        (
+            f"production architecture: {production_architecture}"
+            if production_architecture
+            else ""
+        ),
         record.release_notes,
     ]
     attrs = {
@@ -598,6 +629,8 @@ def _node_fact(
         "text": " ".join(p for p in text_parts if p).strip(),
         **version,
     }
+    if production_architecture:
+        attrs["production_architecture"] = production_architecture
     return NodeFact(
         node_id=record.node_id,
         subtype="cmssw_release",
