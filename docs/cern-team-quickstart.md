@@ -290,6 +290,22 @@ okg-venv/bin/okg ingest --deployment myteam --progress \
   --exclude github_repo,gitlab_repo
 ```
 
+### Git history, not only the current files
+
+A repository gives its current files only. To also have its commits, tags,
+authors and per-file diffs (for "who last changed this file", "what changed
+between two tags", "which commit added this line"), enable the history
+source. It needs the GitHub source enabled and the same two install
+answers; no module change is needed. Before the install (step 3), rename
+`source-defaults/git_history.yaml.example` to `git_history.yaml`, next to
+`github_repo.yaml`. Already installed? Add the same entry to
+`source_registry.yaml` (copy the example), commit, then claim, load and
+ingest as above, with `--include git_history`.
+
+Measured on a repository with 1,675 commits and 403 tags: ingest and publish
+took 78 s and added 15,686 links. The header of the example lists the
+bounds for a very large repository and the known caveats.
+
 ### Code symbols, not only file paths
 
 By default a repository gives you its **file paths** (the `git_graph` module):

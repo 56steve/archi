@@ -1,0 +1,39 @@
+pact_version: 5
+id: ws-git-history-default
+title: cern-team bundle offers git history (commits, tags, diffs) as an optional source
+tier: 2
+why: 'A cern-team deployment can read the current files of its GitHub repository, but not its
+  history. A staging run added full history for a mid-size repository (1,928 commits, 403 tags,
+  3,309 per-file diffs, 41 authors; ingest and publish 78 s, 15,686 new links) and four
+  history questions were answered correctly from graph calls. That entry only existed in the
+  staging deployment''s own registry, so a clean install could not reproduce it.
+
+
+  This change ships the entry as source-defaults/git_history.yaml.example, off by default like
+  the other optional sources. Renaming it to git_history.yaml enables it next to github_repo.
+  It reads the same repo name and checkout as github_repo, keeps diffs, and carries the strict
+  admission block. The header states what it emits, the measured cost, what it needs and the
+  known caveats. The quickstart gains a short subsection on enabling it.
+
+
+  NOT CHANGED: the default source set (still only the CMSSW catalog), the module list
+  (git_graph is already composed), any connector code, the okg pin. A full install with the
+  file renamed was not run here; the same entry was run on a staging deployment.'
+affected_code:
+- bundles/cern-team/source-defaults/git_history.yaml.example
+- docs/cern-team-quickstart.md
+- python/tests/test_bundle_cern_team.py
+requirements:
+- id: req.ws-git-history-default.main
+  statement: "The cern-team bundle ships git_history.yaml.example, an opt-in source for commits, tags, authors and per-file diffs of the github_repo checkout.\n\nAcceptance:\n- acc.ws-git-history-default.example: the example parses, is not selected by default, carries the strict admission block and sync block, names github_repo as its predecessor, uses a resolvable okg source module, and takes repo and repo_root from the same answers as github_repo. [evidence: pytest]\n- acc.ws-git-history-default.docs: the quickstart says how to enable it and gives the measured cost; the example header gives what it emits, cost, needs and caveats. [evidence: manual]\n\nScenarios:\n- scn.ws-git-history-default.fast-path Fast-path work is verified\n  Given a small nontrivial change fits one requirement\n  When the declared verification runs\n  Then the requirement has executed proof before completion"
+tasks:
+- id: task.ws-git-history-default
+  requirement: req.ws-git-history-default.main
+  verification: 'pytest python/tests/test_bundle_cern_team.py python/tests/test_bundle_source_adapters.py -q, then the full suite.
+
+
+    Test plan:
+
+    - python/tests [evidence: pytest]'
+evidence: []
+decisions: []

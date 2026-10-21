@@ -278,3 +278,33 @@ def test_chat_prompt_operators_are_the_declared_chat_tools():
     named = set(re.findall(r"\*\*([a-z]+)\*\*", _prompt_text()))
     assert named, "the prompt names no operators"
     assert named == declared
+
+
+def test_git_history_example_carries_the_strict_shape_and_follows_github_repo():
+    """The optional history source is shaped like the other defaults.
+
+    It ships as an example (off by default), carries the strict admission
+    block, and reads the checkout and repo name github_repo uses, so commits
+    attach to the file nodes that source emits.
+    """
+    sd = BUNDLE / "source-defaults"
+    assert not (sd / "git_history.yaml").exists(), "git_history must be opt-in"
+    entries = yaml.safe_load((sd / "git_history.yaml.example").read_text())
+    assert list(entries) == ["git_history"]
+    entry = entries["git_history"]
+    policy = entry["admission_policy"]
+    assert policy["output_signature"]["nodes"] and policy["output_signature"]["edges"]
+    assert policy["output_scope_summary"]
+    assert entry["sync"]
+    assert entry["predecessor_source"] == "github_repo"
+    assert entry["module"] == "okg.substrate.library.sources.git_graph_history"
+    assert entry["class"] == "GitHistorySource"
+    assert entry["required_for_baseline"] is False
+    assert importlib.util.find_spec(entry["module"]) is not None
+    declared = {n["subtype"] for n in policy["output_signature"]["nodes"]}
+    assert {"git_commit", "git_tag", "git_file_diff", "git_author"} <= declared
+    params = entry["params"]
+    assert params["store_diffs"] is True
+    gh = yaml.safe_load((sd / "github_repo.yaml.example").read_text())["github_repo"]
+    assert params["repo"] == gh["params"]["repo"]
+    assert params["repo_root"] == gh["params"]["repo_root"]

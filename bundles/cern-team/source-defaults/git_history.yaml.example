@@ -1,0 +1,105 @@
+# OPTIONAL — Git history (commits, tags, authors, per-file diffs) for the
+# GitHub repository that github_repo.yaml.example clones. Without this a
+# repository gives its CURRENT files only; with it an agent can also answer
+# "who changed this and when", "what changed between two tags" and "which
+# commit added this line".
+#
+# Rename to git_history.yaml to enable, together with github_repo.yaml
+# (rename github_repo.yaml.example, answer `github_repo_url` at install
+# time). This source reads that source's checkout and clones nothing itself.
+# The `git_graph` module it needs is already composed by this bundle
+# (modules.yaml), so there is no schema change.
+#
+# What it emits:
+#   git_commit    sha, author, committed_at, parent count, message
+#   git_tag       name, target commit, annotated or lightweight
+#   git_author    one node per author e-mail
+#   git_file_diff one redacted, size-capped unified diff per file changed in
+#                 a non-merge commit (`store_diffs: true`; searchable text)
+#   (plus the branch node and the links between them, and an `affects` link
+#   from each commit to the source_file nodes github_repo emits)
+#
+# Measured cost, one mid-size repository (1,675 commits on the main branch,
+# 403 tags): ingest and publish together took 78 s and added 15,686 links.
+# Cost grows with the number of commits and with diff volume. For a very
+# large repository set `diffs_since` (a date) under params to bound the
+# diffs, or `history_since` to bound the commits read on the first run.
+#
+# Needs: the github_repo source enabled. `repo` and `repo_root` are the SAME
+# values github_repo uses; `repo` must match so commits attach to the file
+# nodes `file:<repo>:<path>` that github_repo emits. `repo_root` is anchored
+# under ${archi_data_root} exactly as in github_repo.yaml.example. A
+# repo_root that does not exist fails admission and blocks the publish for
+# every source.
+#
+# Known caveats:
+#   * `committed_at` is stored as text, so filtering or sorting on it is a
+#     string comparison (the tool warns "sorted as text"). Correct when all
+#     commits share a time zone; mixed offsets can misorder commits within
+#     a day.
+#   * `expand` on a file's `in` links also counts merge commits (the
+#     `affects` link carries `via_merge`), so it lists more commits than
+#     `git log -- <file>` does.
+#   * Tags are matched to commits by `references`. "Which tag first contains
+#     this commit" needs a recursive walk over parent links (the read-only
+#     SQL tool), not `expand`, which follows only a few hops.
+#   * Remote branches and rename detection are off (`include_remotes`,
+#     `detect_renames`); turn them on in params only if a question needs them.
+
+git_history:
+  predecessor_source: github_repo
+  module: okg.substrate.library.sources.git_graph_history
+  class: GitHistorySource
+  ownership_id: ${deployment_name}.git-history
+  admission_policy:
+    producer_id: ${deployment_name}.git-history
+    producer_kind: source
+    trust_label: implicit_legacy_trusted
+    admission_mode: fast_track
+    authority_scope:
+      source_family: cern-team
+      source_name: git_history
+    output_signature:
+      nodes:
+        - {subtype: git_commit}
+        - {subtype: git_author}
+        - {subtype: git_tag}
+        - {subtype: git_branch}
+        - {subtype: git_file_diff}
+        - {subtype: source_file}
+      edges:
+        - {src_subtype: git_author, edge_type: assigned_to, dst_subtype: git_commit}
+        - {src_subtype: git_commit, edge_type: derives_from, dst_subtype: git_commit}
+        - {src_subtype: git_commit, edge_type: affects, dst_subtype: source_file}
+        - {src_subtype: git_commit, edge_type: contains, dst_subtype: git_file_diff}
+        - {src_subtype: git_file_diff, edge_type: references, dst_subtype: source_file}
+        - {src_subtype: git_branch, edge_type: references, dst_subtype: git_commit}
+        - {src_subtype: git_tag, edge_type: references, dst_subtype: git_commit}
+    output_scope_summary:
+      summary: commit history, authors, tags and per-file diffs of the configured GitHub repository
+      nodes: [git_commit, git_author, git_tag, git_branch, git_file_diff]
+      edges:
+        - git_author assigned_to git_commit
+        - git_commit derives_from git_commit
+        - git_commit affects source_file
+        - git_commit contains git_file_diff
+        - git_file_diff references source_file
+        - git_branch references git_commit
+        - git_tag references git_commit
+  source_class: discovery_crawl
+  record_identity_kind: scoped_locator
+  record_identity_fields: [repo, commit_sha]
+  source_revision_kind: content_hash
+  deletion_semantics: missing_from_completed_scope
+  publication_mode: published_generation
+  required_for_baseline: false
+  params:
+    repo: '${github_repo_name}'
+    # SINGLE-quoted, as in github_repo.yaml.example (answers are substituted
+    # as text, then parsed as YAML).
+    repo_root: '${archi_data_root}/repos/${github_repo_name}'
+    store_diffs: true
+  sync:
+    triggers: [manual, reconcile]
+    default_event_mode: scope_complete
+    reconcile_mode: scope_complete
