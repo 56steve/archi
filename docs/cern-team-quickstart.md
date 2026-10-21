@@ -290,6 +290,47 @@ okg-venv/bin/okg ingest --deployment myteam --progress \
   --exclude github_repo,gitlab_repo
 ```
 
+### Git history, not only the current files
+
+A repository gives its current files only. To also have its commits, tags,
+authors and per-file diffs (for "who last changed this file", "what changed
+between two tags", "which commit added this line"), enable the history
+source. It needs the GitHub source enabled and the same two install
+answers; no module change is needed. Before the install (step 3), rename
+`source-defaults/git_history.yaml.example` to `git_history.yaml`, next to
+`github_repo.yaml`.
+
+**Already installed?** The example holds install-time placeholders that okg
+does not fill in later, so paste it by hand and fill them in. Paste the
+entry under `sources:` in `deployments/myteam/source_registry.yaml`
+(indented like the other entries), then replace `${deployment_name}`, and
+copy `repo` and `repo_root` exactly from your `github_repo` entry. Before
+and after, with invented values:
+
+```yaml
+# before (as shipped)
+    params:
+      repo: '${github_repo_name}'
+      repo_root: '${archi_data_root}/repos/${github_repo_name}'
+# after (values copied from this deployment's github_repo entry)
+    params:
+      repo: click
+      repo_root: /srv/archi-data/data/repos/click
+```
+
+A `repo_root` that does not exist fails admission and blocks the publish for
+every source. Commit, then claim, load and ingest as above, with
+`--include git_history`.
+
+Measured on a repository with 1,928 commits ingested (1,675 on the main
+branch) and 403 tags: ingest and publish took 78 s and added 15,686 links.
+Two things to know: the default search (also the chat's) leaves out git
+records unless you add `git_commit`, `git_file_diff` and `git_tag` to the
+`content` search profile, and "which tag first contains this commit" needs
+the SQL `query` tool, which the chat does not offer. The header of the
+example gives the exact lines, the bounds for a very large repository and
+the other caveats.
+
 ### Code symbols, not only file paths
 
 By default a repository gives you its **file paths** (the `git_graph` module):
