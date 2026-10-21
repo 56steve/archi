@@ -96,12 +96,14 @@ classes:
       source_repo:
       site_name:
       path:
+      analysis_id:
+        description: The CMS analysis id(s) in the topic name, hyphenated (topic HIG29991 gives HIG-29-991). Comma-separated when the name holds more than one. TWiki topics only; absent when the name carries no id. The page text also holds the CMS- prefixed form so search finds either spelling.
       text:
     annotations:
       archetype: artifact
       transient: "false"
       okg_alias_fields: url
-      okg_searchable_text_fields: title,body,url,text
+      okg_searchable_text_fields: title,body,url,analysis_id,text
       # TWiki titles are WikiWords (CMSDataTransfers) and docs-site titles
       # often paths; the BM25 index lexes either as one token. Declaring
       # `title` here adds its component words (separators on current okg;

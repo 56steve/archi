@@ -270,6 +270,11 @@ from archi.enrichment.anonymizer import (
     redact_obfuscated_email_addresses,
 )
 from archi.sources._sdk_adapter import ReaderAdapter
+from archi.sources import _twiki_analysis_id as _twiki_analysis_id_module
+from archi.sources._twiki_analysis_id import (
+    analysis_id_forms,
+    analysis_ids_from_name,
+)
 from archi.sources._twiki_physics import PhysicsFilterReport, filter_records
 from archi.auth.cache import (
     cache_or_forced_live_change_probe,
@@ -321,6 +326,9 @@ class TwikiRecord:
     web_root: str = ""
     wiki_links: tuple[str, ...] = ()
     bare_wikiwords: tuple[str, ...] = ()
+    # Hyphenated CMS analysis ids read from the topic name (HIG29991 gives
+    # HIG-29-991); see _twiki_analysis_id.
+    analysis_ids: tuple[str, ...] = ()
 
     @property
     def node_id(self) -> str:
@@ -1560,9 +1568,16 @@ def _emit_targets(source_class: type) -> list[Any]:
     lives in :mod:`archi.enrichment.anonymizer`. With only the class, a
     change to either left the probe token unchanged, so an unchanged
     snapshot was skipped and text already stored kept its addresses.
-    Fingerprinting both modules makes such a change re-emit once.
+    Fingerprinting both modules makes such a change re-emit once. The
+    analysis-id pattern module is listed for the same reason: a new code
+    there must re-emit every page.
     """
-    return [source_class, sys.modules[__name__], _anonymizer]
+    return [
+        source_class,
+        sys.modules[__name__],
+        _anonymizer,
+        _twiki_analysis_id_module,
+    ]
 
 
 def _unreadable_dir_reason(root: Path) -> str | None:
@@ -1728,6 +1743,7 @@ def _record_from_raw(
         version=meta["version"],
         wiki_links=tuple(sorted(extract_wiki_links(raw))),
         bare_wikiwords=tuple(sorted(extract_bare_wikiwords(raw))),
+        analysis_ids=analysis_ids_from_name(title),
     )
 
 
@@ -1882,27 +1898,50 @@ def _write_page_index(path: str, records: "list[TwikiRecord]") -> None:
     os.replace(tmp, target)
 
 
+def _analysis_id_header(record: TwikiRecord) -> str:
+    """The id in the spellings people type, or "".
+
+    The topic name is HIG29991; a search for HIG-29-991 or CMS-HIG-29-991
+    only matches if those spellings are in the indexed text. Only the
+    page record carries them: chunk text, and so chunk ids, do not move.
+    """
+    return analysis_id_forms(record.analysis_ids)
+
+
 def _page_node(record: TwikiRecord, revision: dict[str, Any]) -> NodeFact:
     text = " ".join(
-        filter(None, [record.title, record.parent_topic, record.web_name])
+        filter(
+            None,
+            [
+                record.title,
+                record.parent_topic,
+                record.web_name,
+                _analysis_id_header(record),
+            ],
+        )
     )
+    attrs: dict[str, Any] = {
+        "label": record.title,
+        "title": record.title,
+        "url": record.url,
+        "source_path": record.source_path,
+        "source_repo": "",
+        "site_name": urlparse(record.url).netloc,
+        "web_name": record.web_name,
+        "last_updated": record.last_modified,
+        "author": record.author,
+        "parent_topic": record.parent_topic,
+        "version": record.version,
+        "text": text,
+    }
+    if record.analysis_ids:
+        # Comma-separated when the name holds more than one, like the
+        # CMSSW production_architecture: a list would not filter.
+        attrs["analysis_id"] = ",".join(record.analysis_ids)
     return NodeFact(
         node_id=record.node_id,
         subtype="documentation_page",
-        attrs={
-            "label": record.title,
-            "title": record.title,
-            "url": record.url,
-            "source_path": record.source_path,
-            "source_repo": "",
-            "site_name": urlparse(record.url).netloc,
-            "web_name": record.web_name,
-            "last_updated": record.last_modified,
-            "author": record.author,
-            "parent_topic": record.parent_topic,
-            "version": record.version,
-            "text": text,
-        },
+        attrs=attrs,
         source_record_id={"path": record.source_path},
         source_revision=revision,
     )

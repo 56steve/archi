@@ -121,6 +121,8 @@ upstream or normalized names: `RequestName` / `request_name` /
 
 Upgrade note for `cmssw_releases`: release records now carry `production_architecture`. An instance installed earlier keeps its own copy of `schemas/operations.yaml`; copy the new file over it (or reinstall) so the field is declared and searchable. After copying, commit the deployment config, then run `okg catalog ownership claim --deployment .` and `okg catalog load --apply` from the deployment directory before the next ingest: without the load, ingest refuses with `catalog_applied_version_absent`. Then re-ingest `cmssw_releases` and publish; about 2,365 release records update.
 
+Upgrade note for `twiki_eos`: TWiki pages whose topic name holds a CMS analysis id (HIG29991, B2G28992Review) now carry `analysis_id` (HIG-29-991) and the page text gains "HIG-29-991 CMS-HIG-29-991", so a search for the hyphenated id finds them. An earlier install keeps its own copy of `schemas/sources.yaml`; copy the new file over it (or reinstall), commit, run `okg catalog ownership claim --deployment .` and `okg catalog load --apply`, then re-ingest `twiki_eos` and publish. On the CMS dump, 4,282 of 43,431 page records change (new attribute and text); no chunk changes, so no chunk is re-embedded.
+
 ## Reference caches are different
 
 `docsite` and `gitlab_docs` can also read *reference* caches to emit
