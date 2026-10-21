@@ -589,6 +589,7 @@ GROUPS: dict[str, GroupSpec] = {
                                 "architecture",
                                 "release_notes",
                                 "release_date",
+                                "production_architecture",
                             ),
                             _require_text("label"),
                             signature=_text_matches(r"CMSSW_\S+", "label"),

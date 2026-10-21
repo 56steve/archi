@@ -715,3 +715,102 @@ def test_cursor_mode_still_claims_no_scope(tmp_path):
     (root / "records.json").write_text(json.dumps(RECORDS))
     run = CMSSWReleaseSource(base=str(tmp_path)).run("run-1", mode="cursor")
     assert run.completed_scope is False
+
+
+# --- production architecture (`prodarch=1` in releases.map) ---
+
+PRODARCH_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "fixtures"
+    / "cmssw"
+    / "releases_prodarch_excerpt.map"
+)
+
+
+def test_production_architecture_is_parsed_and_searchable(tmp_path):
+    """Six architectures, one marked: the marked one is the production one."""
+    _source, run = _run_map(tmp_path, PRODARCH_FIXTURE.read_text(encoding="utf-8"))
+    node = _nodes(run.facts)["cmssw_release:CMSSW_14_0_0"]
+    assert node.attrs["architecture"] == (
+        "el8_aarch64_gcc12,el8_amd64_gcc12,el8_ppc64le_gcc12,"
+        "el9_aarch64_gcc12,el9_amd64_gcc12,slc7_amd64_gcc12"
+    )
+    assert node.attrs["production_architecture"] == "el8_amd64_gcc12"
+    assert "production architecture: el8_amd64_gcc12" in node.attrs["text"]
+
+
+def test_several_marked_architectures_are_all_kept(tmp_path):
+    _source, run = _run_map(tmp_path, PRODARCH_FIXTURE.read_text(encoding="utf-8"))
+    node = _nodes(run.facts)["cmssw_release:CMSSW_1_3_0"]
+    assert node.attrs["production_architecture"] == "slc3_ia32_gcc323,slc4_ia32_gcc345"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # no prodarch key at all
+        "architecture=el8_amd64_gcc12;label=CMSSW_14_0_3;type=Production;state=Announced;",
+        # key present, nothing marked
+        "architecture=el8_amd64_gcc12;label=CMSSW_14_0_3;type=Production;state=Announced;prodarch=0;",
+    ],
+)
+def test_no_marker_means_no_field(tmp_path, line):
+    _source, run = _run_map(tmp_path, line)
+    node = _nodes(run.facts)["cmssw_release:CMSSW_14_0_3"]
+    assert "production_architecture" not in node.attrs
+    assert "production architecture" not in node.attrs["text"]
+    assert node.attrs["architecture"] == "el8_amd64_gcc12"
+
+
+def test_family_records_carry_no_production_architecture(tmp_path):
+    _source, run = _run_map(tmp_path, PRODARCH_FIXTURE.read_text(encoding="utf-8"))
+    family = _nodes(run.facts)["cmssw_release_family:CMSSW_14_0"]
+    assert "production_architecture" not in family.attrs
+
+
+def test_frozen_map_parses_the_marker_the_same_way(tmp_path):
+    body = PRODARCH_FIXTURE.read_bytes()
+    path = tmp_path / "releases.map"
+    path.write_bytes(body)
+    pin = "sha256:" + hashlib.sha256(body).hexdigest()
+    run = _frozen_source(path, pin).run("frozen", mode="scope_complete")
+    node = _nodes(run.facts)["cmssw_release:CMSSW_14_0_0"]
+    assert node.attrs["production_architecture"] == "el8_amd64_gcc12"
+
+
+def test_ids_and_edges_do_not_depend_on_the_marker(tmp_path):
+    marked = PRODARCH_FIXTURE.read_text(encoding="utf-8")
+    unmarked = marked.replace(";prodarch=1;", ";prodarch=0;")
+    _s, run_a = _run_map(tmp_path / "a", marked)
+    _s, run_b = _run_map(tmp_path / "b", unmarked)
+    facts_a, facts_b = list(run_a.facts), list(run_b.facts)
+    assert set(_nodes(facts_a)) == set(_nodes(facts_b))
+    assert _supersedes(facts_a) == _supersedes(facts_b)
+
+
+def test_cache_records_accept_a_production_architecture(tmp_path):
+    root = tmp_path / "data" / "cmssw-releases"
+    root.mkdir(parents=True)
+    records = [dict(RECORDS[0], production_architecture="el8_amd64_gcc12")]
+    (root / "records.json").write_text(json.dumps(records))
+    run = CMSSWReleaseSource(base=str(tmp_path)).run("r", mode="scope_complete")
+    node = _nodes(run.facts)["cmssw_release:CMSSW_14_0_1"]
+    assert node.attrs["production_architecture"] == "el8_amd64_gcc12"
+
+
+def test_cache_records_sort_the_production_architecture(tmp_path):
+    root = tmp_path / "data" / "cmssw-releases"
+    root.mkdir(parents=True)
+    records = [
+        dict(RECORDS[0], production_architecture=["slc4_ia32_gcc345", "slc3_ia32_gcc323"]),
+        dict(RECORDS[1], production_architecture="el9_amd64_gcc12,el8_amd64_gcc12"),
+    ]
+    (root / "records.json").write_text(json.dumps(records))
+    run = CMSSWReleaseSource(base=str(tmp_path)).run("r", mode="scope_complete")
+    nodes = _nodes(run.facts)
+    assert nodes["cmssw_release:CMSSW_14_0_1"].attrs["production_architecture"] == (
+        "slc3_ia32_gcc323,slc4_ia32_gcc345"
+    )
+    assert nodes["cmssw_release:CMSSW_14_0_2"].attrs["production_architecture"] == (
+        "el8_amd64_gcc12,el9_amd64_gcc12"
+    )

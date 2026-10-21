@@ -119,6 +119,8 @@ upstream or normalized names: `RequestName` / `request_name` /
 | `twiki_eos` | an EOS snapshot path | whatever populates that EOS area |
 | `monit_*` | none — queried live | a MONIT/Grafana token |
 
+Upgrade note for `cmssw_releases`: release records now carry `production_architecture`. An instance installed earlier keeps its own copy of `schemas/operations.yaml`; copy the new file over it (or reinstall) so the field is declared and searchable. After copying, commit the deployment config, then run `okg catalog ownership claim --deployment .` and `okg catalog load --apply` from the deployment directory before the next ingest: without the load, ingest refuses with `catalog_applied_version_absent`. Then re-ingest `cmssw_releases` and publish; about 2,365 release records update.
+
 ## Reference caches are different
 
 `docsite` and `gitlab_docs` can also read *reference* caches to emit
