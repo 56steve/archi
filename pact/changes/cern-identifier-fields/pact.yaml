@@ -79,7 +79,7 @@ evidence:
   status: pass
   command: okg search over synthetic cern-team deployments built before and after the declarations
     (see artifact)
-  artifact: pact/changes/cern-identifier-fields/evidence/exact-id-before-after.txt
+  artifact: pact/changes/cern-identifier-fields/evidence/exact-id-before-after.md
   sha256: 8bc61801d25e569e9c4fc449c9fe59d695fc1b536ac48e96f3b75080509b2019
   head: 8896f7f41b1e00f929f3546ba80fef408a42636b
   at: '2026-10-21T22:29:21+00:00'
