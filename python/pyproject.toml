@@ -34,6 +34,17 @@ dev = [
 jira = [
     "jira>=3.8",
 ]
+# The SSO cookie helper (archi.downloaders.sso_login) checks a Kerberos ticket
+# with `requests-kerberos`, and the CERN SSO login flow uses `cern-sso-python`.
+# Both used to come from okg's own `cern` extra (removed from okg core, which
+# keeps no CERN-specific install option). Install them with
+# `pip install -e "./python[cern]"` from a checkout; do not run
+# `pip install archi[cern]`: the name `archi` on PyPI is an unrelated package.
+# The readers never import either package.
+cern = [
+    "cern-sso-python>=0.4",
+    "requests-kerberos>=0.15",
+]
 
 [tool.black]
 line-length = 88

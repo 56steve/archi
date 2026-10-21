@@ -44,6 +44,11 @@ okg-venv/bin/pip install \
   "archi @ git+https://github.com/archi-physics/archi-okg@04460a5d11fed11fb52ff41ad2b4d8365a595975#subdirectory=python"
 ```
 
+If you will run the SSO cookie helper (`archi.downloaders.sso_login`), also
+install the `cern` extra from a checkout: `pip install -e "./python[cern]"`. It
+adds `requests-kerberos` and `cern-sso-python`, which okg's old `cern` extra used
+to provide.
+
 The pin above is the commit this document was written against. The code-symbols
 examples (`code_structure.yaml.example` and its GitLab twin, in "Code symbols"
 below) need an archi release that contains them; at an older commit those files

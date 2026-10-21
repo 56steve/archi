@@ -1,0 +1,30 @@
+pact_version: 5
+id: cern-extra-sso-packages
+title: archi declares the `cern` extra (requests-kerberos, cern-sso-python) that okg core is dropping
+tier: 2
+why: 'archi.downloaders.sso_login imports requests_kerberos at run time
+  (sso_login.py:241) but archi declared no such dependency. It worked only because
+  installs took okg[cern] from okg core, and cms-kb''s README tells operators to install
+  exactly that. okg core (mitdbg/okg#3951) is removing its cern extra under the rule that
+  CERN-specific install options belong in archi-okg. This change adds a `cern` extra here
+  with the same two packages and versions (cern-sso-python>=0.4, requests-kerberos>=0.15),
+  and one quickstart sentence. The `jira` client keeps its own existing extra. Nothing at
+  run time changes; only the place the packages are declared moves. Unknown: whether any
+  other consumer installs these packages through okg; a search of okg-deployments found
+  cern_sso only in wisdqm/scripts/download_sources.py, checked separately.'
+affected_code:
+- python/pyproject.toml
+- python/tests/test_install_extras.py
+- docs/cern-team-quickstart.md
+requirements:
+- id: req.cern-extra-sso-packages.declared
+  statement: python/pyproject.toml has an optional `cern` extra naming exactly
+    cern-sso-python and requests-kerberos, neither is a core dependency, and the extra
+    resolves with pip.
+tasks:
+- id: task.cern-extra-sso-packages.deliver
+  requirement: req.cern-extra-sso-packages.declared
+  verification: python/tests/test_install_extras.py passes, and `pip install --dry-run
+    "./python[cern]"` on a lab host resolves both packages.
+evidence: []
+decisions: []
