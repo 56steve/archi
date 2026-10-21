@@ -74,6 +74,10 @@ classes:
       transient: "false"
       okg_alias_fields: issue_key
       okg_searchable_text_fields: issue_key,summary,description,status,priority,text
+      # The issue key (ABC-123) is the id a person types; okg ranks the
+      # record that bears it first (okg#3959). Every identifier field must
+      # also be a searchable text field.
+      okg_identifier_fields: issue_key
       # An issue's body lives on its chunks (jira_issue contains
       # document_chunk, archi.sources.jira). Declaring the relation lets
       # a passage name this issue as its parent and lets passage-ranked
@@ -104,6 +108,10 @@ classes:
       transient: "false"
       okg_alias_fields: url
       okg_searchable_text_fields: title,body,url,analysis_id,text
+      # analysis_id holds the hyphenated id(s) of the topic name, comma
+      # separated; it is the form a person types (ABC-29-991). The title is
+      # a WikiWord with no separators and is not declared.
+      okg_identifier_fields: analysis_id
       # TWiki titles are WikiWords (CMSDataTransfers) and docs-site titles
       # often paths; the BM25 index lexes either as one token. Declaring
       # `title` here adds its component words (separators on current okg;
@@ -254,5 +262,8 @@ classes:
       archetype: artifact
       transient: "false"
       okg_alias_fields: report_number
-      okg_searchable_text_fields: title,abstract,report_number,text
+      okg_searchable_text_fields: title,abstract,report_number,analysis_code,text
+      # Both hold ids a person types (CMS-PAS-ABC-29-991, ABC-29-991).
+      # other_report_numbers is joined with "; " and is not declared.
+      okg_identifier_fields: report_number,analysis_code
       okg_title_from: title
