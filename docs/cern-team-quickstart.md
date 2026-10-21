@@ -16,8 +16,10 @@ was checked as follows: the archi suite gave 1795 passed and 1 failed (a timing 
 unmodified `main`), and the step 2 container was started on 2026-10-20 and
 listed timescaledb, pg_cron, pg_textsearch, vector and btree_gist among its extensions (see
 [okg alignment](okg-alignment.md)); steps 3–8 have not been re-run on it.
-Step 8 (TWiki, from an EOS dump) is covered by tests on a synthetic dump but
-has not been re-run end to end, and says so where it appears.
+Step 8 (TWiki, from an EOS dump) was run on v0.2.0 over a real dump, once,
+on the reinstall route ("Already did step 3?"); the first-install route
+there was covered by tests on a synthetic dump but not run end to end, and
+step 8 says which is which.
 
 **A note on okg versions.** This document pins AKMON v0.2.0, the public
 release of okg (`github.com/mitdbg/akmon`). The package and the `okg`
@@ -188,7 +190,10 @@ source**, because it runs before the repository is cloned. Run the same
 
 *If the install fails for some other reason, do not commit and re-run — see
 "Starting over". A half-finished deployment stays wedged behind `staged
-source work was not published`, and the recovery is a teardown, not a retry.*
+source work was not published`, and the recovery is a teardown, not a retry.
+One case is different: a reinstall over a deployment that already published
+can fail at the ingest stage with its data staged (step 8 says how to
+check).*
 
 Swap in your own repositories. `--*-repo-name` is just a short label for
 the graph; `--*-repo-url` is what gets cloned.
@@ -318,7 +323,12 @@ bundle leaves out on purpose. To turn it on:
 2. Install, commit, ingest **twice**, then publish, as in step 3 (the first
    ingest fails for this source only; see the note after the commit there).
    Already installed? Make the same edits and reinstall with
-   `--force --yes` (step 4).
+   `--force --yes` (step 4). The same mechanism as in step 8's reinstall
+   applies here, but it was not run on this route: after a reinstall,
+   commit the deployment and run `okg catalog ownership claim --deployment
+   . --json` (from inside the deployment directory) before the ingest, or
+   expect `catalog_manifest_drifted`; and expect your `chat:` settings in
+   `deployment.yaml` to be reset (step 8 shows how to restore them).
 
 Check it: `okg-venv/bin/okg search --deployment myteam --query "Context"`
 should return `symbol:click:...` nodes next to the `file:click:...` ones.
@@ -634,9 +644,11 @@ okg-venv/bin/okg ingest --deployment myteam --progress \
 
 ## 8. Adding a TWiki
 
-> **Not re-run end to end.** The reader and the config below are covered by
-> tests against a synthetic dump. A full install over a real dump has not
-> been repeated for this guide.
+> **What was run.** The reinstall route ("Already did step 3?") was run once
+> on AKMON v0.2.0 over a real dump of 44,627 files, on a deployment that
+> had already published. It published; the notes marked "in the run" come
+> from that run. The first-install route was not run on a real dump: it
+> follows step 3 and is covered by tests on a synthetic dump.
 
 TWiki reaches this bundle from an **EOS dump only**. There is no live crawl
 and no anonymous web fallback, so no login or cookie is involved: you point
@@ -682,20 +694,74 @@ okg-venv/bin/okg install --profile cern-team \
 Keeping the data root outside `deployments/` (step 3) is what makes this
 safe: `--force` deletes the deployment directory, not your caches or dump.
 
-Either way, finish as in step 3. The install stops at the publish until
-the deployment config is committed; then read the sources and publish:
+**`--force` also resets your hand edits in `deployment.yaml`.** The whole
+file is rewritten from the bundle, so the `chat:` block (model, port,
+image, provider) goes back to bundle defaults. Before reinstalling, commit
+the deployment (`git -C deployments add -A && git -C deployments commit -m
+"before reinstall"`) and keep a copy of the directory. After reinstalling,
+run `git -C deployments diff` and put your `chat:` settings back, for
+example by re-applying the commit that made them (`git -C deployments
+show <commit> | git -C deployments apply`). Check the result with the same
+`diff` before you commit.
+
+**The reinstall reads every source itself, and can end red.** `okg install`
+runs an ingest as its last stage. With a large dump that read is long (in
+the run, about an hour), and it can print `install failed at stage ingest`
+and exit 1, with only a cut-off tail of output. In the run the TWiki data
+had been staged anyway. This is the one case where the step 3 rule ("do not
+commit and re-run; start over") does not apply. Tell the two cases apart
+like this:
+
+- The message says `failed at stage ingest` (not another stage), **and**
+  `okg status --deployment myteam` lists the TWiki source (`twiki-eos`) with
+  a large `n_node_facts`, not zero. Then continue with the commands below.
+  (The cause of the red exit was not found; the run only shows that the
+  data was staged.)
+- Any other stage, or the TWiki source is missing or empty: it is a real
+  failure. Stop and see "Starting over".
+
+*First install.* Finish as in step 3, unchanged: commit the config, run
+`okg ingest` (it clones the repositories; twice with the code-symbols
+source), then `okg run --once --apply`. No ownership claim is needed. The
+database has no earlier claim to disagree with, but this was not run.
+
+*Reinstall (the route that was run).* Commit the deployment config, then
+**claim the deployment again**. The reinstall changes the
+`source_registry` block, so the catalog the database holds no longer matches
+the directory, and the next `okg ingest` is refused with
+`catalog_manifest_drifted` until you claim it. Then publish what the install
+staged:
 
 ```bash
 git -C deployments add -A
 git -C deployments commit -m "myteam deployment config"
 
-okg-venv/bin/okg ingest --deployment myteam --progress
+cd deployments/myteam
+okg-venv/bin/okg catalog ownership claim --deployment . --json
+cd -
 okg-venv/bin/okg run --once --deployment myteam --apply
 ```
+
+(In the run the claim was given the deployment directory, as above. The
+command also accepts a deployment name; that form was not run.) In the run,
+a second `okg ingest --deployment myteam --progress` after the publish read
+every source again, found nothing new and exited zero; it is a useful check
+that nothing was missed, not a required step.
 
 `okg ingest` reads every source, the dump included, and stages the
 result. `okg run --once` does not read sources: it publishes what ingest
 staged.
+
+**The first publish of a full TWiki is slow.** In the run, the publish took
+about 22 minutes (1,352 s) and produced a generation of about 242,000
+records, of which about 233,000 were new; during that time it holds the
+database's publish lock. The command finished with a `lock_headroom` warning:
+the publish ran longer than the database's 15-minute (900 s) statement
+timeout. In the run the generation was `published` regardless, so read the
+warning as "little headroom", not "failed"; confirm with step 5. As a
+precaution (not something the run tested), do not start a second publish
+while the first is running. Whether later publishes are shorter
+was not measured.
 
 The answer lands in the source as `eos_root: <your path>`. To read part of
 the dump, edit the renamed file before installing: `seed_topics` and
@@ -716,6 +782,14 @@ okg-venv/bin/okg search --deployment myteam --query "<a word from one of your to
 
 The search should return a `twiki:<Web>:<Topic>` page whose text is that
 topic. A count of `0` means `eos_root` points at the wrong directory.
+
+**Expect fewer pages than files.** The reader skips topics by name, with
+its built-in skip patterns (`DEFAULT_SKIP_PATTERNS`, imported by
+`python/archi/sources/twiki.py` from okg core; the shipped file does not set
+them): pages named by number or date, `-replies` pages, lowercase names,
+`Web*` infrastructure pages, `LastViewedTopics` and similar. Empty files are
+skipped too. In the run, 44,627 files gave 43,783 pages (842 skipped by
+name, 2 empty), so the graph count was under 2% lower than `find | wc -l`.
 
 ## Adding other sources
 
