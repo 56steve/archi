@@ -6,6 +6,7 @@ every connector default, resolvable playbook symlinks, no operator
 paths or credential values in bundle files.
 """
 import importlib.util
+import json
 import re
 from pathlib import Path
 
@@ -212,3 +213,68 @@ def test_chat_declares_a_system_prompt_that_ships():
     # naming them, it has stopped doing its job.
     for operator in ("search", "inspect", "expand"):
         assert operator in text, f"prompt no longer mentions the {operator} tool"
+
+
+def _prompt_text() -> str:
+    defaults = yaml.safe_load((BUNDLE / "deployment-defaults.yaml").read_text())
+    ref = defaults["chat"]["preset"]["system_prompt_ref"]
+    return (BUNDLE / ref).read_text(encoding="utf-8")
+
+
+# `inspect`'s input schema (the chat server's tool list): `target.kind` picks
+# the subject and each kind accepts only these keys inside `target`.
+_INSPECT_TARGET_KEYS = {
+    "graph": set(),
+    "subtype": {"subtype", "continuation_token", "detail", "page_size"},
+    "node": {"node_id", "path", "source", "hydrate"},
+    "nodes": {"node_ids", "ref"},
+    "text": {"node_id", "path", "source", "at", "lines", "continuation_token"},
+    "texts": {"items"},
+}
+
+
+def _inspect_examples(text: str) -> list[dict]:
+    flat = re.sub(r"\s+", " ", text)
+    found = re.findall(r"inspect\(target=(\{.*?\})\)", flat)
+    return [json.loads(raw) for raw in found]
+
+
+def test_chat_prompt_is_generic():
+    """No deployment name, no tool-name prefix, no `query` operator.
+
+    Tool names come from the chat server (they carry the deployment's name),
+    so the prompt describes the operators and says to copy the exact names.
+    """
+    text = _prompt_text()
+    assert "cms-kb" not in text and "okg-" not in text
+    assert not re.search(r"\bquery\b", text)
+    assert len(text.split()) <= 650
+
+
+def test_chat_prompt_inspect_examples_match_the_input_schema():
+    """Every `inspect(target=...)` example parses and fits the tool schema.
+
+    `kind` and its keys sit inside `target` (7 of 11 chat refusals in a
+    measured run were these keys at the top level). The prompt must show a
+    `graph`, a `node` and a `text` example, and no example may carry `next`.
+    """
+    text = _prompt_text()
+    examples = _inspect_examples(text)
+    kinds = set()
+    for target in examples:
+        kind = target["kind"]
+        assert kind in _INSPECT_TARGET_KEYS, f"unknown inspect kind {kind!r}"
+        extra = set(target) - {"kind"} - _INSPECT_TARGET_KEYS[kind]
+        assert not extra, f"inspect kind {kind!r} does not take {sorted(extra)}"
+        kinds.add(kind)
+    assert {"graph", "node", "text"} <= kinds
+    assert not re.search(r"inspect\([^)]*target=[^)]*next=", text)
+
+
+def test_chat_prompt_operators_are_the_declared_chat_tools():
+    """Every operator the prompt names exists in the bundle's chat tool list."""
+    defaults = yaml.safe_load((BUNDLE / "deployment-defaults.yaml").read_text())
+    declared = set(defaults["chat"]["mcp"]["tools"])
+    named = set(re.findall(r"\*\*([a-z]+)\*\*", _prompt_text()))
+    assert named, "the prompt names no operators"
+    assert named == declared
