@@ -45,9 +45,10 @@ okg-venv/bin/pip install \
 ```
 
 If you will run the SSO cookie helper (`archi.downloaders.sso_login`), also
-install the `cern` extra from a checkout: `pip install -e "./python[cern]"`. It
-adds `requests-kerberos` and `cern-sso-python`, which okg's old `cern` extra used
-to provide.
+run `okg-venv/bin/pip install requests-kerberos`. It needs the Kerberos
+development headers (`libkrb5-dev` or `krb5-devel`) to build. okg's old `cern`
+extra used to install this package. The JIRA downloader needs `jira` instead.
+From an archi-okg checkout, `pip install -e "./python[cern]"` does the same.
 
 The pin above is the commit this document was written against. The code-symbols
 examples (`code_structure.yaml.example` and its GitLab twin, in "Code symbols"
