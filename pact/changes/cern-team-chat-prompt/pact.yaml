@@ -53,8 +53,8 @@ evidence:
   status: pass
   command: "cd python && PYTHONPATH=. pytest tests/test_bundle_cern_team.py -> 14 passed (3 new)"
   artifact: pact/changes/cern-team-chat-prompt/evidence/bundle_cern_team.junit.xml
-  sha256: 2e45852c93f48c210e5386e71aa9560d97424d736a3916912617476c5da8d7c7
-  head: 487ad165ff984c9d54ec22c09d5bf8bc5fc1b0f5
-  at: "2026-10-21T13:17:44+00:00"
+  sha256: a950d4173651ebfae86859e511534d0407bd83e771ed68957da3c8ed295e4cc8
+  head: eb4114210a7a17368fb0c70a3d0789a81cbac859
+  at: "2026-10-21T13:21:40+00:00"
   note: "Full python/tests on the lab host: 1845 passed. One timing test (test_anonymizer linear-time check) failed in the first full run and passed alone and in a rerun of its file (441 passed)."
 decisions: []
