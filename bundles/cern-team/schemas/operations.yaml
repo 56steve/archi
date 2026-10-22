@@ -273,6 +273,8 @@ classes:
       transient: "false"
       okg_alias_fields: release
       okg_searchable_text_fields: release,release_type,release_kind,architecture,production_architecture,text
+      # The release name (CMSSW_14_0_0) is the id a person types.
+      okg_identifier_fields: release
       okg_title_from: release
 
   GlobalTag:
