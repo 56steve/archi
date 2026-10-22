@@ -7,6 +7,11 @@
 # (rename gitlab_repo.yaml.example and answer `gitlab_repo_url` at install
 # time). This source reads that source's checkout and clones nothing itself.
 # It reads the same extractors.yaml as code_text.yaml.example.
+#
+# ALREADY INSTALLED? Fill the placeholders by hand as the header of
+# code_text.yaml.example says; here `predecessor_source` is the qualified id
+# `myteam.gitlab-repo` (the bare `gitlab_repo` is refused), and a fresh
+# `okg catalog ownership claim --deployment <dir>` is needed before the ingest.
 
 code_text_gitlab:
   module: okg.substrate.library.sources.doc_corpus

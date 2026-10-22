@@ -391,6 +391,44 @@ needed. Each code file becomes a `doc:<repo>:<path>` document linked to its
 `file:` node, cut into one chunk per Python function or class with its line
 range. Leave the `code_extractors_dir` answer at its default.
 
+**Already installed?** The examples hold install-time placeholders that okg
+does not fill in later, so paste the entry by hand and fill them in. Copy
+`bundles/cern-team/extractors.yaml` into the deployment directory (next to
+`source_registry.yaml`), paste the entry under `sources:` in
+`deployments/myteam/source_registry.yaml`, then replace `${deployment_name}`
+with the deployment's name and copy `repo` and `repo_root` exactly from your
+`github_repo` entry. Leave `extractors_dir` as `${deployment_dir}`; okg
+expands that one itself. The easy mistake is `predecessor_source`: it must be
+the deployment's qualified id, not the bare source name (`github_repo` is
+refused with `PredecessorNotRun`). Before and after, with invented values:
+
+```yaml
+# before (as shipped)
+    params:
+      repo: '${github_repo_name}'
+      repo_root: '${archi_data_root}/repos/${github_repo_name}'
+      extractors_dir: '${code_extractors_dir}'
+      predecessor_source: '${deployment_name}.github-repo'
+# after (values copied from this deployment's github_repo entry)
+    params:
+      repo: click
+      repo_root: /srv/archi-data/data/repos/click
+      extractors_dir: '${deployment_dir}'
+      predecessor_source: 'myteam.github-repo'
+```
+
+Change `ownership_id` and `producer_id` the same way
+(`myteam.code-text`). For the GitLab entry the predecessor is
+`myteam.gitlab-repo`. The `repo_root` folder must already hold the checkout:
+the `github_repo` (or `gitlab_repo`) source must have cloned it, or the
+publish is blocked. Commit `extractors.yaml` together with the source entry,
+then run `okg catalog ownership claim
+--deployment . --json` from inside the deployment directory **after every
+edit to the registry**, and before the ingest and publish; without a fresh
+claim the publish is refused as drifted. Then `okg ingest --deployment myteam
+--include code_text` and `okg run --once --deployment myteam --apply`. A
+first install through the installer needs no claim, as in step 3.
+
 Proven on AKMON v0.2.0 with a throwaway install of a 99-file repository (77
 Python files): the install ended at its ingest stage with
 `install failed at stage ingest`, exactly as the same install without this
