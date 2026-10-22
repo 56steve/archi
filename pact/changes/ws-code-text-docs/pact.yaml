@@ -1,0 +1,46 @@
+pact_version: 5
+id: ws-code-text-docs
+title: 'Code-text docs: paste route for an existing deployment'
+tier: 1
+why: 'Adding the code_text source to a deployment that was already installed means
+  pasting the example entry by hand. A staging run showed two traps the docs did not
+  name. The example''s `predecessor_source` placeholder is not filled in, and the bare
+  name `github_repo` is refused with `PredecessorNotRun`; it must be the qualified
+  id, such as `myteam.github-repo`. After the registry edit, the publish was refused
+  as drifted until a fresh `okg catalog ownership claim` was run. This change says
+  so in the quickstart section and the headers of both examples, and adds a test
+  that keeps the guide and examples saying it. Docs and one test; no code changes.'
+affected_code:
+- docs/cern-team-quickstart.md
+- bundles/cern-team/source-defaults/code_text.yaml.example
+- bundles/cern-team/source-defaults/code_text_gitlab.yaml.example
+- python/tests/test_bundle_code_text.py
+requirements:
+- id: req.ws-code-text-docs.docs
+  statement: 'The "Function bodies" section of docs/cern-team-quickstart.md has an
+    "Already installed?" route with a before and after using invented values: the
+    placeholders to replace, the qualified `predecessor_source`, the copy of
+    extractors.yaml, and a fresh `okg catalog ownership claim` after every registry
+    edit and before the ingest (a first install through the installer needs none).
+    Both code_text examples carry the same warning in their headers without writing
+    any placeholder in a comment (the installer expands every one).
+
+
+    Acceptance:
+
+    - acc.ws-code-text-docs.test: the bundle test reads the guide section and both
+    example headers and requires the qualified id and the claim command. [evidence: pytest]
+
+    - acc.ws-code-text-docs.install: the existing install test still passes, so the
+    comments added to the examples do not break the installer. [evidence: pytest]'
+tasks:
+- id: task.ws-code-text-docs.docs
+  requirement: req.ws-code-text-docs.docs
+  verification: 'Edit the guide and the two example headers; add one test.
+
+
+    Test plan:
+
+    - python/tests/test_bundle_code_text.py [evidence: pytest]'
+evidence: []
+decisions: []

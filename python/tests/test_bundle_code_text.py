@@ -269,3 +269,25 @@ def test_the_shipped_parameters_store_a_function_body(tmp_path):
     assert attrs["symbol"] == "bucket_label"
     methods = [c for c in chunks if c.attrs.get("symbol") == "Store"]
     assert methods and "self.data[key] = value" in methods[0].attrs["text"]
+
+
+def test_the_guide_tells_an_existing_deployment_how_to_paste_the_entry():
+    """The paste-by-hand route names the qualified predecessor and the claim.
+
+    On a staging deployment a bare `github_repo` predecessor was refused with
+    `PredecessorNotRun`, and a registry edit without a fresh ownership claim
+    was refused as drifted. The guide and both examples must say so.
+    """
+    guide = (BUNDLE.parents[1] / "docs" / "cern-team-quickstart.md").read_text(
+        encoding="utf-8"
+    )
+    section = guide.split("### Function bodies, not only signatures", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    assert "Already installed?" in section
+    assert "myteam.github-repo" in section
+    assert "okg catalog ownership claim" in section
+    for path in EXAMPLES.values():
+        header = path.read_text(encoding="utf-8").split("\n\n", 2)
+        text = "\n".join(header[:2])
+        assert "okg catalog ownership claim" in text
+        assert "qualified id" in text
