@@ -50,8 +50,9 @@
 # a pasted entry. Replace each by hand: the deployment name, `repo` and
 # `repo_root` from your github_repo entry, and `extractors_dir` with the
 # deployment-directory placeholder the guide names (okg expands that one
-# itself). Copy extractors.yaml into the deployment directory. `predecessor_source`
-# must be the qualified id, e.g. `myteam.github-repo`; the bare `github_repo`
+# itself). Copy bundles/cern-team/extractors.yaml into the deployment directory and
+# commit it with the entry. `repo_root` must already hold the checkout.
+# `predecessor_source` must be the qualified id, e.g. `myteam.github-repo`; the bare `github_repo`
 # is refused. After any registry edit, run
 # `okg catalog ownership claim --deployment <dir>` before the ingest, or the
 # publish is refused as drifted. See "Function bodies" in

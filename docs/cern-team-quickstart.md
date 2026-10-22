@@ -393,7 +393,7 @@ range. Leave the `code_extractors_dir` answer at its default.
 
 **Already installed?** The examples hold install-time placeholders that okg
 does not fill in later, so paste the entry by hand and fill them in. Copy
-`extractors.yaml` from the bundle into the deployment directory (next to
+`bundles/cern-team/extractors.yaml` into the deployment directory (next to
 `source_registry.yaml`), paste the entry under `sources:` in
 `deployments/myteam/source_registry.yaml`, then replace `${deployment_name}`
 with the deployment's name and copy `repo` and `repo_root` exactly from your
@@ -419,7 +419,10 @@ refused with `PredecessorNotRun`). Before and after, with invented values:
 
 Change `ownership_id` and `producer_id` the same way
 (`myteam.code-text`). For the GitLab entry the predecessor is
-`myteam.gitlab-repo`. Commit, then run `okg catalog ownership claim
+`myteam.gitlab-repo`. The `repo_root` folder must already hold the checkout:
+the `github_repo` (or `gitlab_repo`) source must have cloned it, or the
+publish is blocked. Commit `extractors.yaml` together with the source entry,
+then run `okg catalog ownership claim
 --deployment . --json` from inside the deployment directory **after every
 edit to the registry**, and before the ingest and publish; without a fresh
 claim the publish is refused as drifted. Then `okg ingest --deployment myteam
