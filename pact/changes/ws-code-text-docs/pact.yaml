@@ -48,15 +48,15 @@ evidence:
   status: pass
   command: "cd python && PYTHONPATH=. pytest tests/test_bundle_code_text.py tests/test_bundle_cern_team.py tests/test_bundle_source_adapters.py -> 84 passed (1 new)"
   artifact: pact/changes/ws-code-text-docs/evidence/bundle_code_text.junit.xml
-  sha256: 43c4ddcb831db2bb81f4e4caaa0578656664db3149033a03a05d7f599d90f267
-  head: 5ca62b48600f1b605ef0cbd67896b9b876fd8b03
+  sha256: 0d3a390ba4894068706da1b1e5c25222a9e7584163c6280302b66b6704a0ef4a
+  head: 2fd626eb764c97ddbc4b5dc54a5f3c4ac07df865
   at: "2026-10-22T12:00:00+00:00"
   note: "Lab host, venv with okg installed from the main checkout; docs and tests only, so the installed okg code is the same. The junit hostname is replaced with lab-host. The new test reads the guide section and both example headers; the existing install test shows the added comments do not break the installer."
 - kind: manual
   requirement: req.ws-code-text-docs.docs
   status: pass
   command: "compare the guide text with the staging run of code_text on an existing deployment"
-  head: 5ca62b48600f1b605ef0cbd67896b9b876fd8b03
+  head: 2fd626eb764c97ddbc4b5dc54a5f3c4ac07df865
   at: "2026-10-22T12:00:00+00:00"
   note: "Staging run: bare github_repo predecessor refused with PredecessorNotRun; the qualified id worked; a registry edit without a new ownership claim was refused as drifted, and a new claim fixed it. extractors_dir left as the deployment-directory placeholder was expanded by okg. The guide route follows that order."
 decisions: []
