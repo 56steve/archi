@@ -14,10 +14,13 @@ import yaml
 from jinja2 import ChainableUndefined, Environment, FileSystemLoader
 
 from src.cli.managers import templates_manager
+from src.cli.managers.secrets_manager import SecretsManager
 from src.cli.managers.templates_manager import TemplateContext, TemplateManager
+from src.cli.utils import torch_threads
 from src.cli.utils.service_builder import ServiceBuilder
 
 CAPPED_BLOCKS = ("data-manager", "chatbot")
+THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS")
 UNCAPPED_BLOCKS = ("grader", "piazza", "mattermost", "redmine", "mailbox", "benchmark")
 
 
@@ -66,12 +69,19 @@ def _env(services, block):
     return services[block].get("environment") or {}
 
 
+def _thread_vars(services, block):
+    """The torch thread variables compose sets for ``block``, absent ones omitted."""
+    environment = _env(services, block)
+    return {name: environment[name] for name in THREAD_VARS if name in environment}
+
+
 @pytest.mark.parametrize("threads", [8, 4])
 @pytest.mark.parametrize("block", CAPPED_BLOCKS)
 def test_embedding_containers_get_the_thread_count(tmp_path, block, threads):
+    """MKL_NUM_THREADS takes precedence over OMP_NUM_THREADS in torch, so set both."""
     services = _render_compose(tmp_path, torch_threads=threads)
 
-    assert _env(services, block).get("OMP_NUM_THREADS") == str(threads)
+    assert _thread_vars(services, block) == dict.fromkeys(THREAD_VARS, str(threads))
 
 
 @pytest.mark.parametrize("block", UNCAPPED_BLOCKS)
@@ -80,7 +90,7 @@ def test_other_services_get_no_thread_count(tmp_path, block):
     if block not in services:
         pytest.skip(f"{block} is not rendered in this configuration")
 
-    assert "OMP_NUM_THREADS" not in _env(services, block)
+    assert _thread_vars(services, block) == {}
 
 
 @pytest.mark.parametrize("block", CAPPED_BLOCKS)
@@ -88,11 +98,15 @@ def test_no_value_renders_no_variable(tmp_path, block):
     """A caller that renders without the value must not ship OMP_NUM_THREADS: ''."""
     services = _render_compose(tmp_path)
 
-    assert "OMP_NUM_THREADS" not in _env(services, block)
+    assert _thread_vars(services, block) == {}
 
 
-def _render_through_manager(tmp_path, monkeypatch, data_manager):
-    """Drive the real _render_compose_file with a config carrying ``data_manager``."""
+def _render_through_manager(tmp_path, monkeypatch, data_manager, cpus=32):
+    """Drive the real _render_compose_file with a config carrying ``data_manager``.
+
+    ``cpus`` is the CPU count the default is capped at; the real one varies by host.
+    """
+    monkeypatch.setattr(torch_threads, "visible_cpu_count", lambda: cpus)
     repository = Path(__file__).resolve().parents[2]
     manager = TemplateManager(
         jinja_env=Environment(
@@ -131,7 +145,61 @@ def test_render_compose_file_writes_the_resolved_count(
     services = _render_through_manager(tmp_path, monkeypatch, data_manager)
 
     for block in CAPPED_BLOCKS:
-        assert _env(services, block).get("OMP_NUM_THREADS") == expected
+        assert _thread_vars(services, block) == dict.fromkeys(THREAD_VARS, expected)
+
+
+def test_render_compose_file_caps_the_default_at_the_visible_cpus(
+    tmp_path, monkeypatch
+):
+    services = _render_through_manager(tmp_path, monkeypatch, {}, cpus=4)
+
+    for block in CAPPED_BLOCKS:
+        assert _thread_vars(services, block) == dict.fromkeys(THREAD_VARS, "4")
+
+
+@pytest.mark.parametrize("name", THREAD_VARS)
+def test_render_compose_file_keeps_the_env_file_value(tmp_path, monkeypatch, name):
+    """No ``environment`` entry, so the deployment .env value reaches the container."""
+    (tmp_path / ".env").write_text(f"PG_PASSWORD=x\n{name}=4\n")
+
+    services = _render_through_manager(tmp_path, monkeypatch, {})
+
+    for block in CAPPED_BLOCKS:
+        assert _thread_vars(services, block) == {}
+        assert ".env" in services[block]["env_file"]
+
+
+@pytest.mark.parametrize("name", THREAD_VARS)
+def test_an_env_file_value_survives_the_secrets_manager(tmp_path, monkeypatch, name):
+    """``archi create`` copies every --env-file key into the deployment .env.
+
+    The env-file rule above reads that .env, so a thread variable must survive
+    the copy, not only a .env written by hand.
+    """
+    env_file = tmp_path / "operator.env"
+    env_file.write_text(f"PG_PASSWORD=x\n{name}=4\n")
+    deployment_dir = tmp_path / "deployment"
+    deployment_dir.mkdir()
+    secrets_manager = SecretsManager(str(env_file), MagicMock())
+    _, all_secrets = secrets_manager.get_secrets(set(), set())
+    secrets_manager.write_secrets_to_files(deployment_dir, all_secrets)
+
+    services = _render_through_manager(deployment_dir, monkeypatch, {})
+
+    for block in CAPPED_BLOCKS:
+        assert _thread_vars(services, block) == {}
+
+
+@pytest.mark.parametrize("name", THREAD_VARS)
+def test_render_compose_file_lets_the_key_win_over_the_env_file(
+    tmp_path, monkeypatch, name
+):
+    (tmp_path / ".env").write_text(f"PG_PASSWORD=x\n{name}=12\n")
+
+    services = _render_through_manager(tmp_path, monkeypatch, {"torch_threads": 2})
+
+    for block in CAPPED_BLOCKS:
+        assert _thread_vars(services, block) == dict.fromkeys(THREAD_VARS, "2")
 
 
 def test_render_compose_file_refuses_an_invalid_count(tmp_path, monkeypatch):
