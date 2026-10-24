@@ -1,0 +1,89 @@
+pact_version: 5
+id: r3-context-quality
+title: 'Solid context layer: freshness, coverage, linking and context evals, all measured'
+tier: 2
+why: Automations act on what the graph says, so the context layer has to be measurably current,
+  complete, linked and retrievable, not assumed to be. Today okg has watermarks and completeness
+  gates, but no pack declares how fresh it must be, link coverage is unmeasured, and no eval
+  separates 'the right evidence was found' from 'the answer read well'. ADR 0002 §6.1, §6.3,
+  D12.
+affected_code:
+- bundles/packs/
+- python/archi/doctor/
+- python/archi/evaluation/
+- python/archi/enrichment/
+requirements:
+- id: req.r3-context-quality.freshness
+  statement: 'Every context pack declares max_staleness per source; archi doctor reports each
+    source''s age (from okg watermarks) against it, and --json exposes it for automations
+    and agents.
+
+
+    Acceptance:
+
+    - acc.r3-context-quality.report: doctor flags a fixture source older than its SLO. [evidence:
+    pytest]'
+- id: req.r3-context-quality.linking
+  statement: 'Each pack declares a link-coverage target for the identifiers it carries (sites,
+    datasets, runs, releases, tickets, analysis ids); an invariant checks it per generation.
+
+
+    Acceptance:
+
+    - acc.r3-context-quality.coverage: a fixture corpus with broken links fails the invariant.
+    [evidence: pytest]'
+- id: req.r3-context-quality.context-eval
+  statement: '`archi eval --context` scores retrieval separately from answers: operator questions
+    with gold evidence ids, recall@k of the gold evidence, and a raw-document baseline arm.
+    The comp-ops operator top-50 is the first set.
+
+
+    Acceptance:
+
+    - acc.r3-context-quality.run: context eval on the comp-ops instance produces a report
+    with the baseline arm. [evidence: executed_test]'
+- id: req.r3-context-quality.gate
+  statement: 'A context gate (sources, max staleness, minimum context-eval score, required
+    invariants) can be evaluated against the current generation and returns pass, or fail
+    with the failing checks named.
+
+
+    Acceptance:
+
+    - acc.r3-context-quality.gate: gate tests over passing and failing fixtures. [evidence:
+    pytest]'
+tasks:
+- id: task.r3-context-quality.freshness
+  requirement: req.r3-context-quality.freshness
+  verification: 'Freshness SLOs in pack manifests and doctor.
+
+
+    Test plan:
+
+    - python/tests/doctor/test_freshness.py [evidence: pytest]'
+- id: task.r3-context-quality.linking
+  requirement: req.r3-context-quality.linking
+  verification: 'Link-coverage targets and invariants.
+
+
+    Test plan:
+
+    - python/tests/enrichment/test_link_coverage.py [evidence: pytest]'
+- id: task.r3-context-quality.context-eval
+  requirement: req.r3-context-quality.context-eval
+  verification: 'Context eval mode with baseline arm; port the operator top-50.
+
+
+    Test plan:
+
+    - comp-ops run [evidence: executed_test]'
+- id: task.r3-context-quality.gate
+  requirement: req.r3-context-quality.gate
+  verification: 'Context gate evaluator.
+
+
+    Test plan:
+
+    - python/tests/ops/test_context_gate.py [evidence: pytest]'
+evidence: []
+decisions: []

@@ -1,0 +1,62 @@
+pact_version: 5
+id: r3-auto-ticket-triage
+title: 'Reference automation: ticket triage (SubMIT, comp-ops)'
+tier: 2
+why: 'Ticket triage is the automation 3.0 focuses on. Ticket queues are the oldest Archi automation
+  (v2''s Redmine, JIRA and Mattermost bots, ADR 0001 W8), and the clearest test of the loop:
+  drafts need context and precedent, and status changes need approval. 3.0 ships it in shadow
+  with a measured report; promotion to live, and with it retiring the v2 bots, is the 3.1
+  goal. ADR 0002 §7.4, D10, D13.'
+affected_code:
+- bundles/packs/ticket-triage/
+- python/archi/sources/
+requirements:
+- id: req.r3-auto-ticket-triage.automation
+  statement: 'The ticket-triage pack triggers on new or updated tickets (Redmine, JIRA, ServiceNow),
+    retrieves related tickets, docs and precedents, and drafts a cited reply (L1) or proposes
+    a status or assignment change (L2, approved escalation required). The ticket system''s
+    status reflects the escalation ledger.
+
+
+    Acceptance:
+
+    - acc.r3-auto-ticket-triage.fixture: fixture queue yields cited drafts and gated status
+    proposals. [evidence: executed_test]'
+- id: req.r3-auto-ticket-triage.shadow
+  statement: 'It runs in shadow at SubMIT (cluster-manager) and on the comp-ops queue for
+    at least four weeks before the release, and a report per instance gives agreement with
+    operators, time-to-first-response and false-proposal rate. No promotion to live is required
+    for 3.0; the v2 queue bots keep serving until it happens.
+
+
+    Acceptance:
+
+    - acc.r3-auto-ticket-triage.report: four-week shadow report per instance, published with
+    the release. [evidence: manual]'
+tasks:
+- id: task.r3-auto-ticket-triage.build
+  requirement: req.r3-auto-ticket-triage.automation
+  verification: 'Write the ticket-triage pack and playbook.
+
+
+    Test plan:
+
+    - fixture run [evidence: executed_test]'
+- id: task.r3-auto-ticket-triage.shadow-submit
+  requirement: req.r3-auto-ticket-triage.shadow
+  verification: 'Run in shadow at SubMIT; publish the report.
+
+
+    Test plan:
+
+    - shadow report [evidence: manual]'
+- id: task.r3-auto-ticket-triage.shadow-compops
+  requirement: req.r3-auto-ticket-triage.shadow
+  verification: 'Run in shadow on the comp-ops queue; publish the report.
+
+
+    Test plan:
+
+    - shadow report [evidence: manual]'
+evidence: []
+decisions: []

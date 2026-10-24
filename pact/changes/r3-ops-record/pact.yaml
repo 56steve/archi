@@ -1,0 +1,67 @@
+pact_version: 5
+id: r3-ops-record
+title: 'Operational memory: incidents, proposals, decisions, actions and outcomes in the graph'
+tier: 2
+why: An automation that cannot see what happened last time repeats mistakes, and one whose
+  actions are not recorded cannot be evaluated or trusted. The record of operations belongs
+  in the context layer next to the docs and tickets it cites. ADR 0002 §6.2.
+affected_code:
+- bundles/packs/ops-record/
+- python/archi/schemas/
+- python/archi/ops/
+requirements:
+- id: req.r3-ops-record.schema
+  statement: 'An ops-record pack adds incident, proposal, decision, action and outcome subtypes
+    with links to the evidence cited, the actor (automation or person), the escalation id
+    and the generation read.
+
+
+    Acceptance:
+
+    - acc.r3-ops-record.load: catalog loads with the slice composed on cern-team and cluster-manager.
+    [evidence: executed_test]'
+- id: req.r3-ops-record.write
+  statement: 'Automations write ops records through okg admission as a declared producer;
+    no direct SQL. Ticket resolutions from ticket connectors link to the matching incidents.
+
+
+    Acceptance:
+
+    - acc.r3-ops-record.admit: a workflow run''s records are admitted and searchable in the
+    next generation. [evidence: executed_test]'
+- id: req.r3-ops-record.recall
+  statement: 'A playbook and search profile let an agent retrieve precedents: past incidents
+    on the same entity with their actions and outcomes.
+
+
+    Acceptance:
+
+    - acc.r3-ops-record.precedent: a fixture incident retrieves its precedent with outcome.
+    [evidence: pytest]'
+tasks:
+- id: task.r3-ops-record.schema
+  requirement: req.r3-ops-record.schema
+  verification: 'Write the ops-record schema slice and pack.
+
+
+    Test plan:
+
+    - python/tests/packs/test_ops_record.py [evidence: pytest]'
+- id: task.r3-ops-record.write
+  requirement: req.r3-ops-record.write
+  verification: 'Producer path from workflows; ticket-resolution linking.
+
+
+    Test plan:
+
+    - scratch run [evidence: executed_test]'
+- id: task.r3-ops-record.recall
+  requirement: req.r3-ops-record.recall
+  verification: 'Precedent playbook and search profile.
+
+
+    Test plan:
+
+    - python/tests/test_skills.py [evidence: pytest]'
+evidence: []
+decisions: []

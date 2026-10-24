@@ -1,0 +1,48 @@
+pact_version: 5
+id: r3-bundle-cms-physics
+title: 'cms-physics bundle: analyses, notes, publications'
+tier: 2
+why: Physics knowledge (analysis notes, publications, physics TWikis, analysis code) is a
+  different audience from operations. The connectors exist (cds, twiki with physics_filter
+  and analysis ids); the bundle that assembles them for analysers does not. ADR 0002 §5.
+affected_code:
+- bundles/cms-physics/
+- bundles/packs/cms-analyses/
+- python/archi/sources/
+requirements:
+- id: req.r3-bundle-cms-physics.pack
+  statement: 'A cms-analyses pack links analysis ids across CDS records, TWiki pages and code,
+    with a schema slice and playbook for analysis lookup.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cms-physics.links: fixture corpus yields linked analysis records. [evidence:
+    pytest]'
+- id: req.r3-bundle-cms-physics.bundle
+  statement: 'bundles/cms-physics extends cern-team, defaults to cds, twiki (physics filter)
+    and cms-analyses, and installs green with a passing smoke eval.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cms-physics.install: bundle CI job green. [evidence: executed_test]'
+tasks:
+- id: task.r3-bundle-cms-physics.analyses-pack
+  requirement: req.r3-bundle-cms-physics.pack
+  verification: 'Write the cms-analyses pack.
+
+
+    Test plan:
+
+    - python/tests/packs/test_cms_analyses.py [evidence: pytest]'
+- id: task.r3-bundle-cms-physics.bundle
+  requirement: req.r3-bundle-cms-physics.bundle
+  verification: 'Write the bundle.
+
+
+    Test plan:
+
+    - bundle CI job [evidence: executed_test]'
+evidence: []
+decisions: []

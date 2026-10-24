@@ -1,0 +1,104 @@
+pact_version: 5
+id: r3-bundle-cluster-manager
+title: 'cluster-manager bundle: ServiceNow, Slurm, HTCondor, tickets, node health'
+tier: 2
+why: 'SubMIT and similar facilities share one shape: a ticket queue, documentation, a batch
+  system and node health, with an operator who may act on the cluster. Nothing in it is CERN-specific,
+  so the bundle must work for any cluster manager. Live actions follow ADR 0001 §5.6: archi
+  ships the tool, Nomos gates each call with live_call_default: review, the instance owns
+  credentials.'
+affected_code:
+- bundles/cluster-manager/
+- bundles/packs/
+- python/archi/sources/
+- python/archi/tools/
+requirements:
+- id: req.r3-bundle-cluster-manager.connectors
+  statement: 'New connectors: ServiceNow (incidents, requests, KB articles; OAuth or basic
+    auth by env ref), Slurm (partitions, nodes, reservations, job summaries via slurmrestd
+    or a cached sacct/sinfo export), HTCondor (pool snapshot). Each has fixtures, an okg adapter,
+    and a template that passes strict admission.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cluster-manager.fixtures: connector tests over recorded fixtures. [evidence:
+    pytest]
+
+    - acc.r3-bundle-cluster-manager.admission: templates pass okg profile check and strict
+    admission. [evidence: pytest]'
+- id: req.r3-bundle-cluster-manager.live
+  statement: 'Slurm live tools (read: squeue/sinfo; act: drain/resume node, requeue job) are
+    declared with boundary external_live and exposed as action classes (ADR 0002 §7.2) at
+    L2: act tools run only after an approved escalation and refuse to run without a Nomos
+    decision.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cluster-manager.gated: an act call without approval is refused. [evidence:
+    executed_test]'
+- id: req.r3-bundle-cluster-manager.bundle
+  statement: 'bundles/cluster-manager depends on no CERN pack, defaults to docsite, tickets
+    and ops-record, ships ticket-triage as an automation pack, offers servicenow, slurm, htcondor,
+    git-code and node-health, and SubMIT is rebuilt from it.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cluster-manager.install: bundle CI job green with smoke eval. [evidence:
+    executed_test]
+
+    - acc.r3-bundle-cluster-manager.submit: SubMIT instance rebuilt from the bundle. [evidence:
+    executed_test]'
+tasks:
+- id: task.r3-bundle-cluster-manager.tickets
+  requirement: req.r3-bundle-cluster-manager.bundle
+  verification: 'Generic tickets pack over the existing JIRA/Redmine connectors.
+
+
+    Test plan:
+
+    - python/tests/packs/ [evidence: pytest]'
+- id: task.r3-bundle-cluster-manager.servicenow
+  requirement: req.r3-bundle-cluster-manager.connectors
+  verification: 'ServiceNow connector and pack.
+
+
+    Test plan:
+
+    - python/tests/sources/test_servicenow.py [evidence: pytest]'
+- id: task.r3-bundle-cluster-manager.slurm
+  requirement: req.r3-bundle-cluster-manager.live
+  verification: 'Slurm connector, live tools and pack.
+
+
+    Test plan:
+
+    - python/tests/sources/test_slurm.py; gated-call run [evidence: executed_test]'
+- id: task.r3-bundle-cluster-manager.htcondor
+  requirement: req.r3-bundle-cluster-manager.connectors
+  verification: 'HTCondor and node-health packs.
+
+
+    Test plan:
+
+    - python/tests/sources/test_htcondor.py [evidence: pytest]'
+- id: task.r3-bundle-cluster-manager.bundle
+  requirement: req.r3-bundle-cluster-manager.bundle
+  verification: 'Write the bundle.
+
+
+    Test plan:
+
+    - bundle CI job [evidence: executed_test]'
+- id: task.r3-bundle-cluster-manager.instance
+  requirement: req.r3-bundle-cluster-manager.bundle
+  verification: 'Rebuild SubMIT.
+
+
+    Test plan:
+
+    - rebuild run [evidence: executed_test]'
+evidence: []
+decisions: []

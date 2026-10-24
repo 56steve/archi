@@ -1,0 +1,129 @@
+pact_version: 5
+id: r3-bundle-format
+title: 'Composable bundles: pack and bundle manifests, resolver, renderer, discovery'
+tier: 2
+why: 'Today a bundle is one okg profile directory: sources opt in by renaming *.yaml.example,
+  invariants are bundle-wide so dropping a source breaks the floor, skills and schemas are
+  symlinks that only work from a checkout, and OKG_PROFILES_DIR must be set by hand. Five
+  bundles that share most of their sources need a unit smaller than a bundle and a way to
+  combine them. ADR 0002 §3; okg has no profile composition, so archi renders and files the
+  ask (D7).'
+affected_code:
+- python/archi/bundles/
+- bundles/
+- python/pyproject.toml
+- python/tests/bundles/
+requirements:
+- id: req.r3-bundle-format.manifests
+  statement: 'pack.yaml and bundle.yaml have published JSON schemas (ADR 0002 §3.1-3.2); `archi
+    bundles validate` rejects unknown keys, missing files, credential values (anything but
+    env-var names) and a bundle with no credential-free default pack.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-format.schema: schema tests over valid and invalid fixtures. [evidence:
+    pytest]'
+- id: req.r3-bundle-format.compose
+  statement: 'Resolution follows ADR 0002 §3.3 exactly: extends closure, requires closure,
+    --with/--without, and each merge rule (modules union, schema byte-identity, <pack>.<source>
+    ids, question identity, pack-owned invariants, subtype union, prompt fragment order, last-bundle-wins
+    scalars, okg range intersection). A pack not selected leaves nothing in the rendered profile.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-format.rules: one test per rule, including each conflict error. [evidence:
+    pytest]
+
+    - acc.r3-bundle-format.no-trace: rendered profile of base+P minus P equals rendered base.
+    [evidence: pytest]
+
+    - acc.r3-bundle-format.okg-accepts: every rendered profile in the test matrix passes okg
+    install --dry-run/plan. [evidence: pytest]'
+- id: req.r3-bundle-format.lock
+  statement: 'Rendering writes archi.lock (bundle and pack versions, content digests, okg
+    range) into the instance; `archi add <pack>` extends an installed instance, re-claiming
+    catalog ownership; `archi diff` reports drift from the lock.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-format.add: archi add on a published scratch instance publishes again
+    without manual steps. [evidence: executed_test]
+
+    - acc.r3-bundle-format.diff: a hand edit to the registry shows in archi diff. [evidence:
+    pytest]'
+- id: req.r3-bundle-format.packaging
+  statement: 'The wheel ships packs and bundles as real files; `archi bundles list` finds
+    them through the archi.bundles / archi.packs entry points, including from a third-party
+    package; no user step sets OKG_PROFILES_DIR.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-format.wheel: built wheel contains no symlinks and lists every bundle.
+    [evidence: pytest]
+
+    - acc.r3-bundle-format.third-party: a fixture package registering a pack is listed and
+    installable. [evidence: pytest]'
+- id: req.r3-bundle-format.upstream
+  statement: 'AKMON issues exist for profile discovery by entry point and for profile composition/optional
+    sources, each linked from an upstream-ask issue here.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-format.filed: issue links recorded in this PACT''s evidence. [evidence:
+    manual]'
+tasks:
+- id: task.r3-bundle-format.schema
+  requirement: req.r3-bundle-format.manifests
+  verification: 'Write the schemas and the validate command.
+
+
+    Test plan:
+
+    - python/tests/bundles/test_manifest_schema.py [evidence: pytest]'
+- id: task.r3-bundle-format.resolver
+  requirement: req.r3-bundle-format.compose
+  verification: 'Implement resolution and merge rules.
+
+
+    Test plan:
+
+    - python/tests/bundles/test_compose.py [evidence: pytest]'
+- id: task.r3-bundle-format.render
+  requirement: req.r3-bundle-format.compose
+  verification: 'Render to an okg profile and plan it with okg.
+
+
+    Test plan:
+
+    - python/tests/bundles/test_render_okg.py [evidence: pytest]'
+- id: task.r3-bundle-format.packaging
+  requirement: req.r3-bundle-format.packaging
+  verification: 'Dereference at build; entry points; list/show.
+
+
+    Test plan:
+
+    - python/tests/bundles/test_packaging.py [evidence: pytest]'
+- id: task.r3-bundle-format.add-diff
+  requirement: req.r3-bundle-format.lock
+  verification: 'archi.lock, archi add, archi diff.
+
+
+    Test plan:
+
+    - python/tests/bundles/test_lock.py; scratch-instance run [evidence: executed_test]'
+- id: task.r3-bundle-format.upstream
+  requirement: req.r3-bundle-format.upstream
+  verification: 'File the two AKMON issues.
+
+
+    Test plan:
+
+    - links [evidence: manual]'
+evidence: []
+decisions: []

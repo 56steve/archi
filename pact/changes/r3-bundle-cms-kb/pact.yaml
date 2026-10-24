@@ -1,0 +1,58 @@
+pact_version: 5
+id: r3-bundle-cms-kb
+title: cms-kb bundle from the cms-kb prototype
+tier: 2
+why: archi-physics/cms-kb is the prototype for a CMS knowledge-base instance and a source
+  of the decoupled-stack defaults. Its scope relative to cms-physics is not yet written down
+  (ADR 0002 §5 open item), so this PACT starts with a survey and a decision before any bundle
+  code.
+affected_code:
+- bundles/cms-kb/
+requirements:
+- id: req.r3-bundle-cms-kb.scope
+  statement: 'A survey of cms-kb lists its sources, schemas, playbooks, setup steps and local
+    patches, and assigns each to a pack, to the cms-kb bundle, to cms-physics, or to the instance.
+    The cms-kb / cms-physics boundary is recorded as a decision in this PACT.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cms-kb.decision: decision recorded and approved. [evidence: manual]'
+- id: req.r3-bundle-cms-kb.bundle
+  statement: 'bundles/cms-kb exists per that decision, and the cms-kb deployment is rebuilt
+    from it with no local copy of an archi connector.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cms-kb.install: bundle installs green; smoke eval passes. [evidence: executed_test]
+
+    - acc.r3-bundle-cms-kb.rebuild: cms-kb deployment rebuilt from the bundle. [evidence:
+    executed_test]'
+tasks:
+- id: task.r3-bundle-cms-kb.survey
+  requirement: req.r3-bundle-cms-kb.scope
+  verification: 'Survey cms-kb; write the scope decision.
+
+
+    Test plan:
+
+    - survey doc [evidence: manual]'
+- id: task.r3-bundle-cms-kb.bundle
+  requirement: req.r3-bundle-cms-kb.bundle
+  verification: 'Write the bundle and any new packs.
+
+
+    Test plan:
+
+    - bundle CI job [evidence: executed_test]'
+- id: task.r3-bundle-cms-kb.instance
+  requirement: req.r3-bundle-cms-kb.bundle
+  verification: 'Rebuild the deployment.
+
+
+    Test plan:
+
+    - rebuild run [evidence: executed_test]'
+evidence: []
+decisions: []

@@ -1,0 +1,56 @@
+pact_version: 5
+id: r3-bundle-evals
+title: Smoke evals per bundle, run against the instance MCP
+tier: 2
+why: A bundle that installs green can still answer nothing. Each bundle ships a small eval
+  set so 'it works' is a checked claim, in CI and for operators via archi eval. Builds on
+  the atom-based QA engine (ADR 0001 W5) with the agent as an MCP client.
+affected_code:
+- python/archi/evaluation/
+- bundles/*/eval/
+- .github/workflows/
+requirements:
+- id: req.r3-bundle-evals.harness
+  statement: '`archi eval [--bundle X]` runs the bundle''s smoke set against the instance
+    MCP endpoint with a configured model and writes report.md; zero MCP tools fails as execution_failed.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-evals.run: eval run on a scratch instance produces report.md. [evidence:
+    executed_test]'
+- id: req.r3-bundle-evals.ci
+  statement: 'Each of the five bundles has a smoke set of at least 10 questions answerable
+    from its fixture corpus, and CI gates bundle changes on it.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-evals.gate: bundle CI matrix includes the eval step. [evidence: executed_test]'
+tasks:
+- id: task.r3-bundle-evals.harness
+  requirement: req.r3-bundle-evals.harness
+  verification: 'archi eval over MCP.
+
+
+    Test plan:
+
+    - python/tests/evaluation/ [evidence: pytest]'
+- id: task.r3-bundle-evals.sets
+  requirement: req.r3-bundle-evals.ci
+  verification: 'Write the five smoke sets with fixture corpora.
+
+
+    Test plan:
+
+    - review [evidence: manual]'
+- id: task.r3-bundle-evals.ci
+  requirement: req.r3-bundle-evals.ci
+  verification: 'Bundle matrix workflow.
+
+
+    Test plan:
+
+    - workflow run [evidence: executed_test]'
+evidence: []
+decisions: []
