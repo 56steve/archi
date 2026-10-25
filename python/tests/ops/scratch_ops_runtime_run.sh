@@ -341,10 +341,10 @@ $OPS promote scratch-triage --as operator-x --min-proposals 2 --min-answered 2 -
 check "promote succeeded with a passing report" "d['automation'] == 'scratch-triage' and d['change'].startswith('promote-scratch-triage-')" < "$RUN/promote.json"
 CHANGE=$("$V/python" -c "import json; print(json.load(open('$RUN/promote.json'))['change'])")
 echo "{\"subject\": \"$(git -C "$INST" log -1 --format=%s)\", \"files\": \"$(git -C "$INST" show --name-only --format= HEAD | tr '\n' ' ')\"}" > "$RUN/promote-commit.json"
-check "the instance repo has a commit naming the change, with ops.yaml and the change directory" \
-  "d['subject'] == 'promote scratch-triage to live ($CHANGE)' and 'ops.yaml' in d['files'] and 'pact/changes/$CHANGE/pact.yaml' in d['files']" < "$RUN/promote-commit.json"
+check "the instance repo has a commit naming the change, with ops.yaml and the retired change directory" \
+  "d['subject'] == 'promote scratch-triage to live ($CHANGE)' and 'ops.yaml' in d['files'] and 'pact/archive/$CHANGE/pact.yaml' in d['files']" < "$RUN/promote-commit.json"
 $T pact promote-scratch-triage > "$RUN/pact.json"; cat "$RUN/pact.json"
-check "the approval is a PACT decision in okg's ledger, by the OS user for operator-x" \
+check "the approval is a PACT decision in the okg ledger, by the OS user for operator-x" \
   "len(d) == 1 and d[0]['verdict'] == 'approve' and d[0]['principal'].endswith(' for operator-x')" < "$RUN/pact.json"
 grep -n "promoted_at\|mode" "$INST/ops.yaml" | head
 WS3=$(new_run dem-3); ESCP=$($T pending "$WS3" --timeout 90)
@@ -374,7 +374,7 @@ rb ops_action "act-$WS";    check "at most once: the action is recorded as unkno
 rb ops_outcome "out-$WS";   check "at most once: the outcome is unknown, with the reason" "rows[0]['attrs']['result'] == 'unknown' and 'check the external system' in rows[0]['attrs']['resolution']" < "$RUN/rb-out-$WS.jsonl"
 rb ops_decision "dec-$W8";  check "restart: decision timed_out, the late approval was not executed" "rows[0]['attrs']['verdict'] == 'timed_out' and 'after the deadline' in rows[0]['attrs']['reason']" < "$RUN/rb-dec-$W8.jsonl"
 rb ops_decision "dec-$W10-halt"; check "halt: a halted decision for the waiting run" "rows[0]['attrs']['verdict'] == 'halted'" < "$RUN/rb-dec-$W10-halt.jsonl"
-rb ops_proposal "prop-$WS1"; check "demotion: proposal is shadow with the failing check as the reason" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('demoted to shadow: ') and 'freshness:$D.jira' in rows[0]['attrs']['mode_reason']" < "$RUN/rb-prop-$WS1.jsonl"
+rb ops_proposal "prop-$WS1"; check "demotion: proposal is shadow with the failing check as the reason" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('demoted to shadow: ') and 'freshness:jira.jira' in rows[0]['attrs']['mode_reason']" < "$RUN/rb-prop-$WS1.jsonl"
 rb ops_proposal "prop-$WS2"; check "persisted demotion: shadow, reason says the demotion persists" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('demoted to shadow: demotion persists')" < "$RUN/rb-prop-$WS2.jsonl"
 rb ops_proposal "prop-$WS3"; check "after promotion the proposal is live" "rows[0]['attrs']['mode'] == 'live'" < "$RUN/rb-prop-$WS3.jsonl"
 

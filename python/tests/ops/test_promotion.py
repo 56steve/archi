@@ -46,6 +46,10 @@ class FakeOkg:
         verb = cmd[cmd.index("--root") + 2]
         if verb == self.fail:
             return subprocess.CompletedProcess(cmd, 1, "", f"{verb} refused")
+        if verb == "decide":  # approving retires the change: okg moves it to pact/archive
+            change = cmd[cmd.index("decide") + 1]
+            (self.root / "pact" / "archive").mkdir(parents=True, exist_ok=True)
+            (self.root / "pact" / "changes" / change).rename(self.root / "pact" / "archive" / change)
         if verb == "new":
             change_dir = self.root / "pact" / "changes" / cmd[cmd.index("new") + 1]
             change_dir.mkdir(parents=True)
@@ -76,11 +80,11 @@ def test_a_passing_report_records_the_decision_sets_live_and_commits_by_name(rep
     assert okg.envs[-1]["OKG_PACT_GRAPH_DEPLOYMENT"] == "dep" and okg.envs[-1]["OKG_DSN"] == "postgresql://x"
     ops = yaml.safe_load((repo / "ops.yaml").read_text())["automations"]["triage"]
     assert ops == {"mode": "live", "timeout_seconds": 60, "promoted_at": "2026-10-25T14:30:05Z"}
-    assert json.loads((repo / "pact" / "changes" / change / "shadow-report.json").read_text())["scored"] == 40
+    assert json.loads((repo / "pact" / "archive" / change / "shadow-report.json").read_text())["scored"] == 40
     assert git(repo, "log", "-1", "--format=%s").strip() == f"promote triage to live ({change})"
     assert sorted(git(repo, "show", "--name-only", "--format=", "HEAD").split()) == sorted(
-        ["ops.yaml", f"pact/changes/{change}/pact.yaml", f"pact/changes/{change}/shadow-report.json",
-         f"pact/changes/{change}/readiness.xml"])
+        ["ops.yaml", f"pact/archive/{change}/pact.yaml", f"pact/archive/{change}/shadow-report.json",
+         f"pact/archive/{change}/readiness.xml"])
     assert git(repo, "status", "--porcelain").strip() == ""
 
 

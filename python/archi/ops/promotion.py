@@ -135,10 +135,11 @@ def promote(
     data["automations"][automation] = {**(data["automations"][automation] or {}), "mode": "live",
                                        "promoted_at": now.strftime("%Y-%m-%dT%H:%M:%SZ")}
     ops_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-    rel_change = rel
-    added = _git(instance_dir, "add", "--", OPS_FILE, rel_change, run=run)
+    # An approved change is retired: okg moves it from pact/changes/<id> to pact/archive/<id>.
+    paths = [OPS_FILE] + [p for p in (rel, f"pact/archive/{change}") if (instance_dir / p).exists()]
+    added = _git(instance_dir, "add", "--", *paths, run=run)
     committed = _git(instance_dir, "commit", "-q", "-m", f"promote {automation} to live ({change})", "--",
-                     OPS_FILE, rel_change, run=run)
+                     *paths, run=run)
     if added.returncode != 0 or committed.returncode != 0:
         raise PromotionRefused("the decision is recorded and ops.yaml says live, but the commit failed: "
                                f"{(committed.stderr or added.stderr or committed.stdout)[-1500:]}")
