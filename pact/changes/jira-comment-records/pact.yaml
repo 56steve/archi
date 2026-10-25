@@ -150,4 +150,24 @@ evidence:
     edges and authored_by edges, equal to the snapshot''s comment_count sum and to its non-empty
     comments counted without the adapter; 206,470 distinct ids, 6 with a repeat suffix;
     comment_count sums to 206,470; person nodes 650 to 949. Nothing was ingested or published.'
+- kind: executed_test
+  requirement: req.jira-comment-records.main
+  status: pass
+  command: python -m pytest tests -q; python -m pytest tests/sources/test_jira_comments.py
+    tests/test_catalog_handle_fields.py tests/packs -q (python/, submit76, okg 0.2.0 wheel, Python
+    3.12)
+  head: 4f8c4856140ea331923c930b90786e3814238a3b
+  at: '2026-10-25T15:57:45+00:00'
+  note: 'Re-run after the port onto the packs layout (r3-packs-split, #789): the cern-team schema
+    copies are gone because the jira pack links the package schemas; the template hunks moved
+    with jira.yaml.example to bundles/packs/jira/sources/jira.yaml; the bundle half of the tests
+    now reads bundles/packs/jira/schemas. Focused set 106 passed, 16 skipped (the pack install
+    tests, which need a database). Full suite 2230 passed, 17 skipped, 2 failed: the two
+    anonymizer *_is_linear wall-clock tests, with the host at load average 38; they passed alone
+    on another machine, and this change does not touch the anonymizer. The chunk comparison above
+    still describes this code: python/archi/sources/jira.py is byte-identical between its head
+    98d426a2 (kept in archi-okg) and this one. An independent review found no blocker. Disclosed:
+    an edited comment gets a new id and a cursor run keeps the old copy until a full-scope run
+    (now said in the template); commenters become person nodes (650 to 949 in the snapshot); with
+    the option on or off, issue nodes gain the new attributes once.'
 decisions: []
