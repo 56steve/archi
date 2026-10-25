@@ -132,14 +132,17 @@ def cmd_markers(a: argparse.Namespace) -> None:
 def cmd_stale(a: argparse.Namespace) -> None:
     """Age (or refresh) the jira source's watermark: the scratch stand-in for a source that stopped updating."""
     interval = "now() - interval '30 days'" if a.state == "stale" else "now()"
+    watermark_source = f"{os.environ['ARCHI_OPS_DEPLOYMENT']}.{SOURCE.split('.')[1]}"  # okg: <deployment>.<source>
     with psycopg.connect(os.environ["OKG_DSN"], autocommit=True) as conn:
         cols = [r[0] for r in conn.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_schema='okg' "
             "AND table_name='source_watermarks'").fetchall()]
         print("source_watermarks columns:", cols, file=sys.stderr)
         n = conn.execute(f"UPDATE okg.source_watermarks SET last_reconcile_at = {interval} "
-                         "WHERE source = %s", (SOURCE,)).rowcount
+                         "WHERE source = %s", (watermark_source,)).rowcount
         print(n)
+        if n != 1:
+            sys.exit(f"expected to update one watermark row for {watermark_source}, updated {n}")
 
 
 def main() -> None:
