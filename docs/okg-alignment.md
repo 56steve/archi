@@ -20,6 +20,12 @@ reimplementation of OKG services.
 
 ## Current state (update this section when it changes)
 
+**The distribution is now `archi-kb` (2026-10-25).** ADR 0002 D2: the name
+`archi` on PyPI belongs to an unrelated package. The import name is still
+`archi`, and nothing on the okg side changes. The wheel is now
+`archi_kb-<version>-py3-none-any.whl`. It is not on PyPI yet; trusted
+publishing is PACT `r3-release-home` task `publish`. No pin change.
+
 **First use of okg's image SDK (2026-10-21).** `archi.sources.indico_live` imports
 `okg.deployment.ImageRef` and, with the off-by-default `attachment_images`
 option, puts `ImageRef.url` values on talk records so an agent can open a

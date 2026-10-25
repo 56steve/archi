@@ -28,7 +28,7 @@ def wheel_names(tmp_path_factory) -> list[str]:
         timeout=300,
     )
     assert result.returncode == 0, result.stderr[-800:]
-    wheels = sorted(out.glob("archi-3.*.whl"))
+    wheels = sorted(out.glob("archi_kb-3.*.whl"))
     assert wheels, "no wheel produced"
     with zipfile.ZipFile(wheels[-1]) as zf:
         return zf.namelist(), str(wheels[-1])

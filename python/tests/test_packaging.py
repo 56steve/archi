@@ -11,6 +11,7 @@ module scope):
 import re
 import subprocess
 import sys
+import zipfile
 from importlib import resources
 from pathlib import Path
 
@@ -80,5 +81,27 @@ def test_wheel_builds():
         timeout=300,
     )
     assert result.returncode == 0, result.stderr[-800:]
-    wheels = list((REPO_ROOT / "python" / "dist").glob("archi-3.*.whl"))
+    wheels = list((REPO_ROOT / "python" / "dist").glob("archi_kb-3.*.whl"))
     assert wheels
+
+
+def test_distribution_is_archi_kb_importing_archi(tmp_path):
+    """req.r3-release-home.dist: the wheel is named archi-kb (the PyPI name
+    `archi` is someone else's) and still installs the `archi` package."""
+    result = subprocess.run(
+        [sys.executable, "-m", "hatchling", "build", "-t", "wheel", "-d", str(tmp_path)],
+        cwd=REPO_ROOT / "python",
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr[-800:]
+    (wheel,) = tmp_path.glob("*.whl")
+    with zipfile.ZipFile(wheel) as zf:
+        names = zf.namelist()
+        (metadata,) = [n for n in names if n.endswith(".dist-info/METADATA")]
+        headers = zf.read(metadata).decode().split("\n\n", 1)[0].splitlines()
+    assert "Name: archi-kb" in headers
+    assert "archi/__init__.py" in names
+    top_level = {n.split("/", 1)[0] for n in names}
+    assert top_level - {metadata.split("/", 1)[0]} == {"archi"}
