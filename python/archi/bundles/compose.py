@@ -10,6 +10,7 @@ Each rule is ADR 0002 section 3.3's table, applied in resolution order:
 | init questions | union; a pack's own ids become `<pack>_<id>` (flag `--<pack>-<id>`); one id, two definitions: refused |
 | invariants, freshness | union; each stays with its pack; one name, two bodies: refused |
 | search `content` | subtype union |
+| other search profiles | union by name; same name, different body: stop |
 | playbooks, triggers | union; one file name (or intent id), two contents: refused |
 | action classes | union by id; one id, two bodies: refused |
 | files | union by path; one path, two contents: refused |
@@ -64,6 +65,8 @@ class Composition:
     action_classes: dict[str, Any] = field(default_factory=dict)
     freshness: dict[str, dict[str, str]] = field(default_factory=dict)
     search_subtypes: list[str] = field(default_factory=list)
+    #: named okg search profiles other than `content`
+    search_profiles: dict[str, Any] = field(default_factory=dict)
     live_tools: list[str] = field(default_factory=list)
     files: dict[str, bytes] = field(default_factory=dict)
     prompt: str = ""
@@ -195,6 +198,9 @@ def compose(resolution: Resolution) -> Composition:
                 comp.search_subtypes.append(subtype)
             comp.own("search_subtype", subtype, pack.name)
 
+        for name, body in pack.manifest.get("search_profiles", {}).items():
+            _merge_value(comp, comp.search_profiles, "search_profile", name, dict(body), pack)
+
         for tool in pack.live_tools:
             if tool not in comp.live_tools:
                 comp.live_tools.append(tool)
@@ -270,6 +276,8 @@ def deployment_defaults(resolution: Resolution, comp: Composition, profile_name:
             "profile would be empty; select a context pack that declares them",
         )
     data["search"]["profiles"]["content"]["subtypes"] = list(comp.search_subtypes)
+    for name, body in comp.search_profiles.items():
+        data["search"]["profiles"][name] = dict(body)
     preset = data["chat"]["preset"]
     if "description" in resolution.chat:
         preset["description"] = resolution.chat["description"]

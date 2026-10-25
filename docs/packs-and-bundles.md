@@ -40,6 +40,7 @@ not leave that directory (`..`, absolute paths and `~` are refused).
 | `playbooks` | | Directory of playbooks. |
 | `skill_triggers` | | File with `version:` and an `intents:` mapping. |
 | `search_subtypes` | | Subtypes added to the `content` search profile. |
+| `search_profiles` | | Named okg search profiles, `{<name>: {description, subtypes}}`, added to the instance's `search.profiles`. Not `content`. |
 | `live_tools` | | `archi.tools.*` entries for the MCP server. |
 | `action_classes` | | File holding an `action_classes:` mapping keyed by id (automation packs). |
 | `files` | | Files installed at the same path in the deployment root (okg's `files:` allow-list applies). |
@@ -128,6 +129,7 @@ directory finds it with no `OKG_PROFILES_DIR`.
 | invariants | union; each stays with its pack | same name, different body: stops |
 | freshness | union; each stays with its pack | — |
 | search `content` subtypes | union | — |
+| other search profiles | union by name | same name, different body: stops |
 | playbooks, skill triggers | union by file name / intent id | different content: stops |
 | action classes | union by id | different body: stops |
 | files | union by path | different bytes: stops |

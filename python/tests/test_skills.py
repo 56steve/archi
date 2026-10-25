@@ -142,3 +142,47 @@ def test_retrieval_skills_teach_named_record_text_read():
         if not re.search(r"kind: node.{0,160}?metadata", text):
             missing.append(f"{name}.md lacks the kind-node-is-metadata-only clause")
     assert not missing, "\n".join(missing)
+
+
+# ---------------------------------------------------------------------------
+# The ops-record pack's precedent playbook (PACT r3-ops-record, recall)
+# ---------------------------------------------------------------------------
+
+OPS_RECORD = REPO_ROOT / "bundles" / "packs" / "ops-record"
+
+
+def test_ops_record_triggers_reference_its_playbooks():
+    triggers = yaml.safe_load((OPS_RECORD / "skills" / "skill-triggers.yaml").read_text())
+    for intent, spec in triggers["intents"].items():
+        assert (OPS_RECORD / "skills" / f"{spec['skill']}.md").is_file(), intent
+    assert triggers["intents"]["ops_precedents"]["subtypes"] == [
+        "ops_incident", "ops_proposal", "ops_decision", "ops_action", "ops_outcome",
+    ]
+
+
+def test_precedent_playbook_teaches_the_walk_and_its_limits():
+    text = _normalized((OPS_RECORD / "skills" / "ops_precedents.md").read_text(encoding="utf-8"))
+    for needle in (
+        # find past incidents on the same entity
+        "filter(where={type: ops_incident, attrs.entity: <entity>})",
+        # the pack's search profile
+        "profile=precedents",
+        # walk to proposals, decisions, actions and outcomes
+        "direction=in",
+        "attrs.incident_id",
+        # only an outcome says a fix worked
+        "Only an outcome says whether a fix worked",
+        "no outcome recorded",
+        # cite the precedent when proposing
+        "put the precedent's incident node id in the proposal's evidence",
+    ):
+        assert needle in text, needle
+    for marker in SITE_MARKERS:
+        assert marker not in text, marker
+
+
+def test_precedent_profile_covers_what_the_playbook_reads():
+    pack = yaml.safe_load((OPS_RECORD / "pack.yaml").read_text())
+    assert pack["search_profiles"]["precedents"]["subtypes"] == [
+        "ops_incident", "ops_proposal", "ops_decision", "ops_action", "ops_outcome",
+    ]

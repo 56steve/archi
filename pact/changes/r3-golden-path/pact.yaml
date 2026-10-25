@@ -112,5 +112,73 @@ tasks:
     Test plan:
 
     - links [evidence: manual]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.r3-golden-path.init
+  status: pass
+  command: 'archi init myteam --data-root <scratch>/data --answer chat_model=qwen3:4b (local, Docker 20.10,
+    okg 0.2.0 wheel); and nightly-e2e on PR #786: archi init gp --bundle cern-team on a fresh ubuntu-latest
+    runner'
+  head: 9f6845f92d42763601043751971fe5160693eedd
+  at: '2026-10-25T15:40:00+00:00'
+  note: 'acc.r3-golden-path.fresh: on an empty directory, archi init made the instance a git repo with
+    a baseline commit, rendered cern-team, wrote .env (0600, git-ignored), started graph-db from compose,
+    ran okg install --no-publish with --postgres-dsn ''${OKG_DSN}'' and every path answer absolute (--archi-data-root
+    and --twiki-eos-root under the data root, outside the instance), committed the deployment, ran okg
+    provision and okg db role-passwords --apply (secrets file in the instance''s .secrets/). Locally:
+    27 s from empty dir to generation okg:myteam:branch:default:gen:20261025T143228160844Z:d206a16b91ef
+    (2481 nodes / 2117 edges, the cern-team default CMSSW release catalog); git log: baseline, render,
+    okg deployment; tree clean. On GitHub (https://github.com/archi-physics/archi/actions/runs/40205607160,
+    user command 2): published okg:gp:branch:default:gen:20261025T151333723968Z:4df364e151c5 from an empty
+    runner.'
+- kind: executed_test
+  requirement: req.r3-golden-path.init
+  status: pass
+  command: python -m pytest python/tests/cli/test_init.py -q
+  head: 9f6845f92d42763601043751971fe5160693eedd
+  at: '2026-10-25T15:40:00+00:00'
+  note: 'acc.r3-golden-path.secrets: 9 passed. .env holds every generated secret, mode 0600, git-ignored
+    (check-ignore), untracked; no secret value (the five generated ones and the okg_mcp role password)
+    appears in any file of the committed tree; the graph password reaches okg only through OKG_DSN in
+    the environment, never argv. Also: relative path defaults anchored on the data root, given relative
+    paths resolved against the caller''s cwd, a data root inside the instance refused, a non-empty dir
+    refused, a composed bundle writes archi.lock with the deployment recorded, the okg sequence is install
+    --no-publish -> commit -> provision -> role-passwords with the tree committed before provision, and
+    provision exit 8 is a published capacity warning. Full suite 2100 passed, 1 skipped, 2 anonymizer
+    *_is_linear timing tests failed under load and pass alone; CI tests job green on PR #786.'
+- kind: executed_test
+  requirement: req.r3-golden-path.up
+  status: pass
+  command: archi up; archi doctor (local instance above); Open WebUI in a browser, preset okg-myteam,
+    model qwen3:4b via local ollama
+  head: 9f6845f92d42763601043751971fe5160693eedd
+  at: '2026-10-25T15:40:00+00:00'
+  note: 'acc.r3-golden-path.up: archi up started one compose project archi-myteam (graph-db akmon-postgres:v0.2.0
+    with timescaledb,pg_cron,pg_textsearch preloaded and shm 2g; chat-db postgres:16, unpublished; mcp
+    = okg 0.2.0 mcp-serve image built by archi; webui open-webui:v0.11.4), all on one network, ports on
+    127.0.0.1 only; signed up the admin from .env, pointed the site at host.docker.internal:11434, and
+    okg chat sync passed (probe 127.0.0.1:<mcp>, instance http://mcp:8765/mcp). First up 3:00 (image build),
+    second 9 s. archi doctor: all 21 checks pass (okg lint, okg doctor, and 19 footgun checks). In the
+    browser the preset bound server:mcp:okg-myteam; asked ''Which architectures does the CMSSW_14_0_14
+    release support? Search the graph and cite the node id.'', the model called inspect, search and expand
+    through MCP and answered citing node cmssw_release_family:CMSSW_14_0 from the search rows (source
+    myteam.cmssw-releases). The answer''s content was weak: the 4B model missed that cmssw_release:CMSSW_14_0_14
+    lists its architectures. It needed num_ctx 16384 and think off in the chat controls: ollama''s default
+    4096-token window truncated the prompt (logged ''truncating input prompt'' 4227->4096), recorded in
+    docs/quickstart.md. On GitHub (https://github.com/archi-physics/archi/actions/runs/40205607160) archi
+    up and archi doctor --json (ok: true) also passed with no model server configured. archi down --purge
+    --yes removed containers, volumes and network.'
+- kind: executed_test
+  requirement: req.r3-golden-path.doctor
+  status: pass
+  command: python -m pytest python/tests/cli/test_doctor.py -q
+  head: 9f6845f92d42763601043751971fe5160693eedd
+  at: '2026-10-25T15:40:00+00:00'
+  note: 'acc.r3-golden-path.checks: 26 passed. A healthy instance passes all 21 checks with fake probes;
+    21 parametrized fixtures each break one thing and assert that check fails (profiles-env warns) with
+    a one-line remediation: instance-git, deployment-committed, env-secrets, secrets-not-committed, data-root,
+    absolute-paths, profiles-env, okg-version, graph-db-shm, ports-loopback, chat-db-distinct, mcp-port,
+    selected-sources-fed, graph-db-preload, role-passwords, published, services, mcp-answers, webui-up,
+    okg-lint, okg-doctor. A test keeps the registered checks equal to the fixtures; another ties each
+    check to its ledger entry; --json output is one serialisable object.'
 decisions: []

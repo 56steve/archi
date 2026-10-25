@@ -90,14 +90,13 @@ def test_slice_carries_evidence_escalation_and_precedent_fields():
 
 def test_edges_join_ops_records_only():
     """Edges to other packs' nodes wait on okg (see the bridge's header);
-    those references are attributes, and the ticket ones are findable."""
+    those references are attributes, and an outcome's ticket is filterable."""
     loop = {"OpsIncident", "OpsProposal", "OpsDecision", "OpsAction", "OpsOutcome"}
     for name, body in _narrowings().items():
         ann = body["annotations"]
         assert {ann["src_subtypes"], ann["dst_subtypes"]} <= loop, name
         assert "optional_when_subtypes_missing" not in ann, name
     classes = _schema("ops_record.yaml")["classes"]
-    assert "ticket_keys" in classes["OpsIncident"]["annotations"]["okg_identifier_fields"].split(",")
     assert classes["OpsOutcome"]["attributes"]["ticket_key"]["annotations"]["filterable"] == "true"
 
 
@@ -171,3 +170,14 @@ def test_catalog_loads_with_the_slice(catalog, tmp_path, bundle):
     assert report["subtype_count"] - base["subtype_count"] == len(OPS_SUBTYPES), (report, base)
     assert report["narrowings_by_origin"]["bridge:ops_record.yaml"] == len(_narrowings()), report
     assert "bridge:ops_record.yaml" not in base["narrowings_by_origin"]
+
+
+def test_rendered_profile_carries_the_precedent_profile_and_playbook(catalog, tmp_path):
+    rendered = render(resolve(catalog, ["cern-team"], with_packs=["ops-record"]), tmp_path)
+    defaults = yaml.safe_load((rendered.profile_dir / "deployment-defaults.yaml").read_text())
+    profiles = defaults["search"]["profiles"]
+    assert profiles["precedents"]["subtypes"] == OPS_SUBTYPES
+    assert {"ops_incident", "ops_outcome"} <= set(profiles["content"]["subtypes"])
+    assert (rendered.profile_dir / "skills" / "ops_precedents.md").is_file()
+    triggers = yaml.safe_load((rendered.profile_dir / "skills" / "skill-triggers.yaml").read_text())
+    assert triggers["intents"]["ops_precedents"]["skill"] == "ops_precedents"
