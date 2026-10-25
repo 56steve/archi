@@ -37,5 +37,14 @@ tasks:
     Test plan:
 
     - survey doc [evidence: manual]'
-evidence: []
+evidence:
+- kind: manual
+  requirement: req.r3-bundle-cms-kb.scope
+  status: pass
+  head: 27a9dcfc25ade9865c70bc037798091ed5692ee2
+  at: '2026-10-25T00:26:13+00:00'
+  note: pact/changes/r3-bundle-cms-kb/survey.md, a read-only survey of archi-physics/cms-kb
+    at a3bd550 (archi-okg pin faa731ff, okg pin aa2fda75). Jason chose option A (merge into
+    cms-physics) on 2026-10-25; the decision landed in 27a9dcfc. The maintainer's approval
+    of this PACT is a separate Pact-Approved trailer.
 decisions: []
