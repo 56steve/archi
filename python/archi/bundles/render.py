@@ -121,3 +121,17 @@ def render(
     if comp.triggers is not None:
         _write(out / "skills" / TRIGGERS_FILE, _dump(comp.triggers))
     return Rendered(out, name, comp)
+
+
+def render_legacy(profile_dir: Path, instance_dir: Path) -> Path:
+    """Copy a legacy okg profile (profile.yaml, no bundle.yaml) into the instance.
+
+    Symlinks are followed, so the copy holds real files. okg then finds it in
+    `<instance>/profiles/` with no OKG_PROFILES_DIR. Nothing is composed: a
+    legacy profile takes no --with/--without.
+    """
+    out = Path(instance_dir) / PROFILES_DIR / Path(profile_dir).name
+    if out.exists():
+        shutil.rmtree(out)
+    shutil.copytree(profile_dir, out, symlinks=False)
+    return out

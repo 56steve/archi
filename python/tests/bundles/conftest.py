@@ -7,7 +7,7 @@ import shutil
 
 import pytest
 
-from bundle_support import CATALOG
+from bundles.bundle_support import CATALOG
 
 
 @pytest.fixture

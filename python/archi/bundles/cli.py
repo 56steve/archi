@@ -1,5 +1,7 @@
 """The `archi` command: pack and bundle tooling.
 
+    archi bundles list [--json]         every pack and bundle installed packages register
+    archi bundles show NAME             one pack or bundle in full
     archi bundles validate [PATH ...]   check pack.yaml / bundle.yaml
     archi render --bundle B [--with P] [--without P] [--instance DIR]
                                         compose packs into an okg profile
@@ -7,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -50,6 +53,79 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _listing(catalog: discovery.Catalog) -> dict:
+    return {
+        "bundles": [
+            {
+                "name": b.name,
+                "version": b.version,
+                "description": b.manifest["description"],
+                "extends": list(b.extends),
+                "default": list(b.default_packs),
+                "optional": list(b.optional_packs),
+                "okg": b.okg,
+                "provider": catalog.providers[f"bundle:{name}"],
+                "dir": str(b.dir),
+            }
+            for name, b in sorted(catalog.bundles.items())
+        ],
+        "packs": [
+            {
+                "name": p.name,
+                "kind": p.kind,
+                "version": p.version,
+                "description": p.manifest["description"],
+                "needs_credentials": p.needs_credentials,
+                "credentials": list(p.credentials),
+                "provider": catalog.providers[f"pack:{name}"],
+                "dir": str(p.dir),
+            }
+            for name, p in sorted(catalog.packs.items())
+        ],
+        "legacy_profiles": [
+            {"name": name, "dir": str(path)} for name, path in sorted(catalog.legacy_profiles.items())
+        ],
+        "problems": [str(p) for p in catalog.problems],
+    }
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    listing = _listing(_catalog(args))
+    if args.json:
+        print(json.dumps(listing, indent=2))
+        return 1 if listing["problems"] else 0
+    print("bundles:")
+    for b in listing["bundles"]:
+        print(f"  {b['name']} {b['version']}  default: {', '.join(b['default'])}"
+              f"  optional: {', '.join(b['optional']) or '-'}  [{b['provider']}]")
+    print("packs:")
+    for p in listing["packs"]:
+        creds = "needs credentials" if p["needs_credentials"] else "no credentials needed"
+        print(f"  {p['name']} {p['version']} ({p['kind']}, {creds})  [{p['provider']}]")
+    if listing["legacy_profiles"]:
+        print("legacy okg profiles (not composable; `archi render --bundle <name>` copies one):")
+        for lp in listing["legacy_profiles"]:
+            print(f"  {lp['name']}  {lp['dir']}")
+    for problem in listing["problems"]:
+        print(f"problem: {problem}", file=sys.stderr)
+    return 1 if listing["problems"] else 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    listing = _listing(_catalog(args))
+    matches = [
+        {"type": kind[:-1], **item}
+        for kind in ("bundles", "packs")
+        for item in listing[kind]
+        if item["name"] == args.name
+    ]
+    if not matches:
+        print(f"no pack or bundle named {args.name!r}", file=sys.stderr)
+        return 1
+    print(json.dumps(matches if len(matches) > 1 else matches[0], indent=2))
+    return 0
+
+
 def _packs_arg(values: list[str]) -> list[str]:
     """--with a,b --with c -> [a, b, c]"""
     return [name for value in values for name in value.split(",") if name]
@@ -62,6 +138,19 @@ def cmd_render(args: argparse.Namespace) -> int:
     catalog = _catalog(args)
     for problem in catalog.problems:
         print(f"warning: {problem}", file=sys.stderr)
+    legacy = [b for b in args.bundle if b not in catalog.bundles and b in catalog.legacy_profiles]
+    if legacy:
+        from archi.bundles.render import render_legacy
+
+        if len(args.bundle) > 1 or args.with_packs or args.without_packs or args.name:
+            print(f"error: {legacy[0]!r} is a legacy okg profile; it cannot be combined "
+                  "with other bundles, --with, --without or --name", file=sys.stderr)
+            return 1
+        out = render_legacy(catalog.legacy_profiles[legacy[0]], args.instance)
+        print(f"copied legacy profile {legacy[0]!r} to {out}")
+        print(f"run okg from {args.instance}:")
+        print(f"  okg install --profile {legacy[0]} --deployment-name <slug> --postgres-dsn ...")
+        return 0
     try:
         resolution = resolve(
             catalog, args.bundle, _packs_arg(args.with_packs), _packs_arg(args.without_packs)
@@ -95,6 +184,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     bundles = sub.add_parser("bundles", help="inspect and check packs and bundles")
     bsub = bundles.add_subparsers(dest="bundles_command", required=True)
+    listing = bsub.add_parser("list", help="every pack and bundle installed packages register")
+    listing.add_argument("--json", action="store_true", help="machine-readable output")
+    roots(listing)
+    listing.set_defaults(func=cmd_list)
+    show = bsub.add_parser("show", help="one pack or bundle in full (JSON)")
+    show.add_argument("name")
+    roots(show)
+    show.set_defaults(func=cmd_show)
+
     validate = bsub.add_parser(
         "validate",
         help="check manifests against the published schemas and the composition rules",

@@ -123,7 +123,9 @@ git -C deployments commit --allow-empty -m "deployment repository baseline"
 Then install:
 
 ```bash
-export OKG_PROFILES_DIR="$(okg-venv/bin/archi-profiles-dir)"
+# Copy the bundle into ./profiles/cern-team, a writable copy okg finds on its
+# own when run from this directory. No OKG_PROFILES_DIR.
+okg-venv/bin/archi render --bundle cern-team --instance .
 export OKG_DEPLOYMENTS_DIR="$PWD/deployments"
 # Keep the data root OUTSIDE deployments/: reinstalling with --force deletes
 # everything under the deployment directory, caches and checkouts included.
@@ -133,8 +135,8 @@ export OKG_DSN='postgresql://postgres:okg@127.0.0.1:5433/myteam'
 # Want the two repository connectors? Enable them first — they ship as
 # examples, and a URL answer alone does nothing until the file is renamed.
 for f in github_repo gitlab_repo; do
-  mv "$OKG_PROFILES_DIR/cern-team/source-defaults/$f.yaml.example" \
-     "$OKG_PROFILES_DIR/cern-team/source-defaults/$f.yaml"
+  mv "profiles/cern-team/source-defaults/$f.yaml.example" \
+     "profiles/cern-team/source-defaults/$f.yaml"
 done
 
 okg-venv/bin/okg install --profile cern-team \
@@ -152,8 +154,8 @@ okg-venv/bin/okg install --profile cern-team \
 exporting `ARCHI_DATA_ROOT` does not change that. So pass an absolute
 `--archi-data-root`, as above, and keep it outside `deployments/`.
 
-`$OKG_PROFILES_DIR` has to be a writable copy of the bundle for the rename to
-work, not the directory inside the installed wheel. Skip the rename block and
+Run `okg install` from the directory holding `profiles/`: okg looks for
+`./profiles/<name>/` relative to where it runs. Skip the rename block and
 the two `--*-repo-*` flags for a CMSSW-only install; that publishes on its own.
 
 **Renaming a repository connector without answering its URL installs a source
@@ -338,7 +340,7 @@ an agent can find that `src/click/core.py` exists, but not the functions and
 classes in it. Symbols come from the core `code_graph` module, which the
 bundle leaves out on purpose. To turn it on:
 
-1. Before the install (step 3), in your writable `$OKG_PROFILES_DIR/cern-team/`,
+1. Before the install (step 3), in your writable `profiles/cern-team/`,
    replace the module list in `modules.yaml` with this one (it adds five
    lines to the bundle's list; `code_graph` alone fails the catalog load,
    because its links point at subtypes from the other modules):
@@ -771,8 +773,8 @@ directory you run okg from.
 
 ```bash
 export TWIKI_DUMP=/path/to/your/twiki-eos-dump    # holds <Topic>.txt files
-mv "$OKG_PROFILES_DIR/cern-team/source-defaults/twiki_eos.yaml.example" \
-   "$OKG_PROFILES_DIR/cern-team/source-defaults/twiki_eos.yaml"
+mv "profiles/cern-team/source-defaults/twiki_eos.yaml.example" \
+   "profiles/cern-team/source-defaults/twiki_eos.yaml"
 ```
 
 *First install.* Do the rename above in step 3, next to the repository
@@ -1011,6 +1013,4 @@ it will re-ingest happily and still fail to publish.
 
 ## What still needs a person
 
-- **`OKG_PROFILES_DIR`** — okg cannot find bundles inside an installed
-  package, so the variable is required even though the wheel carries them.
 - **The role passwords**, when the server authenticates by password.

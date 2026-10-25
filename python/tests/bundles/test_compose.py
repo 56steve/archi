@@ -13,7 +13,7 @@ from archi.bundles.compose import compose, digest
 from archi.bundles.resolve import CompositionError, resolve
 from archi.bundles.versions import OkgRangeError, canonical, intersect, is_empty
 
-from bundle_support import CATALOG, clone_pack, edit_yaml, load_catalog, write_bundle
+from bundles.bundle_support import CATALOG, clone_pack, edit_yaml, load_catalog, write_bundle
 
 
 def _conflict(fn, code):

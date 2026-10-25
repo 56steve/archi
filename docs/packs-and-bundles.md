@@ -136,3 +136,29 @@ profile directory is rebuilt from scratch on every render.
 
 The base questions, deployment defaults and chat prompt every profile starts
 from are in [`python/archi/bundles/base/`](../python/archi/bundles/base/).
+
+## Packaging and discovery
+
+The `archi-kb` wheel carries `bundles/` and `skills/` as real files under
+`archi/_payload/` (symlinks in the repository are followed at build time).
+`archi bundles list` and `archi bundles show NAME` find packs and bundles
+through two entry-point groups, so another package can add its own:
+
+```toml
+[project.entry-points."archi.packs"]
+mywg = "mywg_packs:packs_dir"      # returns a directory of <pack>/pack.yaml
+[project.entry-points."archi.bundles"]
+mywg = "mywg_packs:bundles_dir"    # returns a directory of <bundle>/bundle.yaml
+```
+
+The value is a callable returning the directory, or the directory itself;
+the name labels the provider in `archi bundles list`. Two providers shipping
+a pack or bundle of the same name, or an entry point that fails to load, are
+listed as problems and do not hide the rest.
+
+A bundle directory that still holds an okg `profile.yaml` and no
+`bundle.yaml` (cern-team, until PACT `r3-bundle-cern-team`) is listed as a
+legacy profile. `archi render --bundle cern-team --instance DIR` copies it,
+symlinks followed, to `DIR/profiles/cern-team/`. Either way the profile lands
+in `<instance>/profiles/`, and okg run from the instance directory finds it,
+so no step sets `OKG_PROFILES_DIR`.
