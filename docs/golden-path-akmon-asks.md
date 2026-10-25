@@ -176,6 +176,9 @@ remediation.
 
 ## Ask E. Prove that removing a source removes its records
 
+**Withdrawn (2026-10-25): no change needed.** `remove-source --apply` was run on a
+scratch instance and did retract the source's records (footgun FG-39).
+
 **Problem.** The quickstart found that a source removed from the registry
 leaves its records in the graph until the database is recreated. v0.2.0 lists
 `okg deployment remove-source --apply` as "retract its records, publish, and

@@ -181,4 +181,21 @@ evidence:
     selected-sources-fed, graph-db-preload, role-passwords, published, services, mcp-answers, webui-up,
     okg-lint, okg-doctor. A test keeps the registered checks equal to the fixtures; another ties each
     check to its ledger entry; --json output is one serialisable object.'
+- kind: executed_test
+  requirement: req.r3-golden-path.nightly
+  status: pass
+  command: .github/workflows/nightly-e2e.yml on archi_v3 (push runs and one workflow_dispatch)
+  head: 3d35f9e3125e0ece205839b9bfad03c2abf8418e
+  at: '2026-10-25T16:40:26+00:00'
+  note: 'acc.r3-golden-path.green: three consecutive green runs on archi_v3, counted from the first push
+    after r3-packs-split changed what the run installs: https://github.com/archi-physics/archi/actions/runs/40209703610
+    (push, 32e70609), https://github.com/archi-physics/archi/actions/runs/40210961246 (push, 3d35f9e3)
+    and https://github.com/archi-physics/archi/actions/runs/40212289435 (workflow_dispatch, 3d35f9e3).
+    Each went from an empty ubuntu-latest runner to a cited answer over MCP in exactly 5 user commands,
+    taking 5.1, 6.0 and 4.4 minutes across those five steps (limit 15). GitHub runs a scheduled workflow
+    only from the default branch, which is still v2 main, so the 03:17 schedule cannot fire on archi_v3
+    until cutover; Jason decided (2026-10-25, d269 A) that pushes and manual dispatches count until then.
+    The run uses the cern-team bundle with cmssw-releases selected in place of docsite and indico, which
+    need input a bare runner lacks; a cern-team default that publishes bare is PACT r3-bundle-cern-team
+    (Jason, d268 A).'
 decisions: []
