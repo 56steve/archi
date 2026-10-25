@@ -81,4 +81,31 @@ evidence:
     today), okg''s planner scaffolds the rendered profile and okg catalog load composes it:
     five more subtypes than the same selection without ops-record, and all 7 narrowings. Full
     suite 2056 passed, 1 skipped.'
+- kind: executed_test
+  requirement: req.r3-ops-record.write
+  status: pass
+  command: ARCHI_SCRATCH_DSN=postgresql://...@127.0.0.1:5461/r3ops python/tests/packs/scratch_ops_record_run.sh
+    <empty dir>
+  head: 8aea6e855d350b04993d942bc07b1e19051984e2
+  at: '2026-10-25T15:12:13+00:00'
+  note: 'acc.r3-ops-record.admit: scratch instance on AKMON v0.2.0, a fresh database in its
+    own akmon-postgres:v0.2.0 container, run from this commit''s tree. archi render --bundle
+    cern-team --with ops-record,jira, then okg install, published generation ...gen:20261025T150957530683Z
+    with catalog version 2 holding the 5 ops_* subtypes and 7 ops-record narrowings (catalog
+    load --apply). A workflow run (fixtures/ops_record/run1.jsonl: an incident with its proposal,
+    approved decision carrying an escalation id, action and outcome, plus an unrelated incident)
+    went through python -m archi.ops.record submit, i.e. okg admission submit as producer workflow:archi-ops
+    (kind workflow, fast_track, output signature of exactly 5 subtypes and 6 edge triples):
+    accepted with 6 nodes and 6 edges, every edge matched to a catalog narrowing. okg run --once
+    published it in the next generation, ...gen:20261025T151033664250Z (admission status published,
+    target_generation_ref set); okg search ''SRM timeout T2_US_MIT'' returns the incident and
+    its outcome, and expand shows the proposal (addresses) and outcome (outcome_of). A second
+    run opened an incident tracked in OPS-12; the jira connector''s cache then reported OPS-12
+    Resolved/Fixed, okg ingest + run published it, and python -m archi.ops.record link-tickets
+    admitted the incident''s outcome (check_method ticket_resolution, ticket_key OPS-12, actor_kind
+    person, actor the assignee) with an outcome_of edge, and the incident again as resolved;
+    a second link-tickets found nothing to link. No direct SQL: every write is an admission
+    envelope. Unit tests python/tests/packs/test_ops_record_write.py 12 passed. Full suite
+    on this tree 2068 passed, 1 skipped (one timing test, test_redact_email_addresses_git_scan_is_linear,
+    failed under load and passed alone). okg gaps found are drafted in pact/changes/r3-ops-record/okg-asks.md.'
 decisions: []
