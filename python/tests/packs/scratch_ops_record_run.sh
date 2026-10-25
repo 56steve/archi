@@ -4,6 +4,9 @@
 #   acc.r3-ops-record.admit  a workflow run's records are admitted and searchable
 #                            in the next generation; a ticket resolution from the
 #                            jira connector links to its incident
+#   acc.r3-ops-record.precedent (live counterpart of the pytest)  the new
+#                            incident retrieves its precedent with the outcome,
+#                            and the `precedents` search profile ranks ops records
 #
 # Usage: ARCHI_SCRATCH_DSN=postgresql://... scratch_ops_record_run.sh <empty work dir>
 #
@@ -115,5 +118,13 @@ check "the outcome is linked to the incident" \
   "[(n['node_id'], n['link']['edge_type']) for n in d['neighbors']] == [('ops_outcome:inc-20261003-t2usmit-srm.ticket.OPS-12', 'outcome_of')]" < "$RUN/expand-12.json"
 "$V/python" -m archi.ops.record link-tickets --deployment $D > "$RUN/link-2.json"
 check "linking again finds nothing new" "d == {'status': 'nothing_to_link'}" < "$RUN/link-2.json"
+
+echo "== 5. recall: the new incident's precedents"
+"$V/python" -m archi.ops.precedents --deployment $D --incident inc-20261003-t2usmit-srm > "$RUN/precedents.json"
+check "the precedent comes back with its proposal, decision, action and outcome" \
+  "[p['record_id'] for p in d['precedents']] == ['inc-20260914-t2usmit-srm'] and d['precedents'][0]['same_error_signature'] and d['precedents'][0]['proposals'][0]['decisions'][0]['verdict'] == 'approved' and d['precedents'][0]['proposals'][0]['actions'][0]['status'] == 'succeeded' and 'resolved' in [o['result'] for o in d['precedents'][0]['outcomes']]" < "$RUN/precedents.json"
+"$V/okg" search --deployment $D --query "SRM timeout T2_US_MIT" --scope precedents --json > "$RUN/search-precedents.json"
+check "the precedents profile ranks ops records only" \
+  "d['search_profile'] == 'precedents' and d['results'] and all(r['node_id'].startswith('ops_') for r in d['results'])" < "$RUN/search-precedents.json"
 
 echo "== done: every check passed"

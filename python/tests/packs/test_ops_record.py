@@ -174,3 +174,13 @@ def test_catalog_loads_with_the_slice(catalog, tmp_path, bundle):
     assert report["narrowings_by_origin"]["bridge:ops_record.yaml"] == len(_narrowings()), report
     assert "bridge:ops_record.yaml" not in base["narrowings_by_origin"]
 
+
+def test_rendered_profile_carries_the_precedent_profile_and_playbook(catalog, tmp_path):
+    rendered = render(resolve(catalog, ["cern-team"], with_packs=["ops-record"]), tmp_path)
+    defaults = yaml.safe_load((rendered.profile_dir / "deployment-defaults.yaml").read_text())
+    profiles = defaults["search"]["profiles"]
+    assert profiles["precedents"]["subtypes"] == OPS_SUBTYPES
+    assert {"ops_incident", "ops_outcome"} <= set(profiles["content"]["subtypes"])
+    assert (rendered.profile_dir / "skills" / "ops_precedents.md").is_file()
+    triggers = yaml.safe_load((rendered.profile_dir / "skills" / "skill-triggers.yaml").read_text())
+    assert triggers["intents"]["ops_precedents"]["skill"] == "ops_precedents"

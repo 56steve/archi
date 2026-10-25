@@ -81,6 +81,25 @@
       "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
       "uniqueItems": true
     },
+    "search_profiles": {
+      "description": "Named okg search profiles the pack adds to the instance (deployment.yaml search.profiles). Not `content`, which is the union of search_subtypes.",
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$", "not": {"const": "content"}},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description", "subtypes"],
+        "properties": {
+          "description": {"type": "string", "minLength": 1},
+          "subtypes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+            "uniqueItems": true
+          }
+        }
+      }
+    },
     "live_tools": {
       "description": "archi.tools.* entries exposed on the instance MCP server.",
       "type": "array",
