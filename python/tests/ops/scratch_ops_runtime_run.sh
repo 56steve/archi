@@ -90,7 +90,7 @@ echo "commit $SHA"
 echo "{\"dirty\": $(git -C "$REPO" status --porcelain | wc -l | tr -d ' ')}" | check "the checkout is clean" "d['dirty'] == 0"
 [ "$FAILS" = 0 ] || exit 1
 
-echo "== 1. inputs: cern-team regrouped into packs, ops-record, jira and the scratch automation"
+echo "== 1. inputs: cern-team regrouped into packs, the scratch automation's jira cache"
 "$V/python" -c "
 import sys; sys.path.insert(0, '$REPO/python/tests')
 from pathlib import Path
@@ -100,25 +100,21 @@ build_cern_team_catalog(Path('$RUN/catalog'))
 mkdir -p data/jira
 cp "$REPO/python/tests/packs/fixtures/ops_record/jira_records_open.json" data/jira/records.json
 echo '{"record_count": 2}' > data/jira/meta.json
-mkdir instance
-"$V/archi" render --bundle cern-team --with ops-record,jira,scratch-tools,scratch-triage --without docsite,indico --instance instance \
-  --pack-root "$RUN/catalog/packs" --pack-root "$F/packs" --bundle-root "$RUN/catalog" 2>&1 | grep -v "also provided"
-mkdir -p instance/deployments
-check "the rendered defaults declare runtime.workflows: [archi.ops.workflow]" \
-  "'archi.ops.workflow' in open('$INST/profiles/cern-team/deployment-defaults.yaml').read()" < /dev/null
-ls instance/automations
 
-echo "== 2. archi init's install and publish, through archi.cli.init.install_and_publish (no hand bootstrap)"
+echo "== 2. a fresh archi init (archi.cli.init.init itself; only the container start is skipped, the lab database runs)"
 $T init-instance 2>&1 | tee "$RUN/install-flow.log" | grep -v "^\s*$" | tail -25
-check "the flow ran provision and then the runtime bootstrap by itself (no hand step)" \
+check "init rendered the scratch automation and the runtime line" \
+  "'archi.ops.workflow' in open('$INST/profiles/cern-team/deployment-defaults.yaml').read() and 'scratch-triage' in open('$INST/archi.lock').read()" < /dev/null
+check "init ran provision and then the runtime bootstrap by itself (no hand step)" \
   "'okg provision --deployment' in open('$RUN/install-flow.log').read() and 'okg runtime bootstrap --deployment' in open('$RUN/install-flow.log').read()" < /dev/null
 grep -n "^runtime" -A4 "$OKG_DEPLOYMENTS_DIR/$D/deployment.yaml" | tee "$RUN/runtime-line.txt"
 check "deployment.yaml has runtime.enabled and archi.ops.workflow (written before okg install)" \
   "'enabled: true' in open('$RUN/runtime-line.txt').read() and 'archi.ops.workflow' in open('$RUN/runtime-line.txt').read()" < /dev/null
+$T tables | tee "$RUN/tables.json"
+check "init created the archi_ops tables; nothing in this script did" \
+  "d == {'signals': True, 'halts': True, 'mediations': True, 'demotions': True}" < "$RUN/tables.json"
 "$V/okg" runtime bootstrap --deployment $D > "$RUN/bootstrap-2.out" 2>&1; echo "{\"exit\": $?}" | check "okg runtime bootstrap is idempotent (archi up repeats it)" "d['exit'] == 0"
 git -C "$INST" log --oneline | head -5
-$T configure --level L0 --mode live --timeout 120 --proposal marker --cost 0.1
-$V/python -c "from archi.ops.okg_io import OpsIO; OpsIO('$DSN', '$D').ensure_tables()"
 
 echo "== 3. start the worker; the scanner schedule exists"
 start_worker 15
@@ -136,6 +132,30 @@ check "the seed incident is published" "len(rows) == 1 and rows[0]['attrs']['ent
 "$V/okg" doctor --check sources --deployment $D --json > "$RUN/doctor-sources.json" 2>&1 || true
 check "okg doctor lists the jira source with a watermark" \
   "any(r.get('name') == 'jira.jira' and ((r.get('coverage') or {}).get('watermark') or {}).get('last_reconcile_at') for r in d['sources'])" < "$RUN/doctor-sources.json"
+
+echo "== 4b. live is a request: a hand-written mode: live is shadow until a person approves a promotion"
+configure --level L2 --mode live --timeout 120 --proposal marker --cost 0.1
+WH=$(new_run hand-1); $T wait "$WH" | tee "$RUN/hand.out"
+check "ops.yaml says live with no promotion: the run is in shadow" \
+  "d['status'] == 'SUCCESS' and 'observed' in str(d['output']) and \"'mode': 'shadow'\" in str(d['output'])" < "$RUN/hand.out"
+publish hand
+$T human-action "$WH"; publish human0
+$OPS promote scratch-triage --as operator-x --min-proposals 1 --min-answered 1 --note "scratch: the shadow proposal matched a person" --json > "$RUN/promote1.json" 2> "$RUN/promote1.err"
+cat "$RUN/promote1.json"; cat "$RUN/promote1.err"
+CHANGE1=$("$V/python" -c "import json; print(json.load(open('$RUN/promote1.json'))['change'])")
+check "promote opened a PACT change awaiting review and did not approve it" \
+  "d['change'].startswith('promote-scratch-triage-') and d['state'] == 'awaiting_review' and d['thresholds']['min_proposals'] == 1" < "$RUN/promote1.json"
+echo "{\"subject\": \"$(git -C "$INST" log -1 --format=%s)\", \"files\": \"$(git -C "$INST" show --name-only --format= HEAD | tr '\n' ' ')\"}" > "$RUN/promote1-commit.json"
+check "the instance repo has the request, with the report and the thresholds" \
+  "d['subject'] == 'request promotion of scratch-triage ($CHANGE1)' and 'pact/changes/$CHANGE1/shadow-report.json' in d['files'] and 'pact/changes/$CHANGE1/thresholds.json' in d['files']" < "$RUN/promote1-commit.json"
+WP=$(new_run pre-1); $T wait "$WP" | tee "$RUN/pre.out"
+check "ops.yaml names the change but nobody approved it: still shadow" \
+  "d['status'] == 'SUCCESS' and \"'mode': 'shadow'\" in str(d['output'])" < "$RUN/pre.out"
+$T pact "$CHANGE1" > "$RUN/pact0.json"
+check "the ledger has no approval yet" "d == []" < "$RUN/pact0.json"
+$T approve-promotion "$CHANGE1"
+$T pact "$CHANGE1" > "$RUN/pact1.json"; cat "$RUN/pact1.json"
+check "the operator's approval (okg pact decide) is in the ledger" "len(d) == 1 and d[0]['verdict'] == 'approve' and d[0]['principal'] == 'operator-x'" < "$RUN/pact1.json"
 
 echo "== 5. L0 (acc e2e): observed, nothing escalated, no marker"
 configure --level L0
@@ -318,40 +338,40 @@ check "its escalation was answered reject by archi ops halt" "d['status'] in ('d
 check "no new marker" "d == $BASE" < <(markers)
 $OPS resume > /dev/null
 
-echo "== 18. a stale source demotes a live automation, the demotion persists, and promotion lifts it (acc demote, score)"
-configure --level L2 --proposal marker --timeout 120 --cost 0.1 --mode live
+echo "== 18. a stale source demotes a live automation at once, the demotion persists, a new promotion lifts it"
+configure --level L2 --proposal marker --timeout 120 --cost 0.1
 $T source stale
 WS1=$(new_run dem-1); $T wait "$WS1" | tee "$RUN/dem1.out"
 check "demoted run ends observed, in shadow" "d['status'] == 'SUCCESS' and 'observed' in str(d['output']) and 'shadow' in str(d['output'])" < "$RUN/dem1.out"
 check "no escalation was opened" "d is None" < <($T escalation "$WS1")
+$T demotions | tee "$RUN/demotions.json"
+check "the demotion is in archi_ops.demotions the moment it happens" "len(d) == 1 and d[0]['reason'].startswith('demoted to shadow: ') and 'freshness:jira.jira' in d[0]['reason']" < "$RUN/demotions.json"
+node ops_proposal "prop-$WS1" > "$RUN/unpublished.jsonl"
+check "...and it is not published yet" "rows == []" < "$RUN/unpublished.jsonl"
 $T source fresh
-publish demotion
 WS2=$(new_run dem-2); $T wait "$WS2" | tee "$RUN/dem2.out"
-check "the source is fresh again, yet the run stays in shadow (the demotion persisted)" \
+check "the second run starts before any publish and the source is fresh, yet it stays in shadow" \
   "d['status'] == 'SUCCESS' and 'observed' in str(d['output']) and \"'mode': 'shadow'\" in str(d['output'])" < "$RUN/dem2.out"
 check "no escalation, no new marker" "d is None" < <($T escalation "$WS2")
 publish persisted
-$T human-action "$WS1"; $T human-action "$WS2"
+$T human-action "$WP"; $T human-action "$WS1"; $T human-action "$WS2"
 publish human
 $OPS promote scratch-triage --as operator-x > "$RUN/promote-refused.out" 2>&1; echo "exit $?" >> "$RUN/promote-refused.out"; cat "$RUN/promote-refused.out"
-check "promote is refused with the default thresholds (2 scored incidents, 30 needed)" \
+check "promote is refused with the default thresholds" \
   "'not ready to promote' in open('$RUN/promote-refused.out').read() and 'need 30' in open('$RUN/promote-refused.out').read() and 'exit 2' in open('$RUN/promote-refused.out').read()" < /dev/null
-git -C "$INST" log --oneline | head -3 > "$RUN/instance-log-before.txt"
-$OPS promote scratch-triage --as operator-x --min-proposals 2 --min-answered 2 --note "scratch: both shadow proposals matched a person" --json > "$RUN/promote.json" 2> "$RUN/promote.err"; cat "$RUN/promote.json"; cat "$RUN/promote.err"
-check "promote succeeded with a passing report" "d['automation'] == 'scratch-triage' and d['change'].startswith('promote-scratch-triage-')" < "$RUN/promote.json"
-CHANGE=$("$V/python" -c "import json; print(json.load(open('$RUN/promote.json'))['change'])")
-echo "{\"subject\": \"$(git -C "$INST" log -1 --format=%s)\", \"files\": \"$(git -C "$INST" show --name-only --format= HEAD | tr '\n' ' ')\"}" > "$RUN/promote-commit.json"
-check "the instance repo has a commit naming the change, with ops.yaml and the retired change directory" \
-  "d['subject'] == 'promote scratch-triage to live ($CHANGE)' and 'ops.yaml' in d['files'] and 'pact/archive/$CHANGE/pact.yaml' in d['files']" < "$RUN/promote-commit.json"
-$T pact promote-scratch-triage > "$RUN/pact.json"; cat "$RUN/pact.json"
-check "the approval is a PACT decision in the okg ledger, by the OS user for operator-x" \
-  "len(d) == 1 and d[0]['verdict'] == 'approve' and d[0]['principal'].endswith(' for operator-x')" < "$RUN/pact.json"
-grep -n "promoted_at\|mode" "$INST/ops.yaml" | head
-WS3=$(new_run dem-3); ESCP=$($T pending "$WS3" --timeout 90)
-check "after promotion the run is live again: it waits for a person" "'$ESCP'.startswith('esc-')" < /dev/null
+$OPS promote scratch-triage --as operator-x --min-proposals 4 --min-answered 4 --note "scratch: four shadow proposals matched a person" --json > "$RUN/promote2.json" 2> "$RUN/promote2.err"; cat "$RUN/promote2.json"; cat "$RUN/promote2.err"
+CHANGE2=$("$V/python" -c "import json; print(json.load(open('$RUN/promote2.json'))['change'])")
+check "a second promotion change is open, with four scored incidents" "d['state'] == 'awaiting_review' and d['thresholds']['min_proposals'] == 4 and 'scored=4' in d['report']" < "$RUN/promote2.json"
+WS3=$(new_run dem-3); $T wait "$WS3" | tee "$RUN/dem3.out"
+check "the new change is not approved yet: still shadow" "d['status'] == 'SUCCESS' and \"'mode': 'shadow'\" in str(d['output'])" < "$RUN/dem3.out"
+$T approve-promotion "$CHANGE2"
+WS4=$(new_run dem-4); ESCP=$($T pending "$WS4" --timeout 90)
+check "after the approval the run is live: it waits for a person" "'$ESCP'.startswith('esc-')" < /dev/null
 $OPS reject "$ESCP" --as scratch-op
-$T wait "$WS3" --timeout 90 | tee "$RUN/dem3.out"
-check "the promoted automation ran live (rejected by the person)" "d['status'] == 'SUCCESS' and 'rejected' in str(d['output']) and \"'mode': 'live'\" in str(d['output'])" < "$RUN/dem3.out"
+$T wait "$WS4" --timeout 90 | tee "$RUN/dem4.out"
+check "the promoted automation ran live, the demotion lifted" "d['status'] == 'SUCCESS' and 'rejected' in str(d['output']) and \"'mode': 'live'\" in str(d['output'])" < "$RUN/dem4.out"
+$T pact promote-scratch-triage > "$RUN/pact2.json"; cat "$RUN/pact2.json"
+check "both approvals are PACT decisions in the okg ledger, by operator-x" "len(d) == 2 and all(r['verdict'] == 'approve' and r['principal'] == 'operator-x' for r in d)" < "$RUN/pact2.json"
 
 echo "== 19. publish and read the ops records back"
 sleep 20   # let the queued halted-record admissions run
@@ -374,9 +394,12 @@ rb ops_action "act-$WS";    check "at most once: the action is recorded as unkno
 rb ops_outcome "out-$WS";   check "at most once: the outcome is unknown, with the reason" "rows[0]['attrs']['result'] == 'unknown' and 'check the external system' in rows[0]['attrs']['resolution']" < "$RUN/rb-out-$WS.jsonl"
 rb ops_decision "dec-$W8";  check "restart: decision timed_out, the late approval was not executed" "rows[0]['attrs']['verdict'] == 'timed_out' and 'after the deadline' in rows[0]['attrs']['reason']" < "$RUN/rb-dec-$W8.jsonl"
 rb ops_decision "dec-$W10-halt"; check "halt: a halted decision for the waiting run" "rows[0]['attrs']['verdict'] == 'halted'" < "$RUN/rb-dec-$W10-halt.jsonl"
+rb ops_proposal "prop-$WH";  check "hand-edited live: proposal is shadow, reason says there is no promotion change" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('not promoted: ops.yaml names no promotion change')" < "$RUN/rb-prop-$WH.jsonl"
+rb ops_proposal "prop-$WP";  check "named but unapproved: shadow, reason says the change is awaiting review" "rows[0]['attrs']['mode'] == 'shadow' and 'is awaiting_review' in rows[0]['attrs']['mode_reason']" < "$RUN/rb-prop-$WP.jsonl"
 rb ops_proposal "prop-$WS1"; check "demotion: proposal is shadow with the failing check as the reason" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('demoted to shadow: ') and 'freshness:jira.jira' in rows[0]['attrs']['mode_reason']" < "$RUN/rb-prop-$WS1.jsonl"
 rb ops_proposal "prop-$WS2"; check "persisted demotion: shadow, reason says the demotion persists" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('demoted to shadow: demotion persists')" < "$RUN/rb-prop-$WS2.jsonl"
-rb ops_proposal "prop-$WS3"; check "after promotion the proposal is live" "rows[0]['attrs']['mode'] == 'live'" < "$RUN/rb-prop-$WS3.jsonl"
+rb ops_proposal "prop-$WS3"; check "second promotion unapproved: shadow, not promoted" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('not promoted: ')" < "$RUN/rb-prop-$WS3.jsonl"
+rb ops_proposal "prop-$WS4"; check "after the second approval the proposal is live" "rows[0]['attrs']['mode'] == 'live'" < "$RUN/rb-prop-$WS4.jsonl"
 
 echo "== 20. cleanup: stop the worker this script started"
 kill_worker

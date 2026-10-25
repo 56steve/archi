@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import pickle
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -71,30 +72,58 @@ def load(path: Path) -> dict:
 
 
 def cmd_init_instance(a: argparse.Namespace) -> None:
-    """What `archi init` does after rendering, through the same functions (archi.cli.init.install_and_publish):
-    git-init the instance, write the secrets and archi.yaml, okg install, commit, provision (with the runtime
-    bootstrap), role passwords. Only the container start is left out: the lab database already runs."""
+    """A fresh `archi init`: `archi.cli.init.init` itself, from an empty directory. Only the container start is
+    left out (the compose runner does nothing and the database wait is skipped), because the lab database already
+    runs; the free ports and the generated database password are replaced by the lab's."""
+    from archi.bundles import discovery
     from archi.cli import init as init_mod
-    from archi.stack.instance import GITIGNORE, Instance, Ports, generate_secrets, write_env
-    from archi.stack.okg import Okg, okg_version
 
     inst_dir, dsn, deployment = env()
+    run_dir = inst_dir.parent
     parsed = urlparse(dsn)
-    data_root = inst_dir.parent / "data"
-    init_mod.git(inst_dir, "init", "-q", "-b", "main")
-    (inst_dir / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
-    init_mod.commit_all(inst_dir, "baseline: the rendered instance")
-    instance = Instance(dir=inst_dir, name=deployment, bundles=["cern-team"], data_root=data_root, runtime="docker",
-                        ports=Ports(graph_db=parsed.port, mcp=18765, webui=18080), profile="cern-team",
-                        okg_version=okg_version() or "", admin_email=f"admin@{deployment}.archi.invalid")
-    secrets = generate_secrets()
-    secrets["ARCHI_GRAPH_DB_PASSWORD"] = parsed.password
-    secrets["ARCHI_OKG_MCP_PASSWORD"] = ""
-    write_env(instance.env_path, secrets)
-    instance.save()
-    resolved = init_mod.absolute_answers(init_mod.profile_questions(inst_dir / "profiles" / "cern-team"), {},
-                                         data_root, Path.cwd())
-    init_mod.install_and_publish(instance, secrets, Okg(instance, secrets, echo=print), "cern-team", resolved, echo=print)
+    real_secrets = init_mod.generate_secrets
+    init_mod.free_ports = lambda n: [parsed.port, 18765, 18080][:n]
+    init_mod.generate_secrets = lambda: {**real_secrets(), "ARCHI_GRAPH_DB_PASSWORD": parsed.password}
+    scratch_packs = Path(__file__).resolve().parent / "fixtures" / "scratch" / "packs"
+    catalog = discovery.from_roots([run_dir / "catalog" / "packs", scratch_packs], [run_dir / "catalog"])
+    init_mod.init(
+        deployment, bundles=["cern-team"], catalog=catalog, directory=inst_dir,
+        with_packs=["ops-record", "jira", "scratch-tools", "scratch-triage"], without_packs=["docsite", "indico"],
+        data_root=run_dir / "data", runtime="docker",
+        compose_runner=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""),
+        wait_db=lambda _dsn: None, echo=print,
+    )
+
+
+def cmd_tables(a: argparse.Namespace) -> None:
+    """Which archi_ops tables exist (made by archi init, not by hand)."""
+    with psycopg.connect(os.environ["OKG_DSN"], autocommit=True) as conn:
+        print(json.dumps({t: conn.execute("SELECT to_regclass(%s)", (f"archi_ops.{t}",)).fetchone()[0] is not None
+                          for t in ("signals", "halts", "mediations", "demotions")}))
+
+
+def cmd_demotions(a: argparse.Namespace) -> None:
+    with psycopg.connect(os.environ["OKG_DSN"], autocommit=True) as conn:
+        rows = conn.execute("SELECT automation, run_id, reason FROM archi_ops.demotions ORDER BY demoted_at").fetchall()
+    print(json.dumps([{"automation": r[0], "run_id": r[1], "reason": r[2]} for r in rows]))
+
+
+def cmd_approve_promotion(a: argparse.Namespace) -> None:
+    """The operator's step, which archi never takes: `okg pact decide --verdict approve`, then commit the archived change."""
+    from archi.cli.init import commit_all
+
+    inst, dsn, deployment = env()
+    done = subprocess.run(
+        [str(Path(sys.executable).with_name("okg")), "pact", "--root", str(inst), "decide", a.change, "--verdict",
+         "approve", "--principal", OPERATOR, "--note", "scratch: reviewed the shadow report and the thresholds",
+         "--dsn", dsn],
+        capture_output=True, text=True, cwd=str(inst),
+        env={**os.environ, "OKG_PACT_GRAPH_DEPLOYMENT": deployment, "OKG_PACT_QUIET_NUDGE": "1",
+             "OKG_DEPLOYMENTS_DIR": str(inst / "deployments")})
+    print(done.stdout.strip() or done.stderr.strip())
+    if done.returncode != 0:
+        sys.exit(1)
+    commit_all(inst, f"approve {a.change}")
 
 
 def cmd_configure(a: argparse.Namespace) -> None:
@@ -284,6 +313,11 @@ def main() -> None:
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init-instance").set_defaults(f=cmd_init_instance)
+    sub.add_parser("tables").set_defaults(f=cmd_tables)
+    sub.add_parser("demotions").set_defaults(f=cmd_demotions)
+    ap = sub.add_parser("approve-promotion")
+    ap.add_argument("change")
+    ap.set_defaults(f=cmd_approve_promotion)
     c = sub.add_parser("configure")
     c.add_argument("--level")
     c.add_argument("--mode", choices=["shadow", "live"])
