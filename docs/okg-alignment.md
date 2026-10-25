@@ -79,7 +79,7 @@ releases source off on 2026-10-01 for this reason. Now:
 - **DBS datasets and CondDB global tags** deliberately claim no complete scope
   in the release modes, so they never delete by absence: a narrower cache
   export would retract an unbounded share of the catalog, and okg has no guard
-  on retraction size yet (mitdbg/okg#3307). They return a cursor
+  on retraction size yet (mitdbg/akmon#19). They return a cursor
   (`input_content_sha256`, the SHA-256 of the input caches; for CondDB also the
   CMSSW cache it reads). The cursor only gives the source stored state, which
   lets okg accept an unchanged rerun as a no-op; okg still re-reads the cache
@@ -87,7 +87,7 @@ releases source off on 2026-10-01 for this reason. Now:
   time, so these two read as stale in freshness checks; and okg refuses
   `scope_complete` and `reconcile` for a `reference_catalog` source at run
   start, so under current okg no run removes datasets or tags that leave the
-  export. They stay until okg#3307 lands and these sources switch to deleting.
+  export. They stay until mitdbg/akmon#19 lands and these sources switch to deleting.
   Known limit under an okg without mitdbg/okg#3317: a deployment where DBS or
   CondDB already published facts without a cursor (the state the old bug
   leaves) is still refused `partial` on its first run after this fix, because

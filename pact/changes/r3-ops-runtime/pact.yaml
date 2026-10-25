@@ -134,4 +134,18 @@ evidence:
     acc.no-l3; the run-start half is req.loop). The automation block reaches the rendered instance
     and archi.lock. Full suite 2468 passed, 17 skipped, 2 failed: the two anonymizer wall-clock tests at
     load average above 40. Two independent reviews; their findings were fixed in b11d26c1 and 4804f5c9.'
+- kind: manual
+  requirement: req.r3-ops-runtime.upstream
+  status: pass
+  command: gh issue view 14..26 --repo mitdbg/akmon; gh issue view 814..826 --repo archi-physics/archi
+  head: abb34ebda8e0365ff48bbd12d7301c23d6591143
+  at: '2026-10-25T21:33:35+00:00'
+  note: 'acc.r3-ops-runtime.filed: the six ADR 0002 section 9 item 7 asks are filed on mitdbg/akmon
+    (2026-10-25): envelope expiry #14, approve-with-edits #15, a mounted authenticated proposal API #16,
+    per-actor cost attribution #17, a first-class kill switch #18, a retraction-size guard #19. Seven more
+    found while building the loop on okg 0.2.0 are filed with them: #20 (escalation respond always fails),
+    #21 (a late approval is accepted and executes after a worker restart), #22 (public workflow context
+    binding), #23 (on_escalation_decided never fires), #24 (runtime: after install blocks publishing),
+    #25 (install fails at ingest with the runtime enabled), #26 (a queued admission blocks the worker).
+    Each is linked from an upstream-ask issue here, #814 to #826, and from docs/ops-runtime-akmon-asks.md.'
 decisions: []
