@@ -21,8 +21,8 @@ Use this plan before answering:
    answering or concluding the answer is absent. `inspect` with
    `kind: "node"` on a page returns metadata (title, URL) only. For a long
    page, repeat the call with the returned `continuation_token` in the target
-   while `complete` is false. The text read needs okg with mitdbg/okg#2697
-   (merged 2026-09-28); an older okg refuses it ("inspect target kind must be
+   while `complete` is false. The text read needs an okg release from 2026-09-28
+   or later; an older okg refuses it ("inspect target kind must be
    one of ..."). Then fall back to the ordered-chunk recipe (Parent To
    Ordered Chunks in `source_document_exploration.md`).
 4. Expand compact hits into source context. For a promising chunk, use

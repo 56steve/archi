@@ -138,14 +138,14 @@ and okg `dev` @ `fdf5638bf`. HyperNews, SITECONF, the four MONIT readers and
 `CERNPreflightSource` still have no adapter.
 
 **CI reads `mitdbg/okg` directly; pin bumped `5b2fd076c` → `ac078aabd`
-(2026-09-27, OKG#1906). Superseded 2026-10-20 by the AKMON wheel above.** Every CI run since 2026-09-24 failed at the okg install
+(2026-09-27). Superseded 2026-10-20 by the AKMON wheel above.** Every CI run since 2026-09-24 failed at the okg install
 with `Authentication failed`: the fork token no longer worked. CI now installs okg
 over SSH from `mitdbg/okg` with a read-only deploy key held in the repository
 secret `OKG_DEPLOY_KEY`; CI no longer uses the fork or `OKG_REPO_TOKEN`. The pin moved
 to okg `dev` in the same change; the full archi suite passes against it with no
 source change.
 
-**Archi installs as-is on current okg (2026-09-15, OKG#1906).** okg `dev` @
+**Archi installs as-is on current okg (2026-09-15).** okg `dev` @
 `5b2fd076c` removed the framework's Archi-specific install code. Archi needed no
 change: the full suite passes against that commit, and `okg install --profile
 cern-team` still plans cleanly. A test deployment that needs repeatable data uses
@@ -153,7 +153,7 @@ this normal install with the cache-backed Jira and documentation sources and the
 hash-pinned CMSSW option below, and records the data hashes in its own evidence.
 A consumer-side frozen install package (#643) was closed unmerged.
 
-**Frozen CMSSW input contract (2026-09-14, OKG#1795).** This change adds an explicit
+**Frozen CMSSW input contract (2026-09-14).** This change adds an explicit
 path and SHA256 binding that never fetches in frozen mode. It preserves the live
 profile. The historical CMSSW cache is still unavailable; unit fixtures are not
 real-deployment baseline evidence. See [frozen CMSSW inputs](frozen-cmssw-input.md).
@@ -161,7 +161,7 @@ real-deployment baseline evidence. See [frozen CMSSW inputs](frozen-cmssw-input.
 *Last updated 2026-10-20, tested against AKMON v0.2.0 @ `e2c618010b` (cut from okg `54e6cf44ee`); archi branch
 `main` @ `e1c28860`.*
 
-**Pin bumped `34efbad1b` → `5b2fd076c` (2026-09-15), OKG#1906.** The fork was
+**Pin bumped `34efbad1b` → `5b2fd076c` (2026-09-15).** The fork was
 synced to okg `dev` first; it had no commits of its own. Full archi suite
 **357 passed** with none skipped, `test_alignment_page.py` included. No source
 change needed.
@@ -190,7 +190,7 @@ The workflow release must still equal the release in the *Last updated* line abo
 | Side | Sites | Status |
 |---|---|---|
 | Connector — `library.sources.base` (17), `sources.preflight` (4), `content_hash_probe` (3), `mutable_api_probe` (3), `sources.redaction` (1) | **28** | **Migratable now.** `okg.deployment` exports 82 names; 17 of the 20 we need are present. `SourceRun` → `ConnectorRun` and `SourceHealth` → `ConnectorHealth` are renames touching ~133 references. We do not use `content_hash_items`. |
-| Enricher — `enrichers.base` (4), `enrichers.derived_edges` (4), `library.linkers` (5), `linkers.declarative` (1), `alias.protocol` (1) | **15** | **Blocked** on #1181 slice 5, the enricher read surface, deferred at our own recommendation. |
+| Enricher — `enrichers.base` (4), `enrichers.derived_edges` (4), `library.linkers` (5), `linkers.declarative` (1), `alias.protocol` (1) | **15** | **Blocked** on the enricher read surface, deferred at our own recommendation. |
 
 One of the fifteen is `okg.substrate.library.linkers._chronos` — underscore-private by
 Python convention, and the single item we flagged upstream as most worth absorbing.
@@ -207,7 +207,7 @@ remains its required real arm.
 and **acknowledgement of the current v2 contract — the v1 one is now insufficient**.
 The v1 digest we acknowledged (`sha256:db38e9bb…`) is still valid for v1; v2 is
 `sha256:5cba96ce160313402809651027e0d0c708610542a485c8ac0a88a578b2c69f6a`. Held
-deliberately until the real arm can run, since #1185 still lacks the consumer
+deliberately until the real arm can run, since the external-distribution proof still lacks the consumer
 environment, sealed packages and lifecycle receipts that would make an
 acknowledgement outlive the day it is issued.
 
@@ -220,7 +220,7 @@ refuses a deployment that declares neither `mcp_instructions` nor a
 `system_prompt_ref`, because Open WebUI never shows the model the MCP server's own
 instructions — without it the assistant has graph tools registered and no idea it
 has them. Tests assert the prompt is declared, shipped, non-empty, and still names
-the six operators. **For #1183: we think that refusal is right, and it argues the
+the six operators. **For OKG's chat work: we think that refusal is right, and it argues the
 prompt belongs to what a bundle supplies rather than being optional decoration.**
 
 The rest of the chat surface (`chat:` and `search:` blocks, the preset, the MCP tool
@@ -248,7 +248,7 @@ change was needed on our side.
 
 The external-distribution conformance contract landed inside that gap —
 `conformance.py` did not exist at the old pin and is 2,132 lines at `dev`, arriving
-in `46c42c7e0` via PR #1377 (merged 2026-08-28), with #1406 following on 08-30. That
+in `46c42c7e0` (merged 2026-08-28), with a follow-up on 08-30. That
 had made our acknowledgement stale twice over: the earlier acknowledgement named branch
 `f4081329` and schema digest `sha256:301ec97f…`, while the catalog digest is now
 `sha256:db38e9bbbe571dbb9efec29192f786d851095ca412f5a5fda17d1af81f62e662`. **Re-issued
@@ -260,8 +260,7 @@ acknowledgement binds one Archi revision to one OKG schema digest, so a commit t
 either side stales it again — an open question on that comment asks whether it is
 meant to be re-issued per run.
 
-**PACT corpus migrated to v5 (2026-09-08).** okg cut over on 2026-09-07 (#1691,
-#1687) and we followed the same day, using okg's own `pact migrate`: all nine
+**PACT corpus migrated to v5 (2026-09-08).** okg cut over on 2026-09-07 and we followed the same day, using okg's own `pact migrate`: all nine
 manifests under `pact/changes/` and `pact/archive/` are now `pact_version: 5`, zero
 refused, zero destructive notes. Two things for anyone reading our ledger:
 
@@ -356,7 +355,7 @@ operations bridge land in `package-and-migrate-archi-products` (digest-bound
 schema/ontology/bridge assets), and role/credential provisioning lands in
 `apply-and-operate-deployment-instances` (secret refs from the instance,
 lifecycle-provisioned roles). The conformance harness will use `cern-team` as its
-first real consumer; the final #1185 claim adds artifact-only checks (no
+first real consumer; the final external-distribution claim adds artifact-only checks (no
 `OKG_PROFILES_DIR` or authoring checkout, no manual schema/password steps,
 lock/release readback, defined no-change reapply). One question is open to us on
 the channel: whether sealing the v3 wheel together with a materialized bundle +
@@ -467,7 +466,7 @@ replaced, except `ConnectorRun`, which is a genuinely narrower type: it drops
 `next_cursor`, `effective_scope_complete`, `bootstrap_identity` and three
 `applied_token_*` fields — which Archi does not reference directly — and retains
 `record_authority_stream`, `record_set` and `record_set_replacement_keys`, the
-fields #1181's design note warned would cost incremental sources their changed-slice
+fields OKG's connector-SDK design note warned would cost incremental sources their changed-slice
 retractions.
 
 If you change any of the remaining `okg.substrate.*` entries on `dev`, Archi breaks.
@@ -484,20 +483,20 @@ narrowings; install profiles (the `./profiles/` step of the discovery cascade,
 which `archi render` writes into) for bundles; the closed
 `SourceHealth`/preflight status vocabulary; MCP read surface for validation.
 
-## Mapping: #1178 sub-issues ↔ Archi needs and evidence
+## Mapping: OKG work items ↔ Archi needs and evidence
 
-| OKG issue | Archi's stake | Evidence we already have for you |
+| OKG work item | Archi's stake | Evidence we already have for you |
 |---|---|---|
-| #1179 external schemas/bundles | **The wheel now carries the bundle and its materialised playbooks** (force-include; the repo's playbook symlinks are dereferenced at build), so an install needs no authoring checkout — `archi-profiles-dir` prints the installed payload path. What remains on your side: the profile resolver has **no installed-distribution discovery** (cascade = explicit override → env var → `./profiles/` → substrate library → fetch cache, `profile_init.py`). archi works around it without the env var: `archi render` writes the profile into the instance's `./profiles/` and okg is run from there (PACT `r3-bundle-format`); entry-point discovery is ADR 0002 §9 ask 2. Also still open: shared ontology *modules* (`load_modules_root()` is package-locked) and a versioned distribution contract | ADR §7 ask 2; deployment-scoped schema slices shipping in the wheel (`python/archi/schemas/`) |
-| #1180 per-user MCP | Blocks multi-user instances (cms-knowledge-base bundle) | ADR D12 |
-| #1181 connector/enricher SDK | Replaces the import surface above; please treat that list as the minimum viable SDK | W1 friction log `pact/changes/w1-prove-the-seam/FRICTION.md` (6 items: scaffold nomos gap, ownership-claim discoverability, role passwords, --json purity, path-vs-name resolution); wheel + scratch-deployment reproduction in the same dir |
-| #1182 external review | Unblocks the queue-bot (Redmine/JIRA reply) — our W8, same first consumer you named. Approve-with-edits + expiry confirmed in your scope: exactly what we needed | ADR §5.3, §7 ask 3 |
-| #1183 chat | Archi ships per-bundle chat config only | ADR W9 |
-| #1184 automation accounting | Matches our kill criterion (defer until >1 real automation) | ADR §7 ask 4 |
-| #1185 end-to-end proof | **Our `cern-team` bundle install demo is this proof** — an external, wheel-installed distribution driven end to end on a SubMIT host. Coordinate before building a synthetic consumer | W1 seam proof (done); demo lands with the bundle work |
+| External schemas/bundles | **The wheel now carries the bundle and its materialised playbooks** (force-include; the repo's playbook symlinks are dereferenced at build), so an install needs no authoring checkout — `archi-profiles-dir` prints the installed payload path. What remains on your side: the profile resolver has **no installed-distribution discovery** (cascade = explicit override → env var → `./profiles/` → substrate library → fetch cache, `profile_init.py`). archi works around it without the env var: `archi render` writes the profile into the instance's `./profiles/` and okg is run from there (PACT `r3-bundle-format`); entry-point discovery is ADR 0002 §9 ask 2. Also still open: shared ontology *modules* (`load_modules_root()` is package-locked) and a versioned distribution contract | ADR §7 ask 2; deployment-scoped schema slices shipping in the wheel (`python/archi/schemas/`) |
+| Per-user MCP | Blocks multi-user instances (cms-knowledge-base bundle) | ADR D12 |
+| Connector/enricher SDK | Replaces the import surface above; please treat that list as the minimum viable SDK | W1 friction log `pact/changes/w1-prove-the-seam/FRICTION.md` (6 items: scaffold nomos gap, ownership-claim discoverability, role passwords, --json purity, path-vs-name resolution); wheel + scratch-deployment reproduction in the same dir |
+| External review | Unblocks the queue-bot (Redmine/JIRA reply) — our W8, same first consumer you named. Approve-with-edits + expiry confirmed in your scope: exactly what we needed | ADR §5.3, §7 ask 3 |
+| Chat | Archi ships per-bundle chat config only | ADR W9 |
+| Automation accounting | Matches our kill criterion (defer until >1 real automation) | ADR §7 ask 4 |
+| End-to-end proof | **Our `cern-team` bundle install demo is this proof** — an external, wheel-installed distribution driven end to end on a SubMIT host. Coordinate before building a synthetic consumer | W1 seam proof (done); demo lands with the bundle work |
 
 **Packaged bridges now compose as shipped — fixed on our side, and the fix is
-worth copying.** (Previously reported here as a #1179 blocker.) Copying the wheel's
+worth copying.** (Previously reported here as an external-schemas blocker.) Copying the wheel's
 `schemas/bridges/operations.yaml` verbatim fails `okg catalog load` with
 `bridge_subtype_unknown`, because its narrowings lack
 `optional_when_subtypes_missing` and therefore require every referenced subtype

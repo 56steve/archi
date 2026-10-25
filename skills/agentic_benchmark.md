@@ -32,7 +32,7 @@ For every question with OKG evidence:
    `inspect(target={"kind": "text", "node_id": "<page node id>"})` before
    answering or concluding the answer is absent; `kind: "node"` gives only
    its metadata. Follow `continuation_token` while `complete` is false.
-   The text read needs okg with mitdbg/okg#2697 (merged 2026-09-28); an
+   The text read needs an okg release from 2026-09-28 or later; an
    older okg refuses it ("inspect target kind must be one of ..."). Then
    fall back to the ordered-chunk recipe (Parent To Ordered Chunks in
    `source_document_exploration.md`).

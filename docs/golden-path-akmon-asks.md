@@ -107,7 +107,7 @@ registry, and `TESTED_IMAGES` holds only that entry. On the public v0.2.0
 wheel, `okg chat-instance up` and `okg chat setup` therefore refuse every
 image that exists (`chat_image_not_tested`), including upstream
 `ghcr.io/open-webui/open-webui:v0.11.4`. The module's own comment says that
-since #3059 every okg result is plain text, which the upstream image reads;
+every okg result is plain text now, which the upstream image reads;
 archi's golden path runs that image under compose, and `okg chat sync` (which
 checks `/api/version` = 0.11.4) accepts it.
 
