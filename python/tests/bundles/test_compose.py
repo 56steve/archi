@@ -349,3 +349,26 @@ def test_intersect_reports_every_range():
     with pytest.raises(OkgRangeError) as excinfo:
         intersect([">=0.2.0,<0.3", ">=0.3"])
     assert "'>=0.2.0,<0.3'" in str(excinfo.value) and "'>=0.3'" in str(excinfo.value)
+
+
+def test_search_profiles_union_and_conflict(with_gamma):
+    profile = {"description": "Pages only.", "subtypes": ["document_chunk"]}
+    for pack in ("alpha", "gamma"):
+        edit_yaml(with_gamma / "packs" / pack / "pack.yaml",
+                  lambda d: d.update(search_profiles={"pages": dict(profile)}))
+    catalog = load_catalog(with_gamma)
+    comp = compose(resolve(catalog, ["pair"]))
+    assert comp.search_profiles == {"pages": profile}
+    assert comp.owners["search_profile:pages"] == ["alpha", "gamma"]
+    edit_yaml(with_gamma / "packs" / "gamma" / "pack.yaml",
+              lambda d: d["search_profiles"]["pages"].update(subtypes=["documentation_page"]))
+    _conflict(lambda: compose(resolve(load_catalog(with_gamma), ["pair"])), "search_profile_conflict")
+
+
+def test_a_pack_cannot_redefine_the_content_profile(catalog_copy):
+    from archi.bundles.manifest import validate_pack
+
+    pack = catalog_copy / "packs" / "alpha"
+    edit_yaml(pack / "pack.yaml", lambda d: d.update(
+        search_profiles={"content": {"description": "x", "subtypes": ["document_chunk"]}}))
+    assert any("content" in str(p) for p in validate_pack(pack))

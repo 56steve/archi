@@ -76,14 +76,39 @@ writes the incident again as `resolved`. A resolution that is not a fix (Won't
 Fix, Duplicate) gives `result: unknown`. Running the command again adds
 nothing.
 
+## Recalling precedents
+
+Before an automation proposes anything, it reads what happened last time.
+The pack ships three things for that:
+
+- the playbook `skills/ops_precedents.md`, which the `ops_precedents` skill
+  trigger offers for any ops record. It teaches an agent to filter incidents
+  by `entity`, expand each one to its proposals, decisions, actions and
+  outcomes, and to treat only an outcome as proof that a fix worked;
+- the `precedents` search profile, which searches the five ops subtypes and
+  nothing else: `search(query=..., profile="precedents")` over MCP, or
+  `okg search --scope precedents`;
+- `archi.ops.precedents`, the same walk as a function and a command:
+
+```bash
+python -m archi.ops.precedents --deployment myteam --incident inc-20261003-t2usmit-srm
+python -m archi.ops.precedents --deployment myteam --entity T2_US_MIT
+```
+
+It returns past incidents on the entity, excluding the one being triaged.
+Those with the same `error_signature` come first, then the most recent. Each
+carries its proposals (with their decisions and actions) and its outcomes.
+
 ## Proof
 
 - `python/tests/packs/test_ops_record.py`: the slice composes with okg's
   catalog on cern-team and cluster-manager.
 - `python/tests/packs/test_ops_record_write.py`: the payload, the policy and
   ticket linking.
-- `python/tests/packs/scratch_ops_record_run.sh`: the same paths on a real
-  okg instance.
+- `python/tests/packs/test_ops_record_recall.py` and `python/tests/test_skills.py`:
+  a fixture incident retrieves its precedent with the outcome; the playbook.
+- `python/tests/packs/scratch_ops_record_run.sh`: the write and recall paths on
+  a real okg instance.
 
 ## What okg does not do yet
 
