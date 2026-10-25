@@ -87,5 +87,53 @@ tasks:
     Test plan:
 
     - python/tests/ops/test_context_gate.py [evidence: pytest]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.r3-context-quality.freshness
+  status: pass
+  command: python -m pytest python/tests/doctor/test_freshness.py python/tests/cli/test_doctor.py -q;
+    python -m pytest python/tests -q (submit76, okg 0.2.0); okg doctor --check sources --json on a
+    published scratch deployment
+  head: 5e12a2a55de451ea7f6409c8b19bb267a9a66819
+  at: '2026-10-25T16:37:02+00:00'
+  note: 'acc.r3-context-quality.report: every source of every context pack declares freshness.max_staleness
+    in its pack.yaml (the loader refuses one that does not, as ADR 0002 6.1 has it); archi doctor''s
+    source-freshness check compares it with okg''s watermark (okg doctor --check sources,
+    sources[].coverage.watermark.last_reconcile_at, written only when a run completes its scope)
+    and --json gives data.sources[] = {source, age, max_staleness, ok}. A fixture source older than
+    its SLO fails, one that never completed a run fails, one okg does not list fails, and another
+    pack''s source with the same short name does not count. Live: on the cern-team scratch deployment
+    the pack isolation test published (all optional packs), okg names its sources <pack>.<source>
+    and fills last_reconcile_at; archi''s evaluation over that real output passes now, flags indico
+    and jira (24h) two days later and every source eight days later. Full suite 2322 passed, 17 skipped.'
+- kind: executed_test
+  requirement: req.r3-context-quality.linking
+  status: pass
+  command: python -m pytest python/tests/enrichment/test_link_coverage.py -q; ARCHI_PACK_ISOLATION_DSN=...
+    python -m pytest python/tests/packs/test_pack_isolation.py -v (submit76)
+  head: 5e12a2a55de451ea7f6409c8b19bb267a9a66819
+  at: '2026-10-25T16:37:02+00:00'
+  note: 'acc.r3-context-quality.coverage: packs declare link_coverage targets (cms-catalogs, dqm, monit-live,
+    jira, git-code, code-symbols; each edge checked against the pack''s output_signature by the loader),
+    and composition turns each into a warn-severity invariant <pack>_link_<name> over okg.v_nodes and
+    okg.v_edges. A fixture corpus with broken links fails the generated SQL (run on SQLite with the okg
+    views attached); a corpus with enough links passes; zero carrier nodes pass, leaving emptiness to
+    the pack''s coverage invariant. On Postgres: the isolation matrix (14 packs alone plus cern-team
+    with every optional pack, 16 passed in 12m22s at c24c0d25, before the review fixes, which did
+    not touch the invariants) installs and publishes with the new invariants. warn never blocks a
+    publish; okg records the result per generation. The fractions are conservative guesses, not
+    yet checked against a real instance.'
+- kind: executed_test
+  requirement: req.r3-context-quality.gate
+  status: pass
+  command: python -m pytest python/tests/ops/test_context_gate.py -q
+  head: 5e12a2a55de451ea7f6409c8b19bb267a9a66819
+  at: '2026-10-25T16:37:02+00:00'
+  note: 'acc.r3-context-quality.gate: python/archi/ops/context_gate.py evaluates a spec (sources, max_staleness,
+    min_context_eval_score, invariants) against facts read from archi doctor --json and returns pass, or
+    fail with each failing check named (freshness:<source>, context_eval, invariant:<name>). Missing data
+    is a named failure: a source with no age, no recorded context-eval score, an invariant with no result.
+    Only True or a passing string counts as an invariant pass (not 1, not a list). A malformed spec is
+    refused. Passing and failing fixtures covered. The gate is a library; its first caller is the
+    automation runtime (r3-ops-runtime).'
 decisions: []
