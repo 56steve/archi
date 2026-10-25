@@ -16,6 +16,7 @@ from archi.cli import ops
 from archi.ops.control import RunInfo
 from archi.ops.escalation import Decision, decision_from_row, may_execute, Escalation
 from archi.ops.levels import LevelError, instance_levels
+from archi.ops.record import RecordError
 from archi.ops.runtime_config import RuntimeConfigError, load_runtime, raw_levels, read_settings
 
 LIBRARY = Path(__file__).resolve().parent / "fixtures" / "library"
@@ -190,6 +191,19 @@ def test_halt_pauses_then_closes_escalations_then_cancels_and_records():
     assert verdicts["dec-r1-halt"] == "halted"
     assert records.nodes["ops_proposal:prop-r1-halt"]["attrs"]["mode"] == "placeholder"
     assert records.dangling() == [] and kw["idempotency_key"] == "r1|halt"
+    assert kw["max_wait_seconds"] == ops.SUBMIT_WAIT_SECONDS
+
+
+def test_halt_goes_on_when_the_records_cannot_be_confirmed():
+    io = FakeIO(runs=[RunInfo("r1", "a", "PENDING")])
+    messages = []
+
+    def unconfirmed(*a, **k):
+        raise RecordError("okg admission submit failed: pending")
+
+    out = ops.do_halt(io, log=messages.append, submit_records=unconfirmed)
+    assert out["cancelled"] == ["r1"] and out["recorded"] == []
+    assert any("not confirmed" in m for m in messages)
 
 
 def test_halt_survives_an_escalation_that_is_already_closed():
@@ -280,6 +294,7 @@ def test_submit_passes_the_idempotency_key(monkeypatch):
     monkeypatch.setattr(record.subprocess, "run", lambda cmd, **kw: seen.setdefault("cmd", cmd) and Done())
     records = record.OpsRecords()
     records.add("incident", record_id="i1", title="t", entity="e")
-    record.submit(records, deployment="dep", idempotency_key="wf|record-1")
+    record.submit(records, deployment="dep", idempotency_key="wf|record-1", max_wait_seconds=20)
     cmd = seen["cmd"]
     assert cmd[cmd.index("--idempotency-key") + 1] == "wf|record-1"
+    assert cmd[cmd.index("--max-wait-seconds") + 1] == "20"

@@ -35,6 +35,8 @@ from archi.ops.record import OpsRecords, RecordError, submit
 from archi.ops.runtime_config import OPS_FILE, SCANNER, raw_levels, read_settings
 
 HALT_ACTOR = "archi ops halt"
+#: halt must be quick: it waits this long for okg to confirm the halted records
+SUBMIT_WAIT_SECONDS = 20.0
 
 
 class OpsCliError(RuntimeError):
@@ -140,10 +142,11 @@ def do_halt(io, *, who: str = HALT_ACTOR, submit_records: Callable[..., Any] = s
         log(f"cancelled run {run.workflow_id} (was {run.status})")
         try:
             submit_records(halted_records(run, signal, io, who), deployment=io.deployment, dsn=io.dsn,
-                           idempotency_key=f"{run.workflow_id}|halt")
+                           idempotency_key=f"{run.workflow_id}|halt", max_wait_seconds=SUBMIT_WAIT_SECONDS)
             recorded.append(run.workflow_id)
-        except (RecordError, Exception) as exc:
-            log(f"could not record the halt of {run.workflow_id}: {type(exc).__name__}: {exc}")
+        except Exception as exc:  # e.g. the worker is down: okg queued the admission, so it still lands
+            log(f"halted record for {run.workflow_id} not confirmed within {SUBMIT_WAIT_SECONDS:g}s "
+                f"(okg keeps the admission queued; resubmitting is safe): {type(exc).__name__}: {exc}")
     return {"paused": list(plan.pause), "already_paused": list(plan.already_paused), "closed": closed,
             "cancelled": cancelled, "recorded": recorded, "left_final": [r.workflow_id for r in plan.final]}
 
@@ -262,7 +265,8 @@ def cmd_pending(args: argparse.Namespace) -> int:
 def cmd_respond(args: argparse.Namespace) -> int:
     verdict = "approve" if args.command_name == "approve" else "reject"
     result = do_respond(make_io(args), args.escalation_id, verdict, args.note, args.as_user or getpass.getuser())
-    print(json.dumps(result) if args.json else f"{verdict}d {result['escalation_id']} as {result['decided_by']}")
+    past = {"approve": "approved", "reject": "rejected"}[verdict]
+    print(json.dumps(result) if args.json else f"{past} {result['escalation_id']} as {result['decided_by']}")
     return 0
 
 
