@@ -1,1 +1,0 @@
-../../../skills/site_profile.md

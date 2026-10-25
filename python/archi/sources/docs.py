@@ -120,8 +120,8 @@ ingest); (2) ``output_scope_summary`` must accompany
         required: true
         records_path: data/docsite/records.json
         # Enables the document_chunk references jira_issue edges
-        # declared above (as in bundles/cern-team/source-defaults/
-        # docsite.yaml); drop it together with those edge lines.
+        # declared above; drop it together with those edge lines. (The docsite
+        # pack's template leaves both out, so the pack installs alone.)
         jira_records_path: data/jira/records.json
         # Optional reference-target caches — commented out on purpose.
         # WARNING: enabling any of them requires (a) uncommenting the

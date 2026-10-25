@@ -1,0 +1,13 @@
+name: cmssst
+kind: context
+version: 0.1.0
+description: CMS Site Support Team site status, from the cache the cmssst downloader writes.
+requires:
+  modules: [document_starter, person, extraction]
+schemas: schemas/
+sources: sources/
+invariants: invariants.yaml
+search_subtypes: [documentation_page, document_chunk]
+prompt_fragment: prompt.md
+# The SST data is public; the downloader needs no credential.
+needs_credentials: false

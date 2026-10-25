@@ -12,8 +12,8 @@ every run.
 ``okg.deployment.ConnectorAdapter`` is the framework's supported bridge: it
 drives a connector and returns what the runner expects. Readers keep the
 ``run(run_id, mode=...)`` signature they have, so this module wraps them in
-the connector shape the adapter drives. ``bundles/cern-team/source-defaults``
-names the adapter classes, so an installed instance runs the same reader code
+the connector shape the adapter drives. The packs' source templates
+(``bundles/packs/*/sources/``) name the adapter classes, so an installed instance runs the same reader code
 through the supported contract.
 """
 
@@ -73,7 +73,7 @@ class ReaderAdapter(ConnectorAdapter):
         "**kwargs is not proof of consumption" (okg
         ``substrate/ingest/adapter_factory.py``, which reads the constructor
         with ``inspect.signature`` and requires a NAMED keyword parameter for
-        every authored param). cern-team is still on the legacy admission path,
+        every authored param). The shipped templates are still on the legacy admission path,
         so the refusal is dormant, but the same ``**kwargs`` also means a
         misspelled registry parameter is no longer caught when the adapter is
         bound -- it travels as far as the reader.

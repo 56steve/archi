@@ -23,20 +23,21 @@ from pathlib import Path
 import pytest
 import yaml
 
-from archi.bundles import discovery
 from archi.bundles.render import render
 from archi.bundles.resolve import resolve
 from packs.pack_support import (
     BUNDLES_DIR,
+    FIXTURE_ENV,
     FIXTURES,
     PACKS_DIR,
     FixtureServer,
     context_packs,
+    credential_names,
     git,
     invariants,
     manifest,
-    required_subtypes,
     run_okg,
+    solo_catalog,
 )
 
 DSN = os.environ.get("ARCHI_PACK_ISOLATION_DSN")
@@ -73,36 +74,6 @@ def _closure(pack: str) -> list[str]:
     return out
 
 
-def _solo_catalog(tmp_path: Path, pack: str):
-    """The shipped packs plus a bundle whose only default is `pack`.
-
-    The bundle is added without `validate_bundle`: a pack that needs a
-    credential may not be a real bundle's only default, but alone on the
-    base with its fixture inputs is exactly what this test installs.
-    """
-    from archi.bundles.manifest import read_bundle
-
-    bdir = tmp_path / "bundles" / f"solo-{pack}"
-    bdir.mkdir(parents=True)
-    (bdir / "bundle.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "name": f"solo-{pack}",
-                "version": "0.1.0",
-                "description": f"{pack} alone on the base.",
-                "packs": {"default": [pack]},
-                "okg": ">=0.2.0,<0.3",
-            }
-        )
-    )
-    catalog = discovery.from_roots([PACKS_DIR], [])
-    assert catalog.problems == [], [str(p) for p in catalog.problems]
-    bundle, problems = read_bundle(bdir)
-    assert problems == [], problems
-    catalog.bundles[bundle.name] = bundle
-    return catalog
-
-
 def _flag(qid: str) -> str:
     return "--" + qid.replace("_", "-")
 
@@ -115,7 +86,7 @@ def _report(result) -> str:
 @pytest.mark.parametrize("pack", sorted(FIXTURES))
 def test_pack_installs_alone_and_publishes(tmp_path, pack):
     _recreate_database(DSN)
-    catalog = _solo_catalog(tmp_path, pack)
+    catalog = solo_catalog(tmp_path, pack)
     resolution = resolve(catalog, [f"solo-{pack}"])
     assert resolution.pack_names == tuple(_closure(pack))
 
@@ -138,7 +109,12 @@ def test_pack_installs_alone_and_publishes(tmp_path, pack):
         known = {q["id"] for q in rendered.composition.questions}
         assert set(answers) <= known, sorted(set(answers) - known)
 
-        env = {k: v for k, v in os.environ.items() if k != "OKG_PROFILES_DIR"}
+        # No credential reaches a pack unless its fixture sets a dummy one, so
+        # a pack that says needs_credentials: false proves it here.
+        env = {
+            k: v for k, v in os.environ.items()
+            if k != "OKG_PROFILES_DIR" and k not in credential_names()
+        }
         env.update(
             HOME=str(tmp_path),
             OKG_DEPLOYMENTS_DIR=str(deployments),
@@ -156,6 +132,7 @@ def test_pack_installs_alone_and_publishes(tmp_path, pack):
              "--deployments-root", str(deployments), "--non-interactive", "--json", *flags],
             cwd=instance, env=env,
         )
+        (tmp_path / "install.json").write_text(install.stdout + "\n" + install.stderr)
         # The first install stops before publishing: okg will not publish from
         # configuration that is not committed yet (quickstart step 3).
         deployment = deployments / "px"
@@ -164,6 +141,7 @@ def test_pack_installs_alone_and_publishes(tmp_path, pack):
         git(["commit", "-q", "-m", "px deployment config"], deployments)
 
         ingest = run_okg(["ingest", "--deployment", "px", "--json"], cwd=instance, env=env)
+        (tmp_path / "ingest.json").write_text(ingest.stdout)
         assert ingest.returncode == 0, _report(ingest)
         publish = run_okg(["run", "--once", "--deployment", "px", "--apply", "--json"],
                           cwd=instance, env=env)
@@ -179,7 +157,7 @@ def test_pack_installs_alone_and_publishes(tmp_path, pack):
         blockers = [f for f in findings if f["severity"] in ("blocker", "error")]
         assert blockers == [], blockers
 
-        _assert_coverage_invariants_hold(resolution.pack_names, json.loads(status.stdout))
+        _assert_coverage_invariants_hold(resolution.pack_names)
     finally:
         server.close()
 
@@ -192,27 +170,20 @@ def _fixture_env(pack_names, tmp_path: Path) -> dict:
     return env
 
 
-#: Credential variables a pack's sources read, set to dummy values so a
-#: fixture run gets past the credential check. Never real values.
-FIXTURE_ENV: dict[str, dict[str, str]] = {}
+def _assert_coverage_invariants_hold(pack_names) -> None:
+    """Each selected pack's invariants were installed into okg.
 
-
-def _assert_coverage_invariants_hold(pack_names, status: dict) -> None:
-    """Each selected pack's invariants are installed, and what they require is live.
-
-    okg blocks a publish on any failing error-severity invariant
-    (`_build_invariant_summary` in okg's publisher), so a published generation
-    already says they held. This also checks they were installed at all, and
-    reads the live subtypes the way okg reports them: bare SQL on the graph
-    is refused outside a pinned checkout.
+    okg evaluates every installed error-severity invariant before a publish
+    and blocks the publish when one fails (`cross_source_error_invariant_failed`;
+    `_build_invariant_summary` in okg's publisher), so with the generation
+    published they held. Reading the graph to recount is not possible here:
+    bare SQL on the graph is refused outside a pinned checkout, and
+    `okg status` lists only the largest subtypes.
     """
     import psycopg
 
-    live = {row["subtype"]: row["count"] for row in status["live_subtypes"]}
     with psycopg.connect(DSN) as conn:
         installed = {row[0] for row in conn.execute("SELECT name FROM okg.invariants")}
     for name in pack_names:
         for inv in invariants(name):
             assert inv["name"] in installed, f"{name}: invariant {inv['name']} was not installed"
-            for subtype in required_subtypes(inv):
-                assert live.get(subtype, 0) > 0, f"{name}: {inv['name']} requires live {subtype}: {live}"

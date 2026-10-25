@@ -1,1 +1,0 @@
-../../../skills/answer_synthesis.md

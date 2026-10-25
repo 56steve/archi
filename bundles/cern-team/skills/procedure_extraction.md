@@ -1,1 +1,0 @@
-../../../skills/procedure_extraction.md

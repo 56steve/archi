@@ -1,10 +1,10 @@
-"""The optional code-text sources store function bodies (okg#3982).
+"""The code-text pack stores function bodies (okg#3982).
 
-`code_structure.yaml.example` gives a function's name, signature, docstring
-and line numbers, never its body, so "what does this function do when the
-name contains a slash" could not be answered from the graph. okg's
+The code-symbols pack gives a function's name, signature, docstring and line
+numbers, never its body, so "what does this function do when the name
+contains a slash" could not be answered from the graph. okg's
 `DocCorpusSource` with `PythonSymbolChunker` stores the code itself, one chunk
-per function or class. These tests hold the bundle wiring for it:
+per function or class. These tests hold the pack's wiring for it:
 
 - the install keeps `${deployment_dir}` for okg to expand at run time, and
   installs the extractors.yaml that the source reads from there;
@@ -12,8 +12,7 @@ per function or class. These tests hold the bundle wiring for it:
   body with its line range and name;
 - the shipped excludes keep credential-named code files out (a control run
   without them stores those files);
-- every matched extension reaches a parser, and the GitLab twin differs from
-  the GitHub file only in its names.
+- every matched extension reaches a parser.
 
 Synthetic fixtures only; no real repository content.
 """
@@ -27,12 +26,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-BUNDLE = Path(__file__).resolve().parents[2] / "bundles" / "cern-team"
-SOURCE_DEFAULTS = BUNDLE / "source-defaults"
-EXAMPLES = {
-    "code_text": SOURCE_DEFAULTS / "code_text.yaml.example",
-    "code_text_gitlab": SOURCE_DEFAULTS / "code_text_gitlab.yaml.example",
-}
+PACK = Path(__file__).resolve().parents[2] / "bundles" / "packs" / "code-text"
+EXAMPLES = {"code_text": PACK / "sources" / "code_text.yaml"}
 
 #: Only this function's body contains the marker, not its name, signature or
 #: docstring: finding the marker proves the body was stored.
@@ -62,39 +57,28 @@ def _entry(name):
     return yaml.safe_load(EXAMPLES[name].read_text(encoding="utf-8"))[name]
 
 
-def _plan(tmp_path, monkeypatch, *, enable):
-    from okg.substrate.deployment_bootstrap.profile_init import (
-        build_plan,
-        discover_profile,
-    )
+def _plan(tmp_path):
+    """okg's install plan for the code-text pack rendered alone (it pulls in
+    git-code, whose checkout it reads)."""
+    from packs.pack_support import okg_plan, render_alone
 
-    profiles = tmp_path / "profiles"
-    shutil.copytree(BUNDLE.parent, profiles, symlinks=False)
-    sd = profiles / "cern-team" / "source-defaults"
-    for stem in enable:
-        (sd / f"{stem}.yaml.example").rename(sd / f"{stem}.yaml")
-    monkeypatch.setenv("OKG_PROFILES_DIR", str(profiles))
-    return build_plan(
-        profile=discover_profile("cern-team"),
-        deployment_name="qt",
-        deployments_root=tmp_path / "deployments",
-        raw_answers={
-            "deployment_name": "qt",
-            "postgres_dsn": "postgresql://localhost/qt",
-            "github_repo_name": "demo",
-            "github_repo_url": "https://example.org/demo.git",
+    rendered = render_alone(tmp_path, "code-text")
+    return okg_plan(
+        rendered,
+        tmp_path,
+        {
+            "git_code_repo_name": "demo",
+            "git_code_repo_url": "https://example.org/demo.git",
             "archi_data_root": str(tmp_path / "data"),
         },
     )
 
 
-def test_install_keeps_the_runtime_anchor_and_installs_extractors(
-    tmp_path, monkeypatch
-):
+def test_install_keeps_the_runtime_anchor_and_installs_extractors(tmp_path):
     """`${deployment_dir}` survives the install and okg expands it later.
 
     The installer refuses any `${name}` it has no answer for, so the source
-    cannot name `${deployment_dir}` directly. The `code_extractors_dir` answer
+    cannot name `${deployment_dir}` directly. The `extractors_dir` answer
     defaults to that literal text, and the installer does not re-expand an
     answer's value. okg's registry loader then replaces it with the directory
     the registry sits in, which is where `files:` put extractors.yaml.
@@ -102,11 +86,12 @@ def test_install_keeps_the_runtime_anchor_and_installs_extractors(
     from okg.substrate.deployment_bootstrap.profile_init import planned_writes
     from okg.substrate.sources.registry import load_source_registry
 
-    plan = _plan(tmp_path, monkeypatch, enable=["github_repo", "code_text"])
-    params = yaml.safe_load(plan.source_defaults["code_text"])["code_text"]["params"]
+    plan = _plan(tmp_path)
+    sid = "code-text.code_text"
+    params = yaml.safe_load(plan.source_defaults[sid])[sid]["params"]
     assert params["extractors_dir"] == "${deployment_dir}"
     assert params["repo_root"] == str(tmp_path / "data") + "/repos/demo"
-    assert params["predecessor_source"] == "qt.github-repo"
+    assert params["predecessor_source"] == "qt.git-repo"
 
     for write in planned_writes(plan):
         write.path.parent.mkdir(parents=True, exist_ok=True)
@@ -116,20 +101,25 @@ def test_install_keeps_the_runtime_anchor_and_installs_extractors(
             write.path.write_text(write.text, encoding="utf-8")
     deployment = plan.deployment_dir
     assert (deployment / "extractors.yaml").read_bytes() == (
-        BUNDLE / "extractors.yaml"
+        PACK / "extractors.yaml"
     ).read_bytes()
 
     entries = load_source_registry(deployment / "source_registry.yaml")
-    loaded = entries["code_text"].raw["params"]
+    loaded = entries[sid].raw["params"]
     assert Path(loaded["extractors_dir"]) == deployment.resolve()
     assert (Path(loaded["extractors_dir"]) / "extractors.yaml").is_file()
 
 
-def test_a_bare_install_still_selects_only_the_default_source(tmp_path, monkeypatch):
-    """Shipping extractors.yaml selects no source; the examples stay opt-in."""
-    plan = _plan(tmp_path, monkeypatch, enable=[])
-    assert "code_text" not in plan.source_defaults
-    assert "code_text_gitlab" not in plan.source_defaults
+def test_a_bare_cern_team_render_ships_neither_the_source_nor_extractors(tmp_path):
+    """Selecting the pack is what installs extractors.yaml; a bare cern-team
+    render carries neither the source nor the file."""
+    from archi.bundles.render import render
+    from archi.bundles.resolve import resolve
+    from packs.pack_support import shipped_catalog
+
+    rendered = render(resolve(shipped_catalog(), ["cern-team"]), tmp_path)
+    assert not [s for s in rendered.composition.sources if s.startswith("code-text.")]
+    assert not (rendered.profile_dir / "extractors.yaml").exists()
 
 
 @pytest.mark.parametrize("name", sorted(EXAMPLES))
@@ -154,7 +144,7 @@ def test_every_matched_extension_reaches_a_parser(name):
     params = _entry(name)["params"]
     routes = dict(DEFAULT_EXTENSION_TO_FORMAT)
     routes.update(params["extension_to_format"])
-    bundle = load_extractors(BUNDLE)
+    bundle = load_extractors(PACK)
     for glob in params["include_globs"]:
         ext = "." + glob.rsplit(".", 1)[1]
         fmt = routes.get(ext)
@@ -164,19 +154,6 @@ def test_every_matched_extension_reaches_a_parser(name):
         )
         assert bundle.chunker_for_format(fmt) is not None
     assert isinstance(bundle.chunker_for_format("code"), PythonSymbolChunker)
-
-
-def test_the_gitlab_twin_differs_only_in_its_names():
-    github = yaml.safe_dump(_entry("code_text"), sort_keys=True)
-    gitlab = yaml.safe_dump(_entry("code_text_gitlab"), sort_keys=True)
-    renamed = (
-        github.replace("code_text", "code_text_gitlab")
-        .replace(".code-text", ".code-text-gitlab")
-        .replace("github_repo_name", "gitlab_repo_name")
-        .replace(".github-repo", ".gitlab-repo")
-        .replace("GitHub", "GitLab")
-    )
-    assert gitlab == renamed
 
 
 #: Code files whose NAMES mark them as credentials. Only the shipped
@@ -215,7 +192,7 @@ def _run(repo: Path, **overrides):
 
     params = dict(_entry("code_text")["params"])
     params.pop("predecessor_source")
-    params.update(repo="demo", repo_root=str(repo), extractors_dir=str(BUNDLE))
+    params.update(repo="demo", repo_root=str(repo), extractors_dir=str(PACK))
     params.update(overrides)
     run = DocCorpusSource(**params).run("probe", mode="scope_complete")
     return list(run.facts)  # an iterator: read it once

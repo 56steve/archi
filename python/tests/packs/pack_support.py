@@ -37,6 +37,59 @@ def shipped_catalog():
     return catalog
 
 
+def solo_catalog(tmp_path: Path, pack: str):
+    """The shipped packs plus a bundle `solo-<pack>` whose only default is `pack`.
+
+    The bundle is added without `validate_bundle`: a pack that needs a
+    credential may not be a real bundle's only default, but alone on the base
+    is exactly what the isolation tests install.
+    """
+    from archi.bundles import discovery
+    from archi.bundles.manifest import read_bundle
+
+    bdir = tmp_path / "bundles" / f"solo-{pack}"
+    bdir.mkdir(parents=True)
+    (bdir / "bundle.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": f"solo-{pack}",
+                "version": "0.1.0",
+                "description": f"{pack} alone on the base.",
+                "packs": {"default": [pack]},
+                "okg": ">=0.2.0,<0.3",
+            }
+        )
+    )
+    catalog = discovery.from_roots([PACKS_DIR], [])
+    assert catalog.problems == [], [str(p) for p in catalog.problems]
+    bundle, problems = read_bundle(bdir)
+    assert problems == [], problems
+    catalog.bundles[bundle.name] = bundle
+    return catalog
+
+
+def render_alone(tmp_path: Path, pack: str):
+    """Render `pack` alone into `tmp_path/instance`; return the `Rendered`."""
+    from archi.bundles.render import render
+    from archi.bundles.resolve import resolve
+
+    catalog = solo_catalog(tmp_path, pack)
+    return render(resolve(catalog, [f"solo-{pack}"]), tmp_path / "instance", name=f"solo-{pack}")
+
+
+def okg_plan(rendered, tmp_path: Path, answers: dict):
+    """okg's own install plan for a rendered profile (no database touched)."""
+    from okg.substrate.deployment_bootstrap.profile_init import build_plan, discover_profile
+
+    answers = {"deployment_name": "qt", "postgres_dsn": "postgresql://localhost/qt", **answers}
+    return build_plan(
+        profile=discover_profile(rendered.name, profiles_root=rendered.profile_dir.parent),
+        deployment_name="qt",
+        deployments_root=tmp_path / "deployments",
+        raw_answers=answers,
+    )
+
+
 def pack_dirs() -> list[Path]:
     return sorted(p.parent for p in PACKS_DIR.glob("*/pack.yaml"))
 
@@ -47,6 +100,19 @@ def manifest(pack: str) -> dict:
 
 def context_packs() -> list[str]:
     return [p.name for p in pack_dirs() if manifest(p.name)["kind"] == "context"]
+
+
+def credential_names() -> set[str]:
+    """Every credential variable a shipped pack reads, aliases included."""
+    names: set[str] = set()
+    for pack in context_packs():
+        names |= set(manifest(pack).get("credentials", []))
+        for entry in templates(pack).values():
+            names |= set(entry.get("credential_refs") or [])
+            for aliases in (entry.get("credential_aliases") or {}).values():
+                names |= set(aliases)
+            names |= set((entry.get("params") or {}).get("aliases") or [])
+    return names | {"GITLAB_CERN_TOKEN", "ARCHI_INDICO_COOKIES"}
 
 
 def templates(pack: str) -> dict[str, dict]:
@@ -256,6 +322,99 @@ def _git_code(data: Path, server: FixtureServer) -> dict:
     return {"repo_name": "demo", "repo_url": str(upstream)}
 
 
+def _cmssw_releases(data: Path, server: FixtureServer) -> dict:
+    server.add("/releases.map", (TEST_FIXTURES / "cmssw" / "releases_15_0.map").read_bytes())
+    return {"releases_map_url": server.url + "/releases.map"}
+
+
+def _compops_cache(source: str, key: str):
+    """The small cache test_bundle_source_adapters runs each reader on."""
+    from test_bundle_source_adapters import _COMPOPS_CACHES
+
+    return _COMPOPS_CACHES[source][key]
+
+
+def _cms_catalogs(data: Path, server: FixtureServer) -> dict:
+    files = {
+        "cric/sites.json": ("cric", "sites_path"),
+        "cric/storage_units.json": ("cric", "storage_units_path"),
+        "cric/compute_units.json": ("cric", "compute_units_path"),
+        "cric/facilities.json": ("cric", "facilities_path"),
+        "cric/responsibilities.json": ("cric", "responsibilities_path"),
+        "cric-core/services.json": ("cric_core", "services_path"),
+        "cric-core/rcsites.json": ("cric_core", "rcsites_path"),
+        "cric-core/federations.json": ("cric_core", "federations_path"),
+        "dbs-datasets/records.json": ("dbs_datasets", "records_path"),
+        "wmstats-workflows/records.json": ("wmstats_workflows", "records_path"),
+        "gocdb-downtimes/records.json": ("gocdb_downtimes", "records_path"),
+        "conddb-global-tags/records.json": ("conddb_global_tags", "records_path"),
+        "cmssw-releases/records.json": ("conddb_global_tags", "cmssw_records_path"),
+    }
+    for rel, (source, key) in files.items():
+        _write_json(data / rel, _compops_cache(source, key))
+    # CRIC core links services and federations to their CRIC sites, and okg
+    # refuses a link to a site no source emits: add the site the cric_core
+    # cache names (T0_CH_CERN) to the cric one.
+    sites = dict(_compops_cache("cric", "sites_path"))
+    sites["T0_CH_CERN"] = {"tier_level": 0, "facility": "CERN", "sitedb_title": "CERN"}
+    _write_json(data / "cric" / "sites.json", sites)
+    # SITECONF reads GitLab live: one site project with a storage.json.
+    server.add("/api/v4/user", {"username": "pack-test"})
+    # The preflight lists without a page; the run pages until an empty one.
+    server.add("/api/v4/groups/4099/projects", [{"id": 11, "path": "T2_US_MIT"}])
+    server.add("/api/v4/groups/4099/projects", [], query={"page": "2"})
+    server.add(
+        "/api/v4/projects/11/repository/files/storage.json/raw",
+        json.dumps([{"protocol": "XRootD", "se": "xrootd.mit.example.org"}]),
+    )
+    return {"gitlab_url": server.url}
+
+
+def _cmssst(data: Path, server: FixtureServer) -> dict:
+    sites = [
+        json.loads((TEST_FIXTURES / "cmssst" / f"{site}.json").read_text(encoding="utf-8"))
+        for site in ("T1_US_FNAL", "T2_US_MIT", "T2_CH_CERN")
+    ]
+    _write_json(data / "cmssst-site-status" / "records.json", sites)
+    return {}
+
+
+def _dqm(data: Path, server: FixtureServer) -> dict:
+    _write_json(data / "dqm" / "records.json", _compops_cache("dqm", "records_path"))
+    return {}
+
+
+def _hypernews(data: Path, server: FixtureServer) -> dict:
+    from sources.test_hypernews import RECORDS
+
+    _write_json(data / "hypernews" / "records.json", RECORDS)
+    return {}
+
+
+def _monit_live(data: Path, server: FixtureServer) -> dict:
+    from sources import test_monit
+
+    _write_json(data / "monit-sam" / "records.json", test_monit.SITEMON_RESPONSE)
+    _write_json(data / "monit-condor" / "records.json", test_monit.CONDOR_RESPONSE)
+    _write_json(data / "monit-rucio-transfer" / "records.json", test_monit.TRANSFER_RESPONSE)
+    _write_json(data / "monit-rucio-datasets" / "records.json", test_monit.DATASET_RESPONSE)
+    # Every MONIT edge starts at a CRIC site or storage endpoint, and okg
+    # refuses a source whose link names a node no source emits. Add the
+    # sites and endpoints the MONIT fixtures name to cms-catalogs' caches
+    # (written first: the closure runs cms-catalogs' fixture before this).
+    sites_path = data / "cric" / "sites.json"
+    sites = json.loads(sites_path.read_text(encoding="utf-8"))
+    for site in ("T1_DE_KIT", "T3_US_Baylor"):
+        sites.setdefault(site, {"tier_level": int(site[1]), "facility": site.split("_")[2]})
+    _write_json(sites_path, sites)
+    units_path = data / "cric" / "storage_units.json"
+    units = json.loads(units_path.read_text(encoding="utf-8"))
+    units.setdefault("T1_DE_KIT_Disk", {"type": "DISK", "site": {"name": "T1_DE_KIT"}})
+    units.setdefault("T2_US_MIT", {"type": "DISK", "site": {"name": "T2_US_MIT"}})
+    _write_json(units_path, units)
+    return {}
+
+
 FIXTURES: dict[str, Callable[[Path, FixtureServer], dict]] = {
     "docsite": _docsite,
     "indico": _indico,
@@ -267,6 +426,19 @@ FIXTURES: dict[str, Callable[[Path, FixtureServer], dict]] = {
     # they need.
     "code-text": lambda data, server: {},
     "code-symbols": lambda data, server: {},
+    "cmssw-releases": _cmssw_releases,
+    "cms-catalogs": _cms_catalogs,
+    "cmssst": _cmssst,
+    "dqm": _dqm,
+    "hypernews": _hypernews,
+    "monit-live": _monit_live,
+}
+
+#: Credential variables a pack's sources read, set to dummy values so a
+#: fixture run gets past the credential check. Never real values.
+FIXTURE_ENV: dict[str, dict[str, str]] = {
+    "cms-catalogs": {"CERN_GITLAB_TOKEN": "fixture-token"},
+    "monit-live": {"MONIT_GRAFANA_TOKEN": "fixture-token"},
 }
 
 

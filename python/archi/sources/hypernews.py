@@ -26,7 +26,7 @@ Registry-entry template — same three prerequisites as
 
     hypernews:
       module: archi.sources.hypernews
-      class: HyperNewsSource
+      class: HyperNewsAdapter
       ownership_id: <instance>.hypernews
       admission_policy:
         producer_id: <instance>.hypernews
@@ -58,7 +58,7 @@ Registry-entry template — same three prerequisites as
             # - document_chunk references jira_issue
             # - document_chunk references infrastructure_service
       source_class: discovery_crawl
-      record_identity_kind: remote_id
+      record_identity_kind: scoped_locator
       record_identity_fields: [thread_id]
       source_revision_kind: content_hash
       deletion_semantics: missing_from_completed_scope
@@ -109,6 +109,7 @@ from okg.deployment import file_preflight
 
 from archi.auth.cache import load_json, resolve_repo_path
 from archi.auth.cookies import looks_like_login_page
+from archi.sources._sdk_adapter import ReaderAdapter
 from archi.sources._cache_report import skipped_items_status
 from archi.sources.docs import (
     _chunks,
@@ -894,3 +895,21 @@ def _probe_hash(*items: tuple[str, bytes]) -> str:
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class HyperNewsAdapter(ReaderAdapter):
+    """Registry adapter for :class:`HyperNewsSource`.
+
+    The hypernews pack's `hypernews` source names this class. The reader's
+    behavior is unchanged; this class only drives it through the
+    substrate's adapter contract, which a bare reader cannot satisfy (its
+    ``ConnectorRun`` has no ``next_cursor``).
+
+    ``profile`` and ``change_probe_kind`` must be string literals; see
+    ``ReaderAdapter``. ``test_bundle_source_adapters.py`` parses this
+    file and holds them equal to the reader's own values.
+    """
+
+    reader_class = HyperNewsSource
+    profile = "discovery_crawl"
+    change_probe_kind = "mutable_api"

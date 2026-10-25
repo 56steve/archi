@@ -1,1 +1,0 @@
-../../../skills/monitoring_condor_snapshot.md

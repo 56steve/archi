@@ -1,1 +1,0 @@
-../../../skills/evidence_retrieval.md

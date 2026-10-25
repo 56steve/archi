@@ -26,21 +26,21 @@ import pytest
 import yaml
 from okg.deployment import ConnectorAdapter, EdgeFact, NodeFact
 
-SOURCE_DEFAULTS = (
-    Path(__file__).resolve().parents[2] / "bundles" / "cern-team" / "source-defaults"
-)
+PACKS = Path(__file__).resolve().parents[2] / "bundles" / "packs"
+
+
+def _pack_templates():
+    """(pack/file, source name, entry) for every source template a pack ships."""
+    for path in sorted(PACKS.glob("*/sources/*.yaml")):
+        body = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for name, entry in body.items():
+            yield f"{path.parent.parent.name}/{path.name}", name, entry
 
 
 def _bundle_entries():
-    for path in sorted(SOURCE_DEFAULTS.iterdir()):
-        if not path.is_file():
-            continue
-        body = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for name, entry in body.items():
-            if isinstance(entry, dict) and str(entry.get("module", "")).startswith(
-                "archi."
-            ):
-                yield path.name, name, entry
+    for filename, name, entry in _pack_templates():
+        if isinstance(entry, dict) and str(entry.get("module", "")).startswith("archi."):
+            yield filename, name, entry
 
 
 ENTRIES = list(_bundle_entries())
@@ -48,25 +48,21 @@ ENTRY_IDS = [f"{filename}-{name}" for filename, name, _ in ENTRIES]
 
 
 def _all_bundle_entries():
-    """Every source this bundle ships, whoever owns the adapter.
+    """Every source the packs ship, whoever owns the adapter.
 
     Unlike `_bundle_entries` this does NOT filter to `archi.` modules: the
     profile-tuple contract is the substrate's, so it binds the entries that
-    name a substrate class (github_repo, gitlab_repo) exactly as it binds
-    ours. `.yaml.example` files are included — an operator enables one by
-    renaming it, and an illegal tuple blocks their install just the same.
+    name a substrate class (git-code's repo and git_history) exactly as it
+    binds ours.
     """
-    for path in sorted(SOURCE_DEFAULTS.iterdir()):
-        if not path.is_file():
-            continue
-        body = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for name, entry in body.items():
-            if isinstance(entry, dict) and entry.get("module"):
-                yield path.name, name, entry
+    for filename, name, entry in _pack_templates():
+        if isinstance(entry, dict) and entry.get("module"):
+            yield filename, name, entry
 
 
 ALL_ENTRIES = list(_all_bundle_entries())
 ALL_ENTRY_IDS = [f"{filename}-{name}" for filename, name, _ in ALL_ENTRIES]
+FROZEN_CMSSW = PACKS / "cmssw-releases" / "frozen" / "cmssw_releases.yaml"
 
 
 def _adapter_class(entry):
@@ -147,13 +143,12 @@ def test_adapter_authority_is_a_literal_that_matches_its_reader(filename, name, 
 def test_every_shipped_source_default_declares_a_legal_profile_tuple():
     """No source-default may ship a tuple the substrate would refuse.
 
-    `indico.yaml.example` shipped `source_class: discovery_crawl` with
-    `record_identity_kind: remote_id` — a crossbreed of jira's identity half
-    and docsite's revision half. The substrate allows `remote_id` only under
-    `mutable_api`, so `okg install` refused with
+    The cern-team Indico template once shipped `source_class:
+    discovery_crawl` with `record_identity_kind: remote_id` — a crossbreed of
+    jira's identity half and docsite's revision half. The substrate allows
+    `remote_id` only under `mutable_api`, so `okg install` refused with
     `deployment.source_registry.profile_invalid` and an operator who enabled
-    Indico could not install at all. Nothing caught it because the tuple only
-    reaches lint once the file has been renamed to `.yaml`.
+    Indico could not install at all.
 
     This calls the substrate's own `validate_profile_tuple` — the same
     function `deployment_lint` calls — rather than restating the matrix, so
@@ -167,7 +162,10 @@ def test_every_shipped_source_default_declares_a_legal_profile_tuple():
     )
 
     failures = []
-    for filename, name, entry in ALL_ENTRIES:
+    frozen = yaml.safe_load(FROZEN_CMSSW.read_text(encoding="utf-8"))
+    for filename, name, entry in ALL_ENTRIES + [
+        ("cmssw-releases/frozen/cmssw_releases.yaml", n, e) for n, e in frozen.items()
+    ]:
         source_class = entry.get("source_class")
         try:
             if source_class not in PROFILE_NAMES:
@@ -191,66 +189,61 @@ def test_every_shipped_source_default_declares_a_legal_profile_tuple():
     )
 
 
-def test_every_placeholder_has_an_install_answer_behind_it():
+def test_every_placeholder_has_an_install_answer_behind_it(tmp_path):
     """A `${...}` with no init_question makes its source uninstallable.
 
-    `build_plan` interpolates every `*.yaml` in source-defaults/ against the
-    validated answers, and `interpolate` refuses an unknown reference
-    outright (okg `substrate/catalog/profile.py` `replace_match`) rather than
-    leaving it verbatim. So a placeholder the profile never asks about does
-    not degrade -- it aborts the whole install with `ProfileError: undefined
-    variable reference`. That is what `cmssw_releases_frozen.yaml.example`
-    did: it referenced `${cmssw_map_path}` and `${cmssw_map_digest}`, which
-    no init_question declared, so enabling frozen mode was impossible without
-    hand-editing the shipped file.
+    `build_plan` interpolates every source template against the validated
+    answers, and `interpolate` refuses an unknown reference outright (okg
+    `substrate/catalog/profile.py` `replace_match`) rather than leaving it
+    verbatim. So a placeholder nothing asks about aborts the whole install
+    with `ProfileError: undefined variable reference`. The cern-team frozen
+    CMSSW template once did exactly that.
 
-    The `.example` files are checked too: renaming one is exactly how an
-    operator enables it, and that is when the reference has to resolve.
-
-    `deployment_name` and `HOME` are injected by `build_plan` itself rather
-    than declared as questions.
+    Each pack is rendered alone (with the packs it requires) and handed to
+    okg's own `build_plan`, so every reference must resolve against the
+    questions the rendered profile really asks.
     """
-    profile = yaml.safe_load(
-        (SOURCE_DEFAULTS.parent / "profile.yaml").read_text(encoding="utf-8")
-    )
-    known = {q["id"] for q in profile["init_questions"]} | {"deployment_name", "HOME"}
-    pattern = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-    missing = {}
-    for path in sorted(SOURCE_DEFAULTS.iterdir()):
-        if not path.is_file():
-            continue
-        unknown = sorted(set(pattern.findall(path.read_text(encoding="utf-8"))) - known)
-        if unknown:
-            missing[path.name] = unknown
-    assert not missing, (
-        "these source-defaults reference install answers the profile never "
-        f"asks for, so enabling them aborts `okg install`: {missing}"
-    )
+    from packs.pack_support import context_packs, okg_plan, render_alone
+
+    failures = {}
+    for pack in context_packs():
+        rendered = render_alone(tmp_path / pack, pack)
+        answers = {
+            q["id"]: "x" for q in rendered.composition.questions
+            if q.get("required") and q["id"] not in ("deployment_name", "postgres_dsn")
+        }
+        try:
+            okg_plan(rendered, tmp_path / pack, answers)
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            failures[pack] = str(exc)
+    assert not failures, failures
 
 
-def test_the_frozen_cmssw_example_replaces_the_live_default():
-    """Both files declare one source id, so enabling frozen is a swap.
+def test_the_frozen_cmssw_template_replaces_the_live_entry():
+    """The frozen template is a replacement for the installed live entry.
 
-    The installer keys source-defaults by the id inside the file, not by
-    filename, so leaving both in place lets one silently win and discards the
-    other. Nothing in okg warns about it. This test pins the collision as a
-    known fact and fails if someone renames one of the ids and leaves the
-    'replaces, does not add' instructions in the header saying otherwise.
+    It is not a pack source (two templates for one source would install
+    twice), so its key is the rendered id of the live entry it replaces, and
+    its header says how. Frozen mode means reviewed bytes, never a fetch.
     """
     live = yaml.safe_load(
-        (SOURCE_DEFAULTS / "cmssw_releases.yaml").read_text(encoding="utf-8")
+        (PACKS / "cmssw-releases" / "sources" / "cmssw_releases.yaml").read_text(encoding="utf-8")
     )
-    frozen_text = (
-        SOURCE_DEFAULTS / "cmssw_releases_frozen.yaml.example"
-    ).read_text(encoding="utf-8")
+    frozen_text = FROZEN_CMSSW.read_text(encoding="utf-8")
     frozen = yaml.safe_load(frozen_text)
-    assert set(live) == set(frozen) == {"cmssw_releases"}
-    assert "REPLACES cmssw_releases.yaml" in frozen_text, (
-        "the collision is only survivable if the header says so"
-    )
-    # Frozen mode means reviewed bytes, never a live fetch.
-    assert frozen["cmssw_releases"]["params"]["fetch"] is False
+    assert set(live) == {"cmssw_releases"}
+    assert set(frozen) == {"cmssw-releases.cmssw_releases"}
+    assert "replace the `cmssw-releases.cmssw_releases` entry" in frozen_text
+    assert "${" not in frozen_text, "a pasted entry gets no placeholder filled"
+    assert frozen["cmssw-releases.cmssw_releases"]["params"]["fetch"] is False
     assert live["cmssw_releases"]["params"]["fetch"] is True
+    # Everything but the parameters is the live entry's, so the swap changes
+    # only where the bytes come from.
+    def rest(entry):
+        text = yaml.safe_dump({k: v for k, v in entry.items() if k != "params"})
+        return text.replace("${deployment_name}", "<deployment>")
+
+    assert rest(frozen["cmssw-releases.cmssw_releases"]) == rest(live["cmssw_releases"])
 
 
 def test_the_indico_record_key_is_the_locator_it_declares():
@@ -286,8 +279,7 @@ def test_the_adapter_forwards_nothing_the_readers_do_not_all_define():
 
 
 def _entry(source_name, filename):
-    """One bundle entry, named by its file so the live and frozen CMSSW
-    templates (both `cmssw_releases`) are never confused for each other."""
+    """One pack template, named by `<pack>/<file>` as well as its source."""
     for candidate_file, name, entry in ENTRIES:
         if name == source_name and candidate_file == filename:
             return entry
@@ -331,10 +323,8 @@ def test_documentation_source_runs_from_its_shipped_parameters(tmp_path):
             ]
         )
     )
-    (tmp_path / "jira").mkdir()
-    (tmp_path / "jira" / "records.json").write_text(json.dumps([]))
-    entry = _entry("docsite", "docsite.yaml.example")
-    adapter = _adapter_class(entry)(**_params("docsite", "docsite.yaml.example", tmp_path))
+    entry = _entry("docsite", "docsite/docsite.yaml")
+    adapter = _adapter_class(entry)(**_params("docsite", "docsite/docsite.yaml", tmp_path))
     run, facts = _run(adapter)
     assert run.completed_scope is True
     assert [f for f in facts if isinstance(f, NodeFact) and f.subtype == "documentation_page"]
@@ -364,8 +354,8 @@ def test_jira_source_runs_from_its_shipped_parameters(tmp_path):
             }
         )
     )
-    entry = _entry("jira", "jira.yaml.example")
-    adapter = _adapter_class(entry)(**_params("jira", "jira.yaml.example", tmp_path))
+    entry = _entry("jira", "jira/jira.yaml")
+    adapter = _adapter_class(entry)(**_params("jira", "jira/jira.yaml", tmp_path))
     _run_result, facts = _run(adapter)
     assert [f for f in facts if isinstance(f, NodeFact) and f.subtype == "jira_issue"]
 
@@ -378,17 +368,12 @@ def test_cmssw_source_runs_from_its_shipped_frozen_parameters(tmp_path):
         "architecture=el8_amd64_gcc12;label=CMSSW_14_0_2;type=Production;state=Announced;\n"
     )
     digest = "sha256:" + hashlib.sha256(catalogue.read_bytes()).hexdigest()
-    # The frozen example, not the live default: that one fetches the real
+    # The frozen template, not the live default: that one fetches the real
     # catalogue over the network, which no test here may do.
-    frozen = "cmssw_releases_frozen.yaml.example"
-    params = _params(
-        "cmssw_releases",
-        frozen,
-        tmp_path,
-        extra={"${cmssw_map_path}": str(catalogue), "${cmssw_map_digest}": digest},
-    )
+    entry = yaml.safe_load(FROZEN_CMSSW.read_text(encoding="utf-8"))["cmssw-releases.cmssw_releases"]
+    params = dict(entry["params"], map_cache_path=str(catalogue), map_cache_digest=digest)
     assert params["fetch"] is False
-    adapter = _adapter_class(_entry("cmssw_releases", frozen))(**params)
+    adapter = _adapter_class(entry)(**params)
     run, facts = _run(adapter)
     assert run.completed_scope is True
     releases = [f for f in facts if isinstance(f, NodeFact) and f.subtype == "cmssw_release"]
@@ -430,17 +415,12 @@ def test_a_misspelled_parameter_fails_when_the_adapter_is_bound():
     assert "records_pathh" in str(excinfo.value)
 
 
-#: Entries that strict admission still refuses, and why. NOT about the
-#: adapter signature: this one authors `source_name` in `params`, which is a
-#: substrate-owned key (`RESERVED_ADAPTER_PARAM_NAMES`), so the substrate
-#: refuses them with `source_param_reserved` before it ever looks at the
-#: constructor. Pre-existing and dormant -- cern-team ships on the legacy
-#: admission contract -- and fixing it changes which name the readers emit,
-#: so it is tracked separately rather than bundled in here. Remove an entry
-#: from this set when it is fixed; the test will tell you if you forget.
-STRICT_PATH_KNOWN_REFUSALS = {
-    ("docsite.yaml.example", "docsite"): "source_param_reserved",
-}
+#: Entries that strict admission still refuses, and why. Empty since the
+#: docsite template stopped authoring the substrate-reserved `source_name`
+#: (`RESERVED_ADAPTER_PARAM_NAMES`; the reader's default is the same name).
+#: Add an entry with its refusal code if one is ever knowingly shipped; the
+#: test will tell you when it is fixed.
+STRICT_PATH_KNOWN_REFUSALS: dict = {}
 
 
 def test_the_substrate_strict_admission_check_consumes_every_parameter():
@@ -449,7 +429,7 @@ def test_the_substrate_strict_admission_check_consumes_every_parameter():
     `source_adapter_init_params` is the function that raises
     `source_param_unconsumed`. It takes the strict path only for an entry whose
     admission contract is `strict_v1`, so the entry is relabelled here; nothing
-    else about it changes and no database is touched. cern-team ships on the
+    else about it changes and no database is touched. The packs ship on the
     legacy contract today, which is why the refusal was dormant rather than
     absent.
 
@@ -502,52 +482,30 @@ def test_the_substrate_strict_admission_check_consumes_every_parameter():
 @pytest.mark.parametrize(
     "answer",
     [
-        r"C:\reviewed\releases.map",
-        "/a path/with spaces/releases.map",
-        "/plain/releases.map",
+        r"C:\reviewed\twiki-dump",
+        "/a path/with spaces/twiki-dump",
+        "/plain/twiki-dump",
     ],
     ids=["backslashes", "spaces", "plain"],
 )
 def test_an_install_answer_reaches_the_source_byte_for_byte(tmp_path, answer):
     """Answers are substituted as text, so the quoting style is load-bearing.
 
-    `build_plan` interpolates each source-default's TEXT and parses the result
-    as YAML, and the substitution escapes nothing (okg
+    `build_plan` interpolates each source template's TEXT and parses the
+    result as YAML, and the substitution escapes nothing (okg
     `substrate/catalog/profile.py`, `replace_match` returns `str(v)` as-is).
     A double-quoted placeholder therefore hands the answer to YAML's escape
-    rules: the Windows path below came back with a carriage return where its
-    `\\r` had been, and the only symptom was an unexplained cache_missing.
-    Single quotes take the bytes literally.
+    rules: a Windows path came back with a carriage return where its `\\r`
+    had been, and the only symptom was an unexplained cache_missing. Single
+    quotes take the bytes literally. Checked on the twiki pack's `eos_root`,
+    rendered and planned the way an install does.
     """
-    import shutil
+    from packs.pack_support import okg_plan, render_alone
 
-    from okg.substrate.deployment_bootstrap.profile_init import (
-        build_plan,
-        discover_profile,
-    )
-
-    profiles = tmp_path / "profiles"
-    shutil.copytree(SOURCE_DEFAULTS.parent.parent, profiles)
-    sd = profiles / "cern-team" / "source-defaults"
-    (sd / "cmssw_releases.yaml").unlink()
-    (sd / "cmssw_releases_frozen.yaml.example").rename(sd / "cmssw_releases.yaml")
-    os.environ["OKG_PROFILES_DIR"] = str(profiles)
-    digest = "sha256:" + "0" * 64
-    plan = build_plan(
-        profile=discover_profile("cern-team"),
-        deployment_name="qt",
-        deployments_root=tmp_path / "deployments",
-        raw_answers={
-            "deployment_name": "qt",
-            "postgres_dsn": "postgresql://localhost/qt",
-            "cmssw_map_path": answer,
-            "cmssw_map_digest": digest,
-        },
-    )
-    body = yaml.safe_load(plan.source_defaults["cmssw_releases"])
-    params = body["cmssw_releases"]["params"]
-    assert params["map_cache_path"] == answer
-    assert params["map_cache_digest"] == digest
+    rendered = render_alone(tmp_path, "twiki")
+    plan = okg_plan(rendered, tmp_path, {"twiki_eos_root": answer})
+    body = yaml.safe_load(plan.source_defaults["twiki.twiki_eos"])
+    assert body["twiki.twiki_eos"]["params"]["eos_root"] == answer
 
 
 # --- TWiki comes from an EOS dump, and only from one -------------------------
@@ -582,19 +540,15 @@ def test_twiki_in_the_bundle_is_the_eos_dump_reader_and_nothing_else():
         if entry.get("module") == "archi.sources.twiki"
     ]
     assert [(f, n, e["class"]) for f, n, e in twiki_entries] == [
-        ("twiki_eos.yaml.example", "twiki_eos", "TwikiEOSAdapter")
+        ("twiki/twiki_eos.yaml", "twiki_eos", "TwikiEOSAdapter")
     ]
     params = twiki_entries[0][2]["params"]
-    assert params["eos_root"] == "${twiki_eos_root}"
+    assert params["eos_root"] == "${eos_root}"
     assert params["required"] is True
-    assert not (SOURCE_DEFAULTS / "twiki_crawl.yaml.example").exists()
 
-    profile = yaml.safe_load(
-        (SOURCE_DEFAULTS.parent / "profile.yaml").read_text(encoding="utf-8")
-    )
-    ids = {q["id"] for q in profile["init_questions"]}
-    assert "twiki_eos_root" in ids
-    assert not {"twiki_base_url", "twiki_seed_topic", "twiki_max_depth"} & ids
+    questions = yaml.safe_load((PACKS / "twiki" / "questions.yaml").read_text(encoding="utf-8"))
+    ids = {q["id"] for q in questions["init_questions"]}
+    assert ids == {"eos_root"}
 
 
 @pytest.mark.parametrize(
@@ -603,40 +557,22 @@ def test_twiki_in_the_bundle_is_the_eos_dump_reader_and_nothing_else():
 def test_the_twiki_eos_root_answer_reaches_the_reader_and_reads_the_dump(
     tmp_path, monkeypatch, dump_name
 ):
-    """Answer ``twiki_eos_root``, enable the example, and the reader reads it.
+    """Answer ``--twiki-eos-root`` and the reader reads the dump.
 
-    Goes through okg's own ``build_plan`` so the placeholder, the quoting and
-    the rename are the ones an installer hits, then runs the adapter on the
-    resolved parameters against a synthetic dump.
+    Renders the twiki pack and goes through okg's own ``build_plan`` so the
+    placeholder and the quoting are the ones an installer hits, then runs the
+    adapter on the resolved parameters against a synthetic dump.
     """
-    import shutil
-
-    from okg.substrate.deployment_bootstrap.profile_init import (
-        build_plan,
-        discover_profile,
-    )
+    from packs.pack_support import okg_plan, render_alone
 
     dump = tmp_path / dump_name
     dump.mkdir()
     for topic, text in _DUMP_TOPICS.items():
         (dump / f"{topic}.txt").write_text(text, encoding="utf-8")
 
-    profiles = tmp_path / "profiles"
-    shutil.copytree(SOURCE_DEFAULTS.parent.parent, profiles)
-    sd = profiles / "cern-team" / "source-defaults"
-    (sd / "twiki_eos.yaml.example").rename(sd / "twiki_eos.yaml")
-    monkeypatch.setenv("OKG_PROFILES_DIR", str(profiles))
-    plan = build_plan(
-        profile=discover_profile("cern-team"),
-        deployment_name="qt",
-        deployments_root=tmp_path / "deployments",
-        raw_answers={
-            "deployment_name": "qt",
-            "postgres_dsn": "postgresql://localhost/qt",
-            "twiki_eos_root": str(dump),
-        },
-    )
-    entry = yaml.safe_load(plan.source_defaults["twiki_eos"])["twiki_eos"]
+    rendered = render_alone(tmp_path / "render", "twiki")
+    plan = okg_plan(rendered, tmp_path / "render", {"twiki_eos_root": str(dump)})
+    entry = yaml.safe_load(plan.source_defaults["twiki.twiki_eos"])["twiki.twiki_eos"]
     assert entry["params"]["eos_root"] == str(dump)
 
     adapter = _adapter_class(entry)(**entry["params"])
@@ -650,12 +586,12 @@ def test_the_twiki_eos_root_answer_reaches_the_reader_and_reads_the_dump(
 
 
 def test_the_twiki_eos_reader_refuses_a_missing_dump_instead_of_shrinking(tmp_path):
-    entry = _entry("twiki_eos", "twiki_eos.yaml.example")
+    entry = _entry("twiki_eos", "twiki/twiki_eos.yaml")
     params = _params(
         "twiki_eos",
-        "twiki_eos.yaml.example",
+        "twiki/twiki_eos.yaml",
         tmp_path,
-        extra={"${twiki_eos_root}": str(tmp_path / "no-such-dump")},
+        extra={"${eos_root}": str(tmp_path / "no-such-dump")},
     )
     run = _adapter_class(entry)(**params).run("run-1", mode="scope_complete")
     assert list(run.facts) == []

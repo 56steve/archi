@@ -11,4 +11,5 @@ sources: sources/
 invariants: invariants.yaml
 search_subtypes: [code_symbol]
 prompt_fragment: prompt.md
+# It reads git-code's checkout and fetches nothing itself.
 needs_credentials: false

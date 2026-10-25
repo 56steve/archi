@@ -12,4 +12,5 @@ invariants: invariants.yaml
 files: [extractors.yaml]
 search_subtypes: [document, document_chunk]
 prompt_fragment: prompt.md
+# It reads git-code's checkout and fetches nothing itself.
 needs_credentials: false
