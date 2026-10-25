@@ -207,7 +207,9 @@ def test_init_installs_commits_then_publishes(tmp_path, shipped, monkeypatch):
     okg = FakeOkg()
     inst = init(
         "myteam", bundles=["cern-team"], catalog=shipped, directory=tmp_path / "myteam",
-        data_root=tmp_path / "data", answers={"chat_model": "qwen3:4b"},
+        with_packs=["twiki"],
+        data_root=tmp_path / "data",
+        answers={"chat_model": "qwen3:4b", "twiki_eos_root": str(tmp_path / "dump")},
         okg_runner=okg, compose_runner=fake_compose, wait_db=lambda dsn: None,
         echo=lambda _: None,
     )
@@ -226,7 +228,7 @@ def test_init_installs_commits_then_publishes(tmp_path, shipped, monkeypatch):
     assert env["OKG_ROLE_SECRETS_FILE"] == str(inst.dir / ".secrets" / "role-secrets.json")
     # Every path answer is absolute, the data root among them.
     assert install[install.index("--archi-data-root") + 1] == str((tmp_path / "data").resolve())
-    assert install[install.index("--twiki-eos-root") + 1] == str((tmp_path / "data" / "twiki-snapshot").resolve())
+    assert install[install.index("--twiki-eos-root") + 1] == str((tmp_path / "dump").resolve())
     assert install[install.index("--chat-model") + 1] == "qwen3:4b"
 
     # The install's files were committed before the publish (okg refuses otherwise).

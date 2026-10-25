@@ -1,14 +1,16 @@
 # The golden path, end to end (PACT r3-golden-path, req.r3-golden-path.nightly;
 # ADR 0002 section 8): an empty runner to a cited answer over MCP with the
-# cern-team defaults, in at most 5 user commands and 15 minutes.
+# cern-team bundle, in at most 5 user commands and 15 minutes.
 #
 # The five steps named "user command N" are exactly what an operator types.
 # Everything else here is runner housekeeping (disk space, timing, logs,
 # teardown), not part of the path.
 #
-# No secret is involved: cern-team's default source (the CMSSW release
-# catalog) is public, and the answer is read over MCP, so no model provider
-# is needed. It also runs on pushes and pull requests that touch the stack,
+# No secret is involved: the run selects the cmssw-releases pack (the public
+# CMSSW release catalog) in place of cern-team's docsite and indico defaults,
+# which need a records cache and an event scope that a bare runner lacks
+# (choosing defaults that publish with no input is PACT r3-bundle-cern-team).
+# The answer is read over MCP, so no model provider is needed. It also runs on pushes and pull requests that touch the stack,
 # so a change to it is proven the same way before it merges.
 name: nightly-e2e
 
@@ -70,7 +72,7 @@ jobs:
 
       - name: "user command 2: archi init"
         working-directory: ${{ runner.temp }}
-        run: archi init gp --bundle cern-team
+        run: archi init gp --bundle cern-team --without docsite,indico --with cmssw-releases
 
       - name: "user command 3: archi up"
         working-directory: ${{ runner.temp }}/gp

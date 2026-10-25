@@ -11,7 +11,8 @@ python3.12 -m venv archi-venv && source archi-venv/bin/activate
 pip install "okg @ https://github.com/mitdbg/akmon/releases/download/v0.2.0/okg-0.2.0-py3-none-any.whl" \
   "archi-kb @ git+https://github.com/archi-physics/archi@archi_v3#subdirectory=python"
 
-archi init myteam          # ./myteam: git repo, secrets, a published graph
+archi init myteam --without docsite,indico --with cmssw-releases
+                           # ./myteam: git repo, secrets, a published graph
 cd myteam
 archi up                   # graph and chat databases, MCP server, Open WebUI
 archi doctor               # every check, with a fix line for each failure
@@ -33,8 +34,11 @@ graph database and runs `okg install`, commits the deployment, publishes
 with `okg provision`, and sets okg's role passwords. Every path it passes to
 okg is absolute. The data root, where connector caches and repository
 checkouts go, is `~/.local/share/archi/<name>` (`--data-root` to change it)
-and must lie outside the instance. The default bundle is `cern-team`; its
-one default source, the public CMSSW release catalog, needs no credential.
+and must lie outside the instance. The default bundle is `cern-team`. Its default
+packs, docsite and indico, need a records cache and an Indico event or
+category; until a default that needs neither ships, select what you can feed,
+for example the public CMSSW release catalog:
+`archi init <name> --without docsite,indico --with cmssw-releases`.
 
 **`archi up`** starts one compose project, `archi-<name>`, on one network:
 
