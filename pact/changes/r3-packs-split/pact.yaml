@@ -101,4 +101,33 @@ evidence:
     test_packs.py::test_each_schema_path_is_owned_once_or_identical. Also run for real: the
     rewritten quickstart step 3 (public Indico event, pallets/click with git-code, code-text,
     code-symbols) published 19,057 records and 42,972 links with one ingest, lint zero blockers.'
+- kind: executed_test
+  requirement: req.r3-packs-split.packs
+  status: pass
+  command: python -m pytest python/tests/packs/test_packs.py -q (submit76, okg 0.2.0 wheel, Python
+    3.12)
+  head: 1fdc5e8771ff0504a46c534e71b2b000322e69c6
+  at: '2026-10-25T15:49:37+00:00'
+  note: 'acc.r3-packs-split.validate, re-run at the PR head (the earlier heads were lost in a rebase):
+    65 passed. An independent review found these limits, left as they are and disclosed: each
+    coverage invariant requires a pack''s primary subtypes, not every subtype it emits (git_tag,
+    code_import and similar can be legitimately empty); the invariants count subtypes over the
+    whole graph, so they are only discriminating in a solo install; git-code indexes one repository
+    where the old templates allowed a GitHub and a GitLab one side by side; cms-catalogs and
+    cmssw-releases both emit cmssw_release; the five comp-ops playbooks (rucio_*, site_profile,
+    incident_root_cause, monitoring_condor_snapshot) are not in any pack yet, which is task
+    playbooks of r3-bundle-cms-comp-ops.'
+- kind: executed_test
+  requirement: req.r3-packs-split.isolation
+  status: pass
+  command: ARCHI_PACK_ISOLATION_DSN=postgresql://postgres:okg@127.0.0.1:5491/packtest python
+    -m pytest python/tests/packs/test_pack_isolation.py -v (submit76)
+  head: 1fdc5e8771ff0504a46c534e71b2b000322e69c6
+  at: '2026-10-25T15:49:37+00:00'
+  note: 'acc.r3-packs-split.matrix, re-run at the PR head: 16 passed in 12m33s, against
+    ghcr.io/mitdbg/akmon-postgres:v0.2.0 in a container of its own, okg 0.2.0. All 14 context
+    packs installed alone and published with lint zero blockers, and cern-team with every optional
+    pack published. The install tests skip without ARCHI_PACK_ISOLATION_DSN, so hosted CI runs
+    only the fixture-coverage test; this run is the proof. The test checks that each pack''s
+    invariants are installed and relies on okg refusing to publish when an error invariant fails.'
 decisions: []
