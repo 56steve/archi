@@ -155,7 +155,7 @@ $T pact "$CHANGE1" > "$RUN/pact0.json"
 check "the ledger has no approval yet" "d == []" < "$RUN/pact0.json"
 $T approve-promotion "$CHANGE1"
 $T pact "$CHANGE1" > "$RUN/pact1.json"; cat "$RUN/pact1.json"
-check "the operator's approval (okg pact decide) is in the ledger" "len(d) == 1 and d[0]['verdict'] == 'approve' and d[0]['principal'] == 'operator-x'" < "$RUN/pact1.json"
+check "the operator approval (okg pact decide) is in the ledger" "len(d) == 1 and d[0]['verdict'] == 'approve' and d[0]['principal'] == 'operator-x'" < "$RUN/pact1.json"
 
 echo "== 5. L0 (acc e2e): observed, nothing escalated, no marker"
 configure --level L0
@@ -336,7 +336,11 @@ check "the waiting run is CANCELLED" "d['status'] == 'CANCELLED'" < "$RUN/l2h2.o
 $T escalation "$W10" > "$RUN/esc-10.json"
 check "its escalation was answered reject by archi ops halt" "d['status'] in ('decided', 'applied') and d['decided_by'] == 'archi ops halt'" < "$RUN/esc-10.json"
 check "no new marker" "d == $BASE" < <(markers)
-$OPS resume > /dev/null
+$OPS resume --json > "$RUN/resume2.json" 2>/dev/null
+trigger
+WQ="scratch-triage~l2h2-1~2"; ESCQ=$($T pending "$WQ" --timeout 90)
+$OPS reject "$ESCQ" --as scratch-op > /dev/null
+$T wait "$WQ" --timeout 90 > /dev/null
 
 echo "== 18. a stale source demotes a live automation at once, the demotion persists, a new promotion lifts it"
 configure --level L2 --proposal marker --timeout 120 --cost 0.1
@@ -345,12 +349,10 @@ WS1=$(new_run dem-1); $T wait "$WS1" | tee "$RUN/dem1.out"
 check "demoted run ends observed, in shadow" "d['status'] == 'SUCCESS' and 'observed' in str(d['output']) and 'shadow' in str(d['output'])" < "$RUN/dem1.out"
 check "no escalation was opened" "d is None" < <($T escalation "$WS1")
 $T demotions | tee "$RUN/demotions.json"
-check "the demotion is in archi_ops.demotions the moment it happens" "len(d) == 1 and d[0]['reason'].startswith('demoted to shadow: ') and 'freshness:jira.jira' in d[0]['reason']" < "$RUN/demotions.json"
-node ops_proposal "prop-$WS1" > "$RUN/unpublished.jsonl"
-check "...and it is not published yet" "rows == []" < "$RUN/unpublished.jsonl"
+check "the demotion is in archi_ops.demotions the moment it happens (one row, from this run)" "len(d) == 1 and d[0]['run_id'] == '$WS1' and d[0]['reason'].startswith('demoted to shadow: ') and 'freshness:jira.jira' in d[0]['reason']" < "$RUN/demotions.json"
 $T source fresh
 WS2=$(new_run dem-2); $T wait "$WS2" | tee "$RUN/dem2.out"
-check "the second run starts before any publish and the source is fresh, yet it stays in shadow" \
+check "the second run starts at once, the source is fresh, yet it stays in shadow (the log, not a publish, carries the demotion)" \
   "d['status'] == 'SUCCESS' and 'observed' in str(d['output']) and \"'mode': 'shadow'\" in str(d['output'])" < "$RUN/dem2.out"
 check "no escalation, no new marker" "d is None" < <($T escalation "$WS2")
 publish persisted
