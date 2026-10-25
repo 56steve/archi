@@ -202,7 +202,7 @@ INVALID_PACKS = {
     ),
     "context pack without sources": (
         lambda root: edit_yaml(_pack(root, "beta") / "pack.yaml", lambda d: d.pop("sources")),
-        "a context pack must declare `sources:`",
+        "a context pack must declare `sources:` or `schemas:`",
     ),
 }
 
@@ -341,3 +341,19 @@ def test_validate_command_with_no_paths_checks_everything_found(catalog_copy, ca
 def test_shipped_catalog_validates():
     """Whatever archi itself ships must pass its own validator."""
     assert archi_main(["bundles", "validate"]) == 0
+
+
+def test_a_schema_only_context_pack_validates_but_does_not_count_as_a_publishing_default(
+    catalog_copy,
+):
+    """ops-record's shape: a context pack with a schema slice and no sources is
+    valid, but cannot be what makes a bundle publish with nothing configured."""
+    import shutil
+
+    alpha = catalog_copy / "packs" / "alpha"
+    shutil.rmtree(alpha / "sources")
+    edit_yaml(alpha / "pack.yaml", lambda d: (d.pop("sources"), d.pop("freshness")))
+    catalog = _catalog(catalog_copy)
+    problems = [str(p) for p in catalog.problems]
+    assert not any("alpha/pack.yaml" in p for p in problems), problems
+    assert any("no credential-free default" in p for p in problems), problems

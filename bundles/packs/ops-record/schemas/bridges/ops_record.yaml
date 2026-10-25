@@ -1,0 +1,121 @@
+# Archi 3.0 — operational memory: edge narrowings (PACT r3-ops-record).
+#
+# The loop's own edges (proposal → incident, decision → proposal, ...) are
+# always present. Edges to subtypes other packs bring (tickets, chunks,
+# documentation pages, sites) carry optional_when_subtypes_missing, so the
+# slice composes on any bundle, with or without those packs. okg admission
+# checks every submitted edge against these narrowings.
+
+id: https://archi-physics.org/okg/archi/bridges/ops-record
+name: archi_ops_record_narrowings
+title: Archi 3.0 — operational memory narrowings
+description: Edges between ops records, and from ops records to the evidence and tickets they cite.
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  archi: https://archi-physics.org/okg/archi/
+
+default_range: string
+
+imports:
+  - linkml:types
+
+classes:
+  EdgeNarrowings:
+    description: Edges between ops records, and to the evidence and tickets they cite.
+    annotations:
+      okg_edge_narrowings: 'true'
+    attributes:
+
+      # --- the loop -------------------------------------------------------
+      ops_proposal_addresses_incident:
+        annotations:
+          edge_archetype: addresses
+          src_subtypes: OpsProposal
+          dst_subtypes: OpsIncident
+      ops_decision_decides_proposal:
+        annotations:
+          edge_archetype: decides
+          src_subtypes: OpsDecision
+          dst_subtypes: OpsProposal
+      ops_action_executes_proposal:
+        annotations:
+          edge_archetype: executes
+          src_subtypes: OpsAction
+          dst_subtypes: OpsProposal
+      ops_action_authorized_by_decision:
+        annotations:
+          edge_archetype: authorized_by
+          src_subtypes: OpsAction
+          dst_subtypes: OpsDecision
+      ops_outcome_evaluates_action:
+        annotations:
+          edge_archetype: evaluates
+          src_subtypes: OpsOutcome
+          dst_subtypes: OpsAction
+      ops_outcome_outcome_of_incident:
+        annotations:
+          edge_archetype: outcome_of
+          src_subtypes: OpsOutcome
+          dst_subtypes: OpsIncident
+
+      # --- tickets: an incident is tracked in a ticket; a person's ticket
+      # resolution is cited by the outcome it produced ---------------------
+      ops_incident_tracked_in_jira_issue:
+        annotations:
+          edge_archetype: tracked_in
+          src_subtypes: OpsIncident
+          dst_subtypes: JiraIssue
+          optional_when_subtypes_missing: 'true'
+      ops_incident_tracked_in_ticket:
+        annotations:
+          edge_archetype: tracked_in
+          src_subtypes: OpsIncident
+          dst_subtypes: Ticket
+          optional_when_subtypes_missing: 'true'
+      ops_outcome_cites_jira_issue:
+        annotations:
+          edge_archetype: cites
+          src_subtypes: OpsOutcome
+          dst_subtypes: JiraIssue
+          optional_when_subtypes_missing: 'true'
+      ops_outcome_cites_ticket:
+        annotations:
+          edge_archetype: cites
+          src_subtypes: OpsOutcome
+          dst_subtypes: Ticket
+          optional_when_subtypes_missing: 'true'
+
+      # --- evidence a proposal cites --------------------------------------
+      ops_proposal_cites_chunk:
+        annotations:
+          edge_archetype: cites
+          src_subtypes: OpsProposal
+          dst_subtypes: DocumentChunk
+          optional_when_subtypes_missing: 'true'
+      ops_proposal_cites_jira_issue:
+        annotations:
+          edge_archetype: cites
+          src_subtypes: OpsProposal
+          dst_subtypes: JiraIssue
+          optional_when_subtypes_missing: 'true'
+      ops_proposal_cites_documentation_page:
+        annotations:
+          edge_archetype: cites
+          src_subtypes: OpsProposal
+          dst_subtypes: DocumentationPage
+          optional_when_subtypes_missing: 'true'
+      ops_proposal_cites_incident:
+        description: A precedent the proposal relied on.
+        annotations:
+          edge_archetype: cites
+          src_subtypes: OpsProposal
+          dst_subtypes: OpsIncident
+
+      # --- the entity that broke, when the instance has it as a node ------
+      ops_incident_affects_site:
+        annotations:
+          edge_archetype: affects
+          src_subtypes: OpsIncident
+          dst_subtypes: Site
+          optional_when_subtypes_missing: 'true'

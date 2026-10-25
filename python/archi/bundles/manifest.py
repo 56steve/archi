@@ -316,8 +316,10 @@ def validate_pack(directory: Path) -> list[Problem]:
     for rel in data.get("files", ()):
         if not (directory / rel).is_file():
             problems.append(Problem(manifest_path, f"files: {rel!r} is missing"))
-    if data["kind"] == "context" and "sources" not in data:
-        problems.append(Problem(manifest_path, "a context pack must declare `sources:`"))
+    # A context pack brings sources, or only a schema slice that other
+    # producers write into through admission (ops-record).
+    if data["kind"] == "context" and "sources" not in data and "schemas" not in data:
+        problems.append(Problem(manifest_path, "a context pack must declare `sources:` or `schemas:`"))
     if problems:
         return problems
 
@@ -474,8 +476,10 @@ def validate_bundle(
         return problems
 
     defaults = [p for b in chain for p in catalog[b].default_packs]
+    # Only a pack with sources publishes anything on its own.
     credential_free = [
-        p for p in defaults if packs[p].kind == "context" and not packs[p].needs_credentials
+        p for p in defaults
+        if packs[p].kind == "context" and not packs[p].needs_credentials and packs[p].sources()
     ]
     if not credential_free:
         problems.append(
