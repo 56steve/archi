@@ -68,16 +68,17 @@ evidence:
   requirement: req.r3-ops-record.schema
   status: pass
   command: python -m pytest python/tests/packs/test_ops_record.py -q
-  head: 38509a54dcb1633b99e29cb52ea4e879e5fd5878
-  at: '2026-10-25T14:21:07+00:00'
+  head: aa307e134281da0a4b146e557b1a6608807adf71
+  at: '2026-10-25T14:32:56+00:00'
   note: 'acc.r3-ops-record.load: 6 passed. bundles/packs/ops-record validates and adds ops_incident,
     ops_proposal, ops_decision, ops_action and ops_outcome, each with record_id, actor_kind,
-    actor and generation_read; proposals require evidence_ids and the generation read; decisions
-    carry the okg escalation id. On cern-team (the shipped profile regrouped into packs) with
-    --with ops-record, and on cluster-manager (docsite + ops-record default, jira optional;
-    the ADR 0002 section 5 shape with the packs that exist today), okg''s planner scaffolds
-    the rendered profile and okg catalog load composes it: five more subtypes than the same
-    selection without ops-record, and 13 of the 15 ops-record narrowings (the two to okg''s
-    ticket module, absent from both, drop out as declared optional). Full suite 2056 passed,
-    1 skipped.'
+    actor and generation_read; proposals require evidence_ids (the cited okg node ids) and
+    the generation read; decisions carry the okg escalation id. Its 7 narrowings join ops
+    records only: okg 0.2.0 admission cannot admit an edge to a node outside the payload, so
+    tickets, evidence and the entity that broke are attributes. On cern-team (the shipped
+    profile regrouped into packs) with --with ops-record, and on cluster-manager (docsite +
+    ops-record default, jira optional; the ADR 0002 section 5 shape with the packs that exist
+    today), okg''s planner scaffolds the rendered profile and okg catalog load composes it:
+    five more subtypes than the same selection without ops-record, and all 7 narrowings. Full
+    suite 2056 passed, 1 skipped.'
 decisions: []
