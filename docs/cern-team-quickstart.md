@@ -1,5 +1,11 @@
 # cern-team quickstart
 
+> **Reference material.** The setup path is now `archi init` / `archi up` /
+> `archi doctor`: see the [quickstart](quickstart.md). Every trap below is in
+> the [footgun ledger](golden-path-footguns.md), as absorbed by archi or
+> filed with AKMON. Read on for what happens underneath, or for a source the
+> golden path does not cover yet.
+
 From nothing to a knowledge graph you can query, holding a GitHub
 repository and a GitLab repository, with a chat frontend in front of it.
 

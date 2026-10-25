@@ -7,6 +7,9 @@
                                         compose packs into an okg profile + archi.lock
     archi add PACK [--answer ID=VALUE]  add a pack to an installed instance
     archi diff [--json]                 drift from archi.lock
+    archi init NAME [--bundle B]        a published instance (archi.cli.init)
+    archi up / archi down               the instance's compose project (archi.cli.up)
+    archi doctor [--json]               okg lint + doctor + footgun checks (archi.cli.doctor)
 """
 from __future__ import annotations
 
@@ -285,11 +288,20 @@ def build_parser() -> argparse.ArgumentParser:
     drift.add_argument("--json", action="store_true")
     roots(drift)
     drift.set_defaults(func=cmd_diff)
+
+    from archi.cli import register
+
+    register(sub, roots)
     return parser
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    from archi.cli import finalize
+
+    # Progress lines interleave with okg and compose output in order.
+    sys.stdout.reconfigure(line_buffering=True)
     args = build_parser().parse_args(argv)
+    finalize(args)
     return args.func(args)
 
 
