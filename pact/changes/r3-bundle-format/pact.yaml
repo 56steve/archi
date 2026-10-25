@@ -224,4 +224,15 @@ evidence:
     each show; exit codes 0/1/2. archi add --no-okg adds the new entries, schema slices, files,
     modules, subtypes and answers, records the deployment in the lock, refuses an already-installed
     pack and a diverged file, and leaves diff clean. Full suite 2049 passed, 1 skipped.'
+- kind: manual
+  requirement: req.r3-bundle-format.upstream
+  status: pass
+  command: gh issue view 1 2 --repo mitdbg/akmon; gh issue view 792 793 --repo archi-physics/archi
+  head: 4bad68a73ade023510dd8e88f995a24c38511972
+  at: '2026-10-25T15:51:52+00:00'
+  note: 'acc.r3-bundle-format.filed: both AKMON issues are filed (by Jason, 2026-10-25): profile
+    discovery by entry point, https://github.com/mitdbg/akmon/issues/1, and profile composition
+    with optional sources, https://github.com/mitdbg/akmon/issues/2. Each is linked from an
+    upstream-ask issue here: https://github.com/archi-physics/archi/issues/792 and
+    https://github.com/archi-physics/archi/issues/793.'
 decisions: []
