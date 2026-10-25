@@ -120,4 +120,14 @@ evidence:
     "Where work lands" ("PRs target archi_v3"), pact/project.yaml pr_policy.base, and CLAUDE.md,
     which is a single @AGENTS.md import and so carries the same rule. AGENTS.md also documents
     okg pact check --base origin/archi_v3, because origin/HEAD here is v2 main.'
+- kind: manual
+  requirement: req.r3-release-home.archive
+  status: pass
+  head: 4d7b34678c64ba146c908cb18c6815c3d19211e2
+  at: '2026-10-25T13:50:27+00:00'
+  note: 'acc.r3-release-home.archived. gh api repos/archi-physics/archi-okg reports archived=true
+    (2026-10-25). The README redirect, archi-okg#65, merged as f2461e15; it points to archi-physics/archi
+    branch archi_v3 and says the repo is archived. Nothing was left open before archiving. PRs #29 and
+    #39 moved to archi #770 and #771 with links both ways. Issues #47 and #55-#60 were transferred
+    (archi #772-#778). #61-#63 were closed with links to their 3.0 successors (#734, #727, #690).'
 decisions: []
