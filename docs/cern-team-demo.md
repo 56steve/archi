@@ -27,7 +27,7 @@ whose *playbooks* guide agents.
   ```bash
   cd python
   <venv>/bin/python -m hatchling build -t wheel -d dist
-  VIRTUAL_ENV=<venv> uv pip install --reinstall dist/archi-3.0.0a1-py3-none-any.whl
+  VIRTUAL_ENV=<venv> uv pip install --reinstall dist/archi_kb-3.0.0a1-py3-none-any.whl
   ```
 
 - A Postgres reachable by DSN and an **empty database owned by this

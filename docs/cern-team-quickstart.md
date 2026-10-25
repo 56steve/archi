@@ -72,8 +72,8 @@ that path has not been tried with this bundle, so clone the tagged release. arch
 straight from git — no clone, no wheel build.
 
 **Do not `pip install archi`.** That name on PyPI belongs to an unrelated
-archive library. Ours is unpublished; the git URL above is the only correct
-source.
+archive library. Ours will be published as `archi-kb` (ADR 0002 D2); until
+then the git URL above is the only correct source.
 
 *If pip is slow and noisy with connection retries, that is site networking
 rather than anything here — it recovers on retry. Check whether the install
