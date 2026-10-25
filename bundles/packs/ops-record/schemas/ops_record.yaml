@@ -23,9 +23,13 @@
 #                    every proposal is generation-pinned)
 #
 # okg's escalations are not graph nodes, so ops_decision carries the
-# escalation id (esc-…) as an attribute rather than an edge. Evidence ids a
-# proposal cites are kept in `evidence_ids` whatever their subtype; the
-# bridge adds `cites` edges for the subtypes the instance has.
+# escalation id (esc-…) as an attribute. References to nodes other packs own
+# are attributes too, because okg 0.2.0 admission cannot admit an edge to a
+# node outside the payload (bridges/ops_record.yaml): the evidence a proposal
+# cites (`evidence_ids`, okg node ids), the tickets tracking an incident
+# (`ticket_keys`, searchable, so a ticket key finds its incident), the ticket
+# whose resolution an outcome records (`ticket_key`, filterable) and the
+# entity that broke (`entity`, filterable).
 #
 # The okg `incident` module's Incident has no searchable text and no entity
 # field, and loading it would put two incident subtypes in one instance, so
@@ -83,7 +87,9 @@ classes:
       detected_at:
       resolved_at:
       ticket_keys:
-        description: Keys of the tickets tracking this incident (ABC-123).
+        description: >-
+          Keys of the tickets tracking this incident (ABC-123). okg filters
+          cannot match one element of a list; search finds them.
         multivalued: true
       signal:
         description: What raised it (schedule, ticket, alert) and its id.
@@ -102,8 +108,8 @@ classes:
       archetype: event
       transient: "false"
       okg_alias_fields: record_id
-      okg_identifier_fields: record_id
-      okg_searchable_text_fields: record_id,title,summary,entity,error_signature,text
+      okg_identifier_fields: record_id,ticket_keys
+      okg_searchable_text_fields: record_id,ticket_keys,title,summary,entity,error_signature,text
       okg_title_from: title
       okg_created_at_from: detected_at
       okg_last_modified_at_from: resolved_at
@@ -270,7 +276,14 @@ classes:
         description: How it was fixed, in the words of the check or the ticket.
       check_method:
         description: outcome_check | ticket_resolution | manual
+        annotations:
+          filterable: 'true'
+          value_type: text
       ticket_key:
+        description: The ticket whose resolution this outcome records.
+        annotations:
+          filterable: 'true'
+          value_type: text
       checked_at:
       automation:
       actor_kind:
@@ -285,6 +298,6 @@ classes:
       transient: "false"
       okg_alias_fields: record_id
       okg_identifier_fields: record_id
-      okg_searchable_text_fields: record_id,result,resolution,text
+      okg_searchable_text_fields: record_id,result,resolution,ticket_key,text
       okg_title_from: resolution
       okg_created_at_from: checked_at

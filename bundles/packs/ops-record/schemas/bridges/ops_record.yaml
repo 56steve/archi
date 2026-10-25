@@ -1,15 +1,18 @@
 # Archi 3.0 — operational memory: edge narrowings (PACT r3-ops-record).
 #
-# The loop's own edges (proposal → incident, decision → proposal, ...) are
-# always present. Edges to subtypes other packs bring (tickets, chunks,
-# documentation pages, sites) carry optional_when_subtypes_missing, so the
-# slice composes on any bundle, with or without those packs. okg admission
-# checks every submitted edge against these narrowings.
+# Only edges between ops records. okg admission checks every submitted edge
+# against these narrowings.
+#
+# References to nodes other packs own (the tickets tracking an incident, the
+# evidence a proposal cites, the site that broke) are attributes, not edges:
+# okg 0.2.0's generic admission cannot admit an edge to a node outside the
+# submitted payload (the draft okg ask is in the pack README). Add the
+# narrowings here, as optional_when_subtypes_missing, once it can.
 
 id: https://archi-physics.org/okg/archi/bridges/ops-record
 name: archi_ops_record_narrowings
 title: Archi 3.0 — operational memory narrowings
-description: Edges between ops records, and from ops records to the evidence and tickets they cite.
+description: Edges between ops records.
 
 prefixes:
   linkml: https://w3id.org/linkml/
@@ -22,7 +25,7 @@ imports:
 
 classes:
   EdgeNarrowings:
-    description: Edges between ops records, and to the evidence and tickets they cite.
+    description: Edges between ops records.
     annotations:
       okg_edge_narrowings: 'true'
     attributes:
@@ -59,52 +62,6 @@ classes:
           src_subtypes: OpsOutcome
           dst_subtypes: OpsIncident
 
-      # --- tickets: an incident is tracked in a ticket; a person's ticket
-      # resolution is cited by the outcome it produced ---------------------
-      ops_incident_tracked_in_jira_issue:
-        annotations:
-          edge_archetype: tracked_in
-          src_subtypes: OpsIncident
-          dst_subtypes: JiraIssue
-          optional_when_subtypes_missing: 'true'
-      ops_incident_tracked_in_ticket:
-        annotations:
-          edge_archetype: tracked_in
-          src_subtypes: OpsIncident
-          dst_subtypes: Ticket
-          optional_when_subtypes_missing: 'true'
-      ops_outcome_cites_jira_issue:
-        annotations:
-          edge_archetype: cites
-          src_subtypes: OpsOutcome
-          dst_subtypes: JiraIssue
-          optional_when_subtypes_missing: 'true'
-      ops_outcome_cites_ticket:
-        annotations:
-          edge_archetype: cites
-          src_subtypes: OpsOutcome
-          dst_subtypes: Ticket
-          optional_when_subtypes_missing: 'true'
-
-      # --- evidence a proposal cites --------------------------------------
-      ops_proposal_cites_chunk:
-        annotations:
-          edge_archetype: cites
-          src_subtypes: OpsProposal
-          dst_subtypes: DocumentChunk
-          optional_when_subtypes_missing: 'true'
-      ops_proposal_cites_jira_issue:
-        annotations:
-          edge_archetype: cites
-          src_subtypes: OpsProposal
-          dst_subtypes: JiraIssue
-          optional_when_subtypes_missing: 'true'
-      ops_proposal_cites_documentation_page:
-        annotations:
-          edge_archetype: cites
-          src_subtypes: OpsProposal
-          dst_subtypes: DocumentationPage
-          optional_when_subtypes_missing: 'true'
       ops_proposal_cites_incident:
         description: A precedent the proposal relied on.
         annotations:
@@ -112,10 +69,3 @@ classes:
           src_subtypes: OpsProposal
           dst_subtypes: OpsIncident
 
-      # --- the entity that broke, when the instance has it as a node ------
-      ops_incident_affects_site:
-        annotations:
-          edge_archetype: affects
-          src_subtypes: OpsIncident
-          dst_subtypes: Site
-          optional_when_subtypes_missing: 'true'

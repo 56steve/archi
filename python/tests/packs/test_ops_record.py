@@ -29,8 +29,6 @@ PACK = REPO / "bundles" / "packs" / "ops-record"
 OKG = str(Path(sys.executable).with_name("okg"))
 
 OPS_SUBTYPES = ["ops_incident", "ops_proposal", "ops_decision", "ops_action", "ops_outcome"]
-#: Narrowings to subtypes no tested bundle has (okg's `ticket` module).
-OPTIONAL_ABSENT = {"ops_incident_tracked_in_ticket", "ops_outcome_cites_ticket"}
 
 
 def _schema(name):
@@ -79,7 +77,7 @@ def test_slice_declares_the_five_subtypes():
         assert attrs["record_id"]["required"] is True
         ann = body["annotations"]
         searchable = ann["okg_searchable_text_fields"].split(",")
-        assert ann["okg_identifier_fields"] in searchable, subtype
+        assert set(ann["okg_identifier_fields"].split(",")) <= set(searchable), subtype
 
 
 def test_slice_carries_evidence_escalation_and_precedent_fields():
@@ -93,13 +91,17 @@ def test_slice_carries_evidence_escalation_and_precedent_fields():
     assert entity["required"] and entity["annotations"]["filterable"] == "true"
 
 
-def test_loop_edges_are_required_and_external_edges_optional():
+def test_edges_join_ops_records_only():
+    """Edges to other packs' nodes wait on okg (see the bridge's header);
+    those references are attributes, and the ticket ones are findable."""
     loop = {"OpsIncident", "OpsProposal", "OpsDecision", "OpsAction", "OpsOutcome"}
     for name, body in _narrowings().items():
         ann = body["annotations"]
-        internal = ann["src_subtypes"] in loop and ann["dst_subtypes"] in loop
-        optional = ann.get("optional_when_subtypes_missing") == "true"
-        assert internal != optional, name
+        assert {ann["src_subtypes"], ann["dst_subtypes"]} <= loop, name
+        assert "optional_when_subtypes_missing" not in ann, name
+    classes = _schema("ops_record.yaml")["classes"]
+    assert "ticket_keys" in classes["OpsIncident"]["annotations"]["okg_identifier_fields"].split(",")
+    assert classes["OpsOutcome"]["attributes"]["ticket_key"]["annotations"]["filterable"] == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -168,9 +170,7 @@ def test_catalog_loads_with_the_slice(catalog, tmp_path, bundle):
     base_packs, base = _catalog_load(catalog, bundle, tmp_path / "without", **without_ops)
     assert "ops-record" in packs and "ops-record" not in base_packs
 
-    # okg composed all five subtypes, and every narrowing whose endpoints the
-    # instance has; the two to okg's absent `ticket` module drop out.
+    # okg composed all five subtypes and every ops-record narrowing.
     assert report["subtype_count"] - base["subtype_count"] == len(OPS_SUBTYPES), (report, base)
-    expected = len(_narrowings()) - len(OPTIONAL_ABSENT)
-    assert report["narrowings_by_origin"]["bridge:ops_record.yaml"] == expected, report
+    assert report["narrowings_by_origin"]["bridge:ops_record.yaml"] == len(_narrowings()), report
     assert "bridge:ops_record.yaml" not in base["narrowings_by_origin"]
