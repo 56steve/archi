@@ -131,4 +131,18 @@ evidence:
     and okg search --scope precedents ranking ops records only. Full suite on this tree 2079
     passed, 1 skipped; after rebasing onto archi_v3 with r3-golden-path merged, 2132 passed,
     1 skipped.'
+- kind: executed_test
+  requirement: req.r3-ops-record.recall
+  status: pass
+  command: python -m pytest python/tests/packs/test_ops_record_recall.py python/tests/test_skills.py
+    python/tests/packs/test_ops_record.py -q; python -m pytest python/tests -q (submit76, okg 0.2.0)
+  head: 94597b2e2dfbff1e0c4d63be5e2a69c4f8ba8e20
+  at: '2026-10-25T15:37:29+00:00'
+  note: 'acc.r3-ops-record.precedent, after the independent review of #790: a precedent''s
+    outcomes are now listed oldest first by checked_at, so a later ticket resolution (result
+    unknown) follows the outcome check it comes after, and the playbook says the last one is
+    the latest. test_outcomes_are_listed_oldest_first covers two outcomes inserted out of order.
+    22 passed; full suite 2133 passed, 1 skipped. Review notes left as they are: entity matching
+    is exact and case-sensitive (the playbook says to use the name as operators write it), the
+    limit of 5 ranks by signature then recency, and each precedent costs a few okg filter calls.'
 decisions: []
