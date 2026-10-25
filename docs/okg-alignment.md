@@ -543,4 +543,4 @@ Details + repros: `okg-asks-drafts.md` items 6–7 in the archi_v3 working notes
   assignments across lines; title-less heading markers absorb the next line) —
   fixed on the Archi side with documented deviation
   (`pact/changes/w2-consolidate-hep-sources/v2-reconciliation-notes.md`) and
-  **upstreamed into the canonical copy via mitdbg/okg-deployments#88**.
+  **upstreamed into the canonical copy**.
