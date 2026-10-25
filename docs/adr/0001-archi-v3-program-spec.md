@@ -1,6 +1,6 @@
 # Archi v3 — Program Spec, v2
 
-> **Superseded in part (2026-10-24) by [ADR 0002](0002-archi-3.0-release.md).** Replaced: the branch rules (header *Branch* line, invariant 2, §14 branching), the repository table in §6.3, and the W6 one-bundle rule. Everything else stands; this file is otherwise kept as history.
+> **Superseded in part (2026-10-24) by [ADR 0002](0002-archi-3.0-release.md).** Replaced: the branch rules (header *Branch* line, invariant 2, §14 branching), the repository table in §6.3, and the W6 one-bundle rule. W8 (automations) is folded into ADR 0002's operations layer (§7). Everything else stands; this file is otherwise kept as history.
 
 **Audience:** an AI coding agent working in `archi-physics/archi`, plus the humans reviewing it.
 **Status:** draft for discussion, revised after maintainer feedback (cooper deferred; bundle model reshaped; comp-ops named the standing validation target).
