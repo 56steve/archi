@@ -8,6 +8,11 @@ import pytest
 
 from archi.ops.escalation import Decision, Escalation
 from archi.ops.loop import (
+    BudgetExceeded,
+    Demotion,
+    DEMOTED_PREFIX as _PREFIX,
+    parse_run_id,
+    persisted_demotion_reason,
     MediationRefused,
     DEMOTED_PREFIX,
     AutomationConfig,
@@ -20,6 +25,7 @@ from archi.ops.loop import (
 )
 from archi.ops.proposers import StubProposer
 from loop_fakes import (
+    Demotions,
     FAIL,
     GEN,
     PASS,
@@ -95,7 +101,7 @@ def config(level="L2", mode="live", **over):
 
 class World:
     def __init__(self, proposal=PROPOSAL, gate=PASS, decision=None, after=60, halt=(False,), budget=None,
-                 cost=0.1, clock=None, gate_raises=None, pin_raises=None, nodes=None, **decider):
+                 cost=0.1, clock=None, gate_raises=None, pin_raises=None, nodes=None, demotions=None, **decider):
         self.clock = clock or Clock()
         self.gate, self.reader = Gate(gate, gate_raises), Reader(pin_raises, **({"nodes": nodes} if nodes else {}))
         self.proposer = StubProposer({"default": proposal, "cost": cost})
@@ -103,10 +109,11 @@ class World:
         self.mediator, self.outcome = Mediator(), Outcome()
         self.recorder, self.halt = Recorder(), Halt(*halt)
         self.budget = budget or Budget()
+        self.demotions = demotions
 
     def run(self, automation, run_id=RUN):
         deps = Deps(self.gate, self.reader, self.proposer, self.decider, self.mediator, self.outcome,
-                    self.recorder, self.halt, self.clock, self.budget)
+                    self.recorder, self.halt, self.clock, self.budget, self.demotions)
         return run_once(automation, SIGNAL, deps, run_id=run_id)
 
     @property
@@ -508,15 +515,15 @@ def test_proposer_failure_is_recorded_as_an_error():
 
 
 def test_run_id_is_deterministic_and_comes_from_the_caller():
-    assert make_run_id("triage", "sig-1", 3) == "triage-sig-1-3"
+    assert make_run_id("triage", "sig-1", 3) == "triage~sig-1~3"
     first, second = World(), World(clock=Clock(at(5000)))
-    first.run(config("L0"), run_id="triage-sig-1-1")
-    second.run(config("L0"), run_id="triage-sig-1-1")
+    first.run(config("L0"), run_id="triage~sig-1~1")
+    second.run(config("L0"), run_id="triage~sig-1~1")
     ids = lambda w: [c[2]["record_id"] for c in w.recorder.calls]  # noqa: E731
-    assert ids(first) == ids(second) == ["inc-triage-sig-1-1", "prop-triage-sig-1-1", "dec-triage-sig-1-1"]
+    assert ids(first) == ids(second) == ["inc-triage~sig-1~1", "prop-triage~sig-1~1", "dec-triage~sig-1~1"]
     other = World()
-    other.run(config("L0"), run_id="triage-sig-1-2")
-    assert ids(other)[0] == "inc-triage-sig-1-2"
+    other.run(config("L0"), run_id="triage~sig-1~2")
+    assert ids(other)[0] == "inc-triage~sig-1~2"
 
 
 # --- budget --------------------------------------------------------------------------
@@ -527,7 +534,8 @@ RUN_SCOPE, DAY_SCOPE = f"run:{RUN}", "day:triage:2026-10-25"
 def test_budget_is_checked_per_run_and_per_day_before_proposing_and_charged_after():
     w = World(decision=approved(), cost=0.1)
     w.run(config())
-    assert w.budget.checks[:2] == [(RUN_SCOPE, 0.0, 0.5), (DAY_SCOPE, 0.0, 10.0)]
+    # the estimate defaults to the pack's per-run budget
+    assert w.budget.checks[:2] == [(RUN_SCOPE, 0.5, 0.5), (DAY_SCOPE, 0.5, 10.0)]
     assert w.budget.recorded == [(RUN_SCOPE, 0.1), (DAY_SCOPE, 0.1)]
 
 
@@ -641,3 +649,91 @@ def test_an_l1_draft_reply_body_is_recorded_as_the_draft():
     w2 = World(proposal={**reply, "action_class": "restart_service", "payload": {"service": "x"}})
     w2.run(config("L1"))
     assert "draft" not in w2.recorder.calls[1][2]  # no body, no draft
+
+
+# --- run ids, estimates, enforced caps, unknown actions, persisted demotion ---------------
+
+
+def test_run_ids_cannot_collide():
+    assert make_run_id("a-b", "c", 1) != make_run_id("a", "b-c", 1)  # the old "-" join made these equal
+    assert parse_run_id(make_run_id("triage", "sig-1", 3)) == ("triage", "sig-1", 3)
+    for bad in (("a~b", "s", 1), ("a", "s~t", 1), ("", "s", 1), ("a", "", 1), ("a", "s", 0), ("a", "s", "x"),
+                ("a", "s", "01"), ("a", "s", -1)):
+        with pytest.raises(ValueError):
+            make_run_id(*bad)
+    with pytest.raises(ValueError):
+        parse_run_id("no-separators")
+
+
+def test_estimate_comes_from_the_pack_unless_the_instance_says_otherwise():
+    assert config().estimate_cost == 0.5
+    assert config(estimate_cost=0.2).estimate_cost == 0.2
+
+
+def test_a_charge_the_cap_refuses_stops_with_budget_exhausted_after_the_real_proposal():
+    w = World(decision=approved(), cost=0.8, budget=Budget(enforce=True))
+    result = w.run(config())
+    reason = "run budget exhausted: charging 0.8 would pass the cap (the charge was refused)"
+    assert result.status == "budget_exhausted"
+    assert w.recorder.calls == [incident(), proposal(), decision("budget_exhausted", reason)]
+    assert w.decider.calls == [] and w.mediator.calls == []
+    assert w.budget.recorded == [(DAY_SCOPE, 0.8)]  # only the scope the cap refused went uncharged
+
+
+def test_an_unknown_mediator_result_records_outcome_unknown_without_asking_the_checker():
+    w = World(decision=approved())
+    w.mediator = Mediator(MediatorResult("unknown", "possible duplicate prevented; check the external system"))
+    result = w.run(config())
+    assert result.status == "executed" and result.outcome == "unknown"
+    assert w.outcome.calls == []
+    assert w.recorder.calls[-2][2]["status"] == "unknown"
+    assert w.recorder.calls[-1] == rec(
+        "outcome", record_id=f"out-{RUN}", incident_id=f"inc-{RUN}", action_id=f"act-{RUN}", result="unknown",
+        resolution="possible duplicate prevented; check the external system", check_method="outcome_check",
+        checked_at=iso(60))
+
+
+DEMOTED_AT = at(-3600)
+EARLIER = Demotion(DEMOTED_AT, DEMOTED_PREFIX + "context gate failed: freshness:s: last run 3d ago")
+
+
+def test_a_demotion_persists_when_the_gate_passes_again():
+    log = Demotions(EARLIER)
+    w = World(decision=approved(), demotions=log)
+    result = w.run(config())
+    reason = persisted_demotion_reason(EARLIER)
+    assert result.mode == "shadow" and result.status == "observed" and not result.mediated
+    assert reason.startswith(DEMOTED_PREFIX) and "freshness:s: last run 3d ago" in reason
+    assert w.recorder.calls[1] == proposal(mode="shadow", mode_reason=reason)
+    assert log.calls == [("triage", GEN)]
+    assert w.decider.calls == [] and w.mediator.calls == []
+
+
+def test_a_persisted_reason_does_not_nest_and_keeps_the_original_cause():
+    once = persisted_demotion_reason(EARLIER)
+    twice = persisted_demotion_reason(Demotion(at(0), once))
+    assert twice.count("demotion persists") == 1 and "freshness:s: last run 3d ago" in twice
+
+
+def test_promotion_after_the_demotion_lifts_it():
+    w = World(decision=approved(), demotions=Demotions(EARLIER))
+    result = w.run(config(promoted_at=at(-60)))
+    assert result.mode == "live" and result.status == "executed"
+
+
+def test_a_demotion_after_the_promotion_still_counts():
+    w = World(decision=approved(), demotions=Demotions(EARLIER))
+    assert w.run(config(promoted_at=at(-7200))).mode == "shadow"
+
+
+def test_without_a_recorded_demotion_a_live_run_stays_live():
+    w = World(decision=approved(), demotions=Demotions(None))
+    assert w.run(config()).mode == "live"
+
+
+def test_a_failing_gate_demotes_even_when_a_demotion_is_already_recorded():
+    log = Demotions(EARLIER)
+    w = World(decision=approved(), gate=FAIL, demotions=log)
+    w.run(config())
+    assert w.recorder.calls[1][2]["mode_reason"] == DEMOTED_PREFIX + FAIL.message
+    assert log.calls == []

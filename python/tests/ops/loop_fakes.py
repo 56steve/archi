@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from archi.ops.context_gate import GateCheck, GateResult
 from archi.ops.escalation import Escalation
-from archi.ops.loop import BudgetCheck, MediatorResult, OutcomeResult, ReadResult
+from archi.ops.loop import BudgetCheck, BudgetExceeded, Demotion, MediatorResult, OutcomeResult, ReadResult
 from archi.ops.record import OpsRecords
 
 T0 = datetime(2026, 10, 25, 12, 0, 0, tzinfo=timezone.utc)
@@ -130,16 +130,31 @@ class Halt:
 
 
 class Budget:
-    def __init__(self, spent=None, raises=None):
+    """enforce=True refuses a charge that would pass a cap, as cost_budget does."""
+
+    def __init__(self, spent=None, raises=None, enforce=False):
         self.spent, self.raises, self.checks, self.recorded = dict(spent or {}), raises, [], []
+        self.enforce, self.caps = enforce, {}
 
     def check(self, scope, estimate, cap):
         self.checks.append((scope, estimate, cap))
+        self.caps[scope] = cap
         if self.raises:
             raise self.raises
         spent = self.spent.get(scope, 0.0)
         return BudgetCheck(spent + estimate <= cap, f"{spent:g} of {cap:g} spent")
 
     def record(self, scope, cost):
+        if self.enforce and self.spent.get(scope, 0.0) + cost > self.caps.get(scope, float("inf")) + 1e-9:
+            raise BudgetExceeded(scope)
         self.recorded.append((scope, cost))
         self.spent[scope] = self.spent.get(scope, 0.0) + cost
+
+
+class Demotions:
+    def __init__(self, latest=None):
+        self.value, self.calls = latest, []
+
+    def latest(self, automation, generation):
+        self.calls.append((automation, generation))
+        return self.value

@@ -109,6 +109,9 @@ class AutomationConfig:
     estimate_cost: float = 0.0
     #: how long an L2 escalation waits for a person
     timeout_seconds: int = 4 * 3600
+    #: when an operator last promoted the automation to live (`archi ops promote`). A demotion
+    #: recorded after this keeps the automation in shadow.
+    promoted_at: Optional[datetime] = None
 
     @classmethod
     def from_block(
@@ -118,7 +121,8 @@ class AutomationConfig:
         instance_level: Optional[str] = None,
         mode: str = "shadow",
         timeout_seconds: int = 4 * 3600,
-        estimate_cost: float = 0.0,
+        promoted_at: Optional[datetime] = None,
+        estimate_cost: Optional[float] = None,
     ) -> "AutomationConfig":
         """From a rendered automation block (`<instance>/automations/<name>.yaml`)."""
         defs = block.get("action_class_definitions") or {}
@@ -140,8 +144,10 @@ class AutomationConfig:
             proposal_schema=dict(block.get("proposal_schema") or {}),
             cost_per_run=budget.get("cost_per_run"),
             cost_per_day=budget.get("cost_per_day"),
-            estimate_cost=estimate_cost,
+            # what one proposal is expected to cost: the pack's per-run budget unless the instance says otherwise
+            estimate_cost=float(estimate_cost if estimate_cost is not None else (budget.get("cost_per_run") or 0.0)),
             timeout_seconds=timeout_seconds,
+            promoted_at=promoted_at,
         )
 
 
@@ -167,10 +173,35 @@ def resolved_level(automation: AutomationConfig) -> str:
     return effective
 
 
+#: Joins the parts of a run id. Neither an automation name nor a signal id may contain it, so
+#: two different (automation, signal, attempt) triples never make the same id.
+RUN_ID_SEPARATOR = "~"
+
+
 def make_run_id(automation: str, signal_id: str, attempt: int | str) -> str:
     """The run id for (automation, signal, attempt). Deterministic: a replay of the
-    same workflow gets the same id, so its records overwrite rather than duplicate."""
-    return f"{automation}-{signal_id}-{attempt}"
+    same workflow gets the same id, so its records overwrite rather than duplicate.
+
+    Raises ValueError for an empty part, a part holding the separator `~`, or an attempt
+    that is not a positive integer."""
+    for label, part in (("automation", automation), ("signal id", signal_id)):
+        if not isinstance(part, str) or not part or RUN_ID_SEPARATOR in part:
+            raise ValueError(f"{label} {part!r} must be a non-empty string without {RUN_ID_SEPARATOR!r}")
+    try:
+        n = int(attempt)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1 or str(n) != str(attempt):
+        raise ValueError(f"attempt {attempt!r} must be a positive integer")
+    return RUN_ID_SEPARATOR.join((automation, signal_id, str(n)))
+
+
+def parse_run_id(run_id: str) -> tuple[str, str, int]:
+    """(automation, signal id, attempt) of a run id made by make_run_id."""
+    parts = run_id.split(RUN_ID_SEPARATOR)
+    if len(parts) != 3:
+        raise ValueError(f"{run_id!r} is not an ops run id")
+    return parts[0], parts[1], int(parts[2])
 
 
 # --- the signal and the proposal ---------------------------------------------------
@@ -301,12 +332,30 @@ class BudgetCheck:
     detail: str = ""
 
 
+class BudgetExceeded(Exception):
+    """`BudgetGuard.record` refused the charge: it would take the scope past its cap."""
+
+
+@dataclass(frozen=True)
+class Demotion:
+    """The latest recorded demotion of an automation to shadow."""
+
+    at: datetime
+    #: the `mode_reason` the demoted run's proposal carried
+    reason: str
+
+
+class DemotionLog(Protocol):
+    def latest(self, automation: str, generation: str) -> Optional[Demotion]:
+        """The most recent demotion of `automation` in the ops records at `generation`."""
+
+
 class BudgetGuard(Protocol):
     def check(self, scope: str, estimate: float, cap: float) -> BudgetCheck:
         """Would spending `estimate` more in `scope` stay within `cap`?"""
 
     def record(self, scope: str, cost: float) -> None:
-        """Charge `cost` to `scope`."""
+        """Charge `cost` to `scope`. Raises BudgetExceeded if the cap would be passed (nothing is charged)."""
 
 
 class GateChecker(Protocol):
@@ -402,6 +451,8 @@ class Deps:
     halt: HaltCheck
     clock: Clock
     budget: BudgetGuard
+    #: where demotions are read from; None means demotions are not persisted
+    demotions: Optional[DemotionLog] = None
 
 
 class SystemClock:
@@ -426,6 +477,18 @@ class RunResult:
     records: tuple[str, ...] = ()
     mediated: bool = False
     outcome: Optional[str] = None
+
+
+PERSISTS = "demotion persists, last recorded "
+
+
+def persisted_demotion_reason(demotion: Demotion) -> str:
+    """The mode_reason of a run kept in shadow by an earlier demotion. It starts with
+    DEMOTED_PREFIX, so the next run finds this one as the latest demotion and the chain holds."""
+    core = demotion.reason[len(DEMOTED_PREFIX):] if demotion.reason.startswith(DEMOTED_PREFIX) else demotion.reason
+    if core.startswith(PERSISTS):  # already a persisted reason: keep the original cause once
+        core = core.split("): ", 1)[1] if "): " in core else core
+    return f"{DEMOTED_PREFIX}{PERSISTS}{_iso(demotion.at)} (until `archi ops promote`): {core}"
 
 
 def _iso(moment: datetime) -> str:
@@ -557,6 +620,14 @@ class _Run:
             self.mode_reason = (DEMOTED_PREFIX if self.mode == "live" else "context gate failed: ") + failure
             self.mode = "shadow"
 
+        if self.mode == "live" and failure is None and deps.demotions is not None:
+            demoted = deps.demotions.latest(a.name, self.generation)
+            if demoted is not None and (a.promoted_at is None or demoted.at > a.promoted_at):
+                # A failing gate demoted this automation earlier; a passing gate does not undo that.
+                # Only `archi ops promote` does (it stamps promoted_at after the demotion).
+                self.mode_reason = persisted_demotion_reason(demoted)
+                self.mode = "shadow"
+
         self.write_incident()
 
         # budget, before the model is asked: per run and per day
@@ -573,8 +644,13 @@ class _Run:
                 ProposeRequest(a.name, self.signal.as_dict(), read.context, self.generation, level))
         except Exception as exc:
             return self.stop(ERROR, f"proposer failed: {type(exc).__name__}: {exc}")
+        exceeded: Optional[BudgetExceeded] = None
         for scope, _ in scopes:
-            deps.budget.record(scope, proposed.cost)
+            try:
+                deps.budget.record(scope, proposed.cost)
+            except BudgetExceeded as exc:
+                exceeded = exc
+                exceeded_scope = scope
         try:
             proposal = validate_proposal(proposed.proposal, a, self.level, read.node_ids)
         except ProposalError as exc:
@@ -588,6 +664,11 @@ class _Run:
         )
 
         # the model call may have used up a cap: stop before anything is escalated or run
+        if exceeded is not None:
+            reason = (f"{exceeded_scope.split(':')[0]} budget exhausted: charging {proposed.cost:g} "
+                      "would pass the cap (the charge was refused)")
+            self.decide("budget_exhausted", reason)
+            return self.result("budget_exhausted", reason)
         for scope, cap in scopes:
             check = deps.budget.check(scope, 0.0, cap)
             if not check.ok:
@@ -677,7 +758,10 @@ class _Run:
             status=action.status, result=action.result, executed_at=self.now(),
         )
         try:
-            outcome = deps.outcome.check(signal=self.signal, action=action, generation=self.generation)
+            if action.status == "unknown":  # the mediator may have run; do not look to the checker for a verdict
+                outcome = OutcomeResult("unknown", action.result)
+            else:
+                outcome = deps.outcome.check(signal=self.signal, action=action, generation=self.generation)
         except Exception as exc:
             outcome = OutcomeResult("unknown", f"outcome check failed: {type(exc).__name__}: {exc}")
         self.write(
