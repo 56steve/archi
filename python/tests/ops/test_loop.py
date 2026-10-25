@@ -6,8 +6,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from archi.ops.escalation import Decision
+from archi.ops.escalation import Decision, Escalation
 from archi.ops.loop import (
+    MediationRefused,
     DEMOTED_PREFIX,
     AutomationConfig,
     Deps,
@@ -231,6 +232,7 @@ def test_l2_approved_runs_the_mediator_then_checks_the_outcome():
     assert w.mediator.calls == [{
         "action_class": "restart_service", "payload": {"service": "xrootd"}, "proposal_id": f"prop-{RUN}",
         "idempotency_key": RUN, "generation": GEN,
+        "escalation": Escalation("esc-1", f"prop-{RUN}", at(0), at(TIMEOUT)),
     }]
     assert w.decider.opened[0]["timeout_at"] == at(TIMEOUT)
     assert w.halt.calls == 2  # at the start, and as the first statement of the mediator step
@@ -601,3 +603,30 @@ def test_placeholder_proposals_are_marked_so_shadow_scoring_skips_them():
     _, _, attrs = w.recorder.calls[1]
     assert attrs["mode"] == "placeholder"  # shadow scoring reads only mode == "shadow"
     assert attrs["mode_reason"].startswith("placeholder: no proposal was made")
+
+
+# --- durable points and a refusing mediator step -------------------------------------
+
+
+def test_records_are_flushed_where_a_person_or_the_next_run_must_see_them():
+    w = World(decision=approved())
+    w.run(config())
+    # after the proposal (before the wait), after the decision, after the outcome
+    assert w.recorder.flushed_at == [2, 3, 5]
+
+
+def test_a_stopped_run_flushes_its_placeholder_and_decision_once():
+    w = World(budget=Budget({DAY_SCOPE: 9.8}))
+    w.run(config(estimate_cost=0.4))
+    assert w.recorder.flushed_at == [3]
+
+
+@pytest.mark.parametrize("verdict", ["halted", "timed_out", "error"])
+def test_a_mediator_step_that_refuses_supersedes_the_approval(verdict):
+    w = World(decision=approved())
+    w.mediator = Mediator(refuse=MediationRefused(verdict, "guard says no"))
+    result = w.run(config())
+    assert result.status == verdict and not result.mediated
+    assert w.recorder.calls[-1] == decision(
+        verdict, "guard says no; supersedes the approval by alice (esc-1)", at_=60, **ALICE)
+    assert w.recorder.calls[-2][2]["verdict"] == "approved" and "action" not in w.kinds

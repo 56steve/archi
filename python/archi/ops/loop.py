@@ -340,11 +340,25 @@ class MediatorResult:
     result: str = ""
 
 
+class MediationRefused(Exception):
+    """The mediator step refused to run (it re-checked halt or the escalation).
+
+    `verdict` is the decision recorded in place of the approval: `halted`,
+    `timed_out` or `error`.
+    """
+
+    def __init__(self, verdict: str, reason: str):
+        super().__init__(reason)
+        self.verdict, self.reason = verdict, reason
+
+
 class Mediator(Protocol):
     def execute(
         self, *, action_class: str, payload: Mapping[str, Any], proposal_id: str, idempotency_key: str,
-        generation: str,
-    ) -> MediatorResult: ...
+        generation: str, escalation: Optional[Escalation] = None,
+    ) -> MediatorResult:
+        """Run the action. May raise MediationRefused after re-checking halt and the
+        escalation (the durable step does both before it acts)."""
 
 
 @dataclass(frozen=True)
@@ -360,6 +374,10 @@ class OutcomeChecker(Protocol):
 class Recorder(Protocol):
     def add(self, kind: str, *, evidence: Iterable[Any] = (), **attrs: Any) -> str:
         """Add one ops record in `archi.ops.record.OpsRecords.add` format; return its node id."""
+
+    def flush(self) -> None:
+        """Make every record added so far durable (the loop calls it at each point where
+        a person or a later run must be able to see the state)."""
 
 
 class HaltCheck(Protocol):
@@ -444,6 +462,11 @@ class _Run:
         self.nodes.append(nid)
         return nid
 
+    def flush(self) -> None:
+        flush = getattr(self.deps.recorder, "flush", None)
+        if flush is not None:
+            flush()
+
     def result(self, status: str, reason: str = "", **extra: Any) -> RunResult:
         return RunResult(self.run_id, status, reason, level=self.level, mode=self.mode,
                          generation=self.generation, records=tuple(self.nodes), **extra)
@@ -464,25 +487,29 @@ class _Run:
     def run_level(self, status: str, reason: str) -> RunResult:
         """Stopped before reading anything: one incident, no generation (see module docstring)."""
         self.write_incident(f"run not started: {reason}")
+        self.flush()
         return self.result(status, reason)
 
-    def write_proposal(self, evidence: Iterable[Any], **attrs: Any) -> None:
+    def write_proposal(self, evidence: Iterable[Any], *, flush: bool = True, **attrs: Any) -> None:
         self.write("proposal", self.proposal_id, evidence=evidence, incident_id=self.incident_id,
                    autonomy_level=self.level, proposed_at=self.now(), **attrs)
         self.proposal_written = True
+        if flush:  # a person deciding on it, or the next run, must be able to see it
+            self.flush()
 
     def decide(self, verdict: str, reason: str, record_id: Optional[str] = None, **attrs: Any) -> None:
         attrs.setdefault("decided_at", self.now())
         self.write("decision", record_id or self.decision_id, proposal_id=self.proposal_id,
                    verdict=verdict, reason=reason, **attrs)
+        self.flush()
 
     def stop(self, verdict: str, reason: str) -> RunResult:
         """No real proposal: a placeholder (skipped by shadow scoring) and a decision."""
         note = f"placeholder: no proposal was made ({reason}); run mode {self.mode}"
         if self.mode_reason:
             note += f"; {self.mode_reason}"
-        self.write_proposal([self.incident_node], summary=f"no proposal: {reason}", mode=PLACEHOLDER_MODE,
-                            mode_reason=note)
+        self.write_proposal([self.incident_node], flush=False, summary=f"no proposal: {reason}",
+                            mode=PLACEHOLDER_MODE, mode_reason=note)
         self.decide(verdict, reason)
         return self.result(verdict, reason)
 
@@ -632,12 +659,12 @@ class _Run:
         if not allowed:
             return self.result(verdict, reason)
 
-        mediated, why = self._mediate(proposal)
+        mediated, why, refused = self._mediate(proposal, escalation)
         if mediated is None:
-            # one `halted` decision supersedes the approved one (same record id)
-            halted = f"{why}; supersedes the approval by {decision.decided_by} ({escalation_id})"
-            self.decide("halted", halted, escalation_id=escalation_id, **attrs)
-            return self.result("halted", halted)
+            # one decision supersedes the approved one (same record id)
+            reason = f"{why}; supersedes the approval by {decision.decided_by} ({escalation_id})"
+            self.decide(refused, reason, escalation_id=escalation_id, **attrs)
+            return self.result(refused, reason)
         action = mediated
         action_id = f"act-{self.run_id}"
         cls = a.action_classes.get(proposal.action_class or "")
@@ -656,21 +683,27 @@ class _Run:
             result=outcome.result, resolution=outcome.resolution or None, check_method="outcome_check",
             checked_at=self.now(),
         )
+        self.flush()
         return self.result("executed", f"mediator {action.status}", mediated=True, outcome=outcome.result)
 
-    def _mediate(self, proposal: Proposal) -> tuple[Optional[MediatorResult], str]:
-        """Run the mediator unless halted. The HaltCheck is the first statement, so
-        nothing can run between it and the external call (the durable step wraps this
-        method). Returns (result, "") or (None, why it did not run)."""
+    def _mediate(self, proposal: Proposal, escalation: Optional[Escalation]
+                 ) -> tuple[Optional[MediatorResult], str, str]:
+        """Run the mediator unless halted or refused. The HaltCheck is the first statement,
+        so nothing can run between it and the external call (the durable step wraps this
+        method; the real mediator step checks halt and the escalation again inside).
+        Returns (result, "", "") or (None, why it did not run, the verdict to record)."""
         try:
             if self.deps.halt.halted():
-                return None, "halted after approval, before the mediator ran"
+                return None, "halted after approval, before the mediator ran", "halted"
         except Exception as exc:
-            return None, f"halt check failed ({type(exc).__name__}: {exc}); failing closed"
+            return None, f"halt check failed ({type(exc).__name__}: {exc}); failing closed", "halted"
         try:
             return self.deps.mediator.execute(
                 action_class=proposal.action_class or "", payload=dict(proposal.payload),
                 proposal_id=self.proposal_id, idempotency_key=self.run_id, generation=self.generation or "",
-            ), ""
+                escalation=escalation,
+            ), "", ""
+        except MediationRefused as exc:
+            return None, exc.reason, exc.verdict
         except Exception as exc:
-            return MediatorResult("failed", f"{type(exc).__name__}: {exc}"), ""
+            return MediatorResult("failed", f"{type(exc).__name__}: {exc}"), "", ""

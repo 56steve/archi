@@ -80,11 +80,13 @@ class Decider:
 
 
 class Mediator:
-    def __init__(self, result=None):
-        self.calls, self.result = [], result or MediatorResult("succeeded", "restarted")
+    def __init__(self, result=None, refuse=None):
+        self.calls, self.result, self.refuse = [], result or MediatorResult("succeeded", "restarted"), refuse
 
     def execute(self, **kw):
         self.calls.append(kw)
+        if self.refuse:
+            raise self.refuse
         return self.result
 
 
@@ -101,7 +103,11 @@ class Recorder:
     """Records through the real OpsRecords, so the schema vets every record."""
 
     def __init__(self):
-        self.records, self.calls = OpsRecords(), []
+        self.records, self.calls, self.flushed_at = OpsRecords(), [], []
+
+    def flush(self):
+        self.flushes = getattr(self, "flushes", 0) + 1
+        self.flushed_at.append(len(self.calls))
 
     def add(self, kind, *, evidence=(), **attrs):
         evidence = list(evidence)
