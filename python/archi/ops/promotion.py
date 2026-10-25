@@ -19,6 +19,7 @@ and nothing is committed (the half-made change directory is left for the operato
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -50,7 +51,11 @@ def summary(report: Mapping[str, Any]) -> str:
 
 
 def _git(directory: Path, *args: str, run: Runner) -> subprocess.CompletedProcess:
-    return run(["git", "-C", str(directory), *args], capture_output=True, text=True)
+    """git in the instance repo, committing as archi does (`archi init` sets no user in the repo)."""
+    from archi.cli.init import _git_identity_env
+
+    return run(["git", "-C", str(directory), *args], capture_output=True, text=True,
+               env={**os.environ, **_git_identity_env()})
 
 
 def promote(
