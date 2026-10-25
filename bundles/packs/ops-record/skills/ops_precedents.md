@@ -12,7 +12,8 @@ Five subtypes, one per step of the operations loop. Every record has a
 
 - `ops_incident`: what broke. `entity` is the thing that broke (a site such
   as T2_US_MIT, a node, a service), `error_signature` the normalised error,
-  `status` open, mitigated or resolved, `ticket_keys` the tickets tracking it.
+  `status` open, mitigated, resolved or false_alarm (a person judged it not
+  a real problem), `ticket_keys` the tickets tracking it.
 - `ops_proposal`: what an automation proposed for an incident
   (`incident_id`): `action_class`, `payload`, `confidence`, `rollback`, and
   `evidence_ids`, the okg node ids it cited.
@@ -22,7 +23,8 @@ Five subtypes, one per step of the operations loop. Every record has a
 - `ops_action`: what the mediator ran for a proposal (`proposal_id`):
   `status` succeeded or failed, and its `result`.
 - `ops_outcome`: whether the incident (`incident_id`) was fixed: `result`
-  resolved, not_resolved, partial or unknown, and `resolution` in words.
+  resolved, not_resolved, partial, unknown or no_action_needed (a person
+  checked and nothing needed doing), and `resolution` in words.
   `check_method` ticket_resolution means a person resolved the ticket named
   in `ticket_key`.
 
