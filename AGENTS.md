@@ -1,4 +1,4 @@
-# archi-okg — working rules
+# archi (v3 line) — working rules
 
 Archi is the **HEP distribution of OKG**: connectors, enrichers, skills,
 schemas and bundles, shipped as the pip wheel `archi` built from
@@ -6,6 +6,12 @@ schemas and bundles, shipped as the pip wheel `archi` built from
 running services. It is installed onto an OKG deployment through a
 bundle; instances live in their own repositories and carry the
 configuration and secrets.
+
+This is `archi-physics/archi`, branch `archi_v3`. The v3 line was
+developed in `archi-physics/archi-okg` until 2026-10-25, when its `main`
+became this branch (ADR 0002 D1, PACT `r3-release-home`; the old tip of
+this branch is tag `archi_v3-pre-merge`). archi-okg takes no new commits
+and is being archived.
 
 | | |
 |---|---|
@@ -16,29 +22,25 @@ configuration and secrets.
 | `pact/changes/` | The change record. |
 | `docs/okg-alignment.md` | The okg-side program's window into this repo. |
 
-> **`CLAUDE.md` was removed.** It described a repository layout that no
-> longer exists — a branch, runbooks and PACT paths that are all gone
-> (see "What the old file got wrong" at the end). Claude Code and Codex
-> both read `AGENTS.md`; this is the one place working rules live. Do
-> not re-create `CLAUDE.md`.
+> **This file is the one place working rules live.** `CLAUDE.md` is a
+> single `@AGENTS.md` import, so Claude Code loads this file; Codex reads
+> it directly. Never put rules in `CLAUDE.md`. The old one was deleted
+> because it had drifted into describing a layout that no longer
+> existed (see "What the old file got wrong" at the end).
 
 ## Where work lands
 
-**PRs target `main`.** It is the only branch on the remote and the
-repository default.
+**PRs target `archi_v3`.** `pact/project.yaml` (`pr_policy.base`)
+says the same.
 
-The v3 program spec (`docs/adr/0001-archi-v3-program-spec.md`) says all
-Archi work lands on `archi_v3`, branched from `main`, and never on
-`main`. That was true of the **predecessor repository**,
-`archi-physics/archi`, where `main` served live v2 deployments. That
-program migrated here, and this repository *is* the v3 distribution —
-there is no v2 to protect and no `archi_v3` branch to protect it with.
-The ADR is kept as history; read its branch and cutover instructions as
-describing the old repo, not this one.
+`main` is the v2 application, the RAG chatbot. It serves live v2
+deployments, is the repository default, and takes only v2 fixes. Never
+open v3 work against it. At cutover the v3 line becomes `main` and v2
+moves to a `v2` branch (ADR 0002 D1, PACT `r3-release`). This section
+changes then, in the same PR as the cutover.
 
-Everything merged since this repo took over has gone to `main`. If you
-find yourself about to open a PR against anything else, that is the
-stale instruction talking.
+Do not open PRs against archi-okg either. Its `main` is frozen at
+`011f5d64`, the commit where this branch took the line over.
 
 ## Standing rules
 
@@ -94,11 +96,13 @@ Verbs: `new`, `view`, `evidence attach`, `check`, `approve`, `digest`.
 approval and computes the tier in one call. `approve` records approval
 as a `Pact-Approved` git commit trailer, not a ledger row.
 
-Unlike cms-kb, **`check` needs no `--base` here**: its default base
-resolves against this repo's `main`.
+**Pass `--base origin/archi_v3` to `check`.** Without it, `check`
+diffs against `origin/HEAD`, which is v2 `main` here. That diff holds
+the whole v3 line, so the tier and the evidence-head checks describe
+the wrong change.
 
 ```bash
-okg pact check <id>
+okg pact check <id> --base origin/archi_v3
 ```
 
 Two things that will otherwise waste your time:
@@ -116,7 +120,7 @@ Every change gets a manifest, before the branch has commits on it. The
 check that catches a missing one costs a command:
 
 ```bash
-git diff --name-only origin/main...HEAD | grep '^pact/changes/' || echo "NO PACT"
+git diff --name-only origin/archi_v3...HEAD | grep '^pact/changes/' || echo "NO PACT"
 ```
 
 ## Reporting
@@ -132,12 +136,12 @@ unintelligible description is not done.
 
 ## What the old file got wrong
 
-`CLAUDE.md` is deleted rather than edited because most of what it
-pointed at is gone. Recorded here so nobody restores it from memory:
+The old `CLAUDE.md` was deleted rather than edited because most of what
+it pointed at was gone. Recorded here so nobody restores it from memory:
 
 | it said | actually |
 |---|---|
-| PRs target `archi_v3`, never `main` | `main` is the only branch on the remote; every merged PR targets it |
+| PRs target `archi_v3`, never `main` | false in archi-okg, where `main` was the only branch; true again here since 2026-10-25 (see "Where work lands") |
 | `docs/runbooks/agent-*.md` are the backing contracts | there is no `docs/runbooks/` |
 | `pact/AGENTS.md` holds the PACT contract | no such file |
 | `pact/project.md` is human context | no such file |
