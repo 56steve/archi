@@ -46,11 +46,15 @@ not leave that directory (`..`, absolute paths and `~` are refused).
 | `prompt_fragment` | | Markdown appended to the chat system prompt. |
 | `credentials` | | Environment-variable **names** the pack reads. |
 
-Source templates may reference two kinds of answers: the base questions
+Source templates may reference three kinds of answers: the base questions
 every instance has (`deployment_name`, `postgres_dsn`, `archi_data_root`,
 `chat_site_name`, `chat_model`; see
-[`base/questions.yaml`](../python/archi/bundles/base/questions.yaml)) and the
-pack's own questions, by their local id (`${site_url}`).
+[`base/questions.yaml`](../python/archi/bundles/base/questions.yaml)), the
+pack's own questions, by their local id (`${site_url}`), and the questions of
+a pack listed in `requires.packs`, by their rendered id
+(`${git_code_repo_name}` for `git-code`'s `repo_name`). The last kind is
+checked when the packs are composed: a reference no selected pack asks stops
+the render.
 
 ## bundle.yaml
 

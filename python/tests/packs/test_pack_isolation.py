@@ -1,0 +1,218 @@
+"""Every context pack, installed alone on the base, publishes (acc.r3-packs-split.matrix).
+
+For each pack this renders a profile holding only that pack (and the packs it
+requires), installs it with okg into a fresh database, feeds it the fixture
+inputs in `pack_support.FIXTURES`, and runs the publish. It passes when okg
+publishes a generation, the deployment lints with zero blockers, and the
+pack's own coverage invariant holds on the published graph.
+
+Needs a real Postgres with okg's extensions (AKMON's image, see
+docs/cern-team-quickstart.md step 2), named by ARCHI_PACK_ISOLATION_DSN:
+
+    ARCHI_PACK_ISOLATION_DSN=postgresql://postgres:okg@127.0.0.1:5491/packtest
+
+The database in the DSN is dropped and re-created before each pack, so give
+the test a server of its own whose `cron.database_name` is that database.
+Without the variable the install tests are skipped; the fixture-coverage
+test below always runs.
+"""
+import json
+import os
+from pathlib import Path
+
+import pytest
+import yaml
+
+from archi.bundles import discovery
+from archi.bundles.render import render
+from archi.bundles.resolve import resolve
+from packs.pack_support import (
+    BUNDLES_DIR,
+    FIXTURES,
+    PACKS_DIR,
+    FixtureServer,
+    context_packs,
+    git,
+    invariants,
+    manifest,
+    required_subtypes,
+    run_okg,
+)
+
+DSN = os.environ.get("ARCHI_PACK_ISOLATION_DSN")
+needs_db = pytest.mark.skipif(not DSN, reason="ARCHI_PACK_ISOLATION_DSN is not set")
+
+
+def test_every_context_pack_has_isolation_fixtures():
+    missing = sorted(set(context_packs()) - set(FIXTURES))
+    assert not missing, f"packs with no fixture inputs in pack_support.FIXTURES: {missing}"
+
+
+def _recreate_database(dsn: str) -> None:
+    import psycopg
+    from psycopg import sql
+
+    parts = psycopg.conninfo.conninfo_to_dict(dsn)
+    name = parts["dbname"]
+    admin = psycopg.conninfo.make_conninfo(dsn, dbname="postgres")
+    with psycopg.connect(admin, autocommit=True) as conn:
+        conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+
+
+def _closure(pack: str) -> list[str]:
+    out: list[str] = []
+
+    def visit(name):
+        for dep in manifest(name).get("requires", {}).get("packs", []):
+            visit(dep)
+        if name not in out:
+            out.append(name)
+
+    visit(pack)
+    return out
+
+
+def _solo_catalog(tmp_path: Path, pack: str):
+    """The shipped packs plus a bundle whose only default is `pack`.
+
+    The bundle is added without `validate_bundle`: a pack that needs a
+    credential may not be a real bundle's only default, but alone on the
+    base with its fixture inputs is exactly what this test installs.
+    """
+    from archi.bundles.manifest import read_bundle
+
+    bdir = tmp_path / "bundles" / f"solo-{pack}"
+    bdir.mkdir(parents=True)
+    (bdir / "bundle.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": f"solo-{pack}",
+                "version": "0.1.0",
+                "description": f"{pack} alone on the base.",
+                "packs": {"default": [pack]},
+                "okg": ">=0.2.0,<0.3",
+            }
+        )
+    )
+    catalog = discovery.from_roots([PACKS_DIR], [])
+    assert catalog.problems == [], [str(p) for p in catalog.problems]
+    bundle, problems = read_bundle(bdir)
+    assert problems == [], problems
+    catalog.bundles[bundle.name] = bundle
+    return catalog
+
+
+def _flag(qid: str) -> str:
+    return "--" + qid.replace("_", "-")
+
+
+def _report(result) -> str:
+    return f"exit {result.returncode}\nstdout:\n{result.stdout[-4000:]}\nstderr:\n{result.stderr[-4000:]}"
+
+
+@needs_db
+@pytest.mark.parametrize("pack", sorted(FIXTURES))
+def test_pack_installs_alone_and_publishes(tmp_path, pack):
+    _recreate_database(DSN)
+    catalog = _solo_catalog(tmp_path, pack)
+    resolution = resolve(catalog, [f"solo-{pack}"])
+    assert resolution.pack_names == tuple(_closure(pack))
+
+    instance = tmp_path / "instance"
+    deployments = instance / "deployments"
+    data = tmp_path / "data"
+    data.mkdir()
+    deployments.mkdir(parents=True)
+    git(["init", "-q"], deployments)
+    git(["commit", "-q", "--allow-empty", "-m", "baseline"], deployments)
+
+    rendered = render(resolution, instance, name=f"solo-{pack}")
+
+    server = FixtureServer()
+    try:
+        answers = {"postgres_dsn": DSN, "archi_data_root": str(data)}
+        for name in resolution.pack_names:
+            for local, value in FIXTURES[name](data, server).items():
+                answers[name.replace("-", "_") + "_" + local] = value
+        known = {q["id"] for q in rendered.composition.questions}
+        assert set(answers) <= known, sorted(set(answers) - known)
+
+        env = {k: v for k, v in os.environ.items() if k != "OKG_PROFILES_DIR"}
+        env.update(
+            HOME=str(tmp_path),
+            OKG_DEPLOYMENTS_DIR=str(deployments),
+            OKG_DSN=DSN,
+            ARCHI_DATA_ROOT=str(data),
+            GIT_AUTHOR_NAME="pack-test", GIT_AUTHOR_EMAIL="pack-test@example.org",
+            GIT_COMMITTER_NAME="pack-test", GIT_COMMITTER_EMAIL="pack-test@example.org",
+        )
+        env.update(_fixture_env(resolution.pack_names, tmp_path))
+        flags = []
+        for qid, value in answers.items():
+            flags += [_flag(qid), value]
+        install = run_okg(
+            ["install", "--profile", rendered.name, "--deployment-name", "px",
+             "--deployments-root", str(deployments), "--non-interactive", "--json", *flags],
+            cwd=instance, env=env,
+        )
+        # The first install stops before publishing: okg will not publish from
+        # configuration that is not committed yet (quickstart step 3).
+        deployment = deployments / "px"
+        assert (deployment / "source_registry.yaml").is_file(), _report(install)
+        git(["add", "-A"], deployments)
+        git(["commit", "-q", "-m", "px deployment config"], deployments)
+
+        ingest = run_okg(["ingest", "--deployment", "px", "--json"], cwd=instance, env=env)
+        assert ingest.returncode == 0, _report(ingest)
+        publish = run_okg(["run", "--once", "--deployment", "px", "--apply", "--json"],
+                          cwd=instance, env=env)
+        assert publish.returncode == 0, _report(publish)
+
+        status = run_okg(["status", "--deployment", "px", "--json"], cwd=instance, env=env)
+        assert status.returncode == 0, _report(status)
+        published = json.loads(status.stdout)["publishing"]
+        assert published["latest_published_status"] == "published", published
+
+        lint = run_okg(["deployment", "lint", str(deployment), "--json"], cwd=instance, env=env)
+        findings = json.loads(lint.stdout)["findings"]
+        blockers = [f for f in findings if f["severity"] in ("blocker", "error")]
+        assert blockers == [], blockers
+
+        _assert_coverage_invariants_hold(resolution.pack_names, json.loads(status.stdout))
+    finally:
+        server.close()
+
+
+def _fixture_env(pack_names, tmp_path: Path) -> dict:
+    """Environment the fixtures need (credential env vars hold dummies)."""
+    env = {}
+    for name in pack_names:
+        env.update(FIXTURE_ENV.get(name, {}))
+    return env
+
+
+#: Credential variables a pack's sources read, set to dummy values so a
+#: fixture run gets past the credential check. Never real values.
+FIXTURE_ENV: dict[str, dict[str, str]] = {}
+
+
+def _assert_coverage_invariants_hold(pack_names, status: dict) -> None:
+    """Each selected pack's invariants are installed, and what they require is live.
+
+    okg blocks a publish on any failing error-severity invariant
+    (`_build_invariant_summary` in okg's publisher), so a published generation
+    already says they held. This also checks they were installed at all, and
+    reads the live subtypes the way okg reports them: bare SQL on the graph
+    is refused outside a pinned checkout.
+    """
+    import psycopg
+
+    live = {row["subtype"]: row["count"] for row in status["live_subtypes"]}
+    with psycopg.connect(DSN) as conn:
+        installed = {row[0] for row in conn.execute("SELECT name FROM okg.invariants")}
+    for name in pack_names:
+        for inv in invariants(name):
+            assert inv["name"] in installed, f"{name}: invariant {inv['name']} was not installed"
+            for subtype in required_subtypes(inv):
+                assert live.get(subtype, 0) > 0, f"{name}: {inv['name']} requires live {subtype}: {live}"

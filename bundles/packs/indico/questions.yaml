@@ -1,0 +1,29 @@
+init_questions:
+  - id: base_url
+    prompt: Indico server URL
+    type: string
+    required: false
+    default: https://indico.cern.ch
+    description: |
+      The Indico instance to read. Use the server's root URL, with no
+      trailing path.
+
+  - id: event_ids
+    prompt: Indico event ids to read, as a YAML list (for example '["1716863"]')
+    type: string
+    required: false
+    default: "[]"
+    description: |
+      Events read directly, by the numeric id in their URL
+      (indico.cern.ch/event/<id>/). Give event ids, category ids or both:
+      with neither, the source is refused when it is built and the publish
+      stops, rather than ingesting nothing quietly.
+
+  - id: category_ids
+    prompt: Indico category ids to read, as a YAML list (for example '["100"]')
+    type: string
+    required: false
+    default: "[]"
+    description: |
+      Categories walked for the events they hold, by the numeric id in
+      their URL (indico.cern.ch/category/<id>/).
