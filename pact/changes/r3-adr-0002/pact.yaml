@@ -51,5 +51,22 @@ tasks:
     Test plan:
 
     - diff review [evidence: manual]'
-evidence: []
+evidence:
+- kind: manual
+  requirement: req.r3-adr-0002.adr
+  status: pass
+  head: b78eb8b50fb4fd498771b680d9b7311af4adc620
+  at: '2026-10-25T03:07:52+00:00'
+  note: 'acc.r3-adr-0002.approved. ADR 0002 merged into archi_v3 in #674 (merge 09299e4e); its
+    history carries the Pact-Approved trailer for r3-adr-0002 (ddc29f85), re-approved after #764 in
+    d2c7eaf3 (#765). The ADR records D1-D13, the composition rules (§3.3), the context-layer
+    properties (§6) and the autonomy levels (§7.3).'
+- kind: manual
+  requirement: req.r3-adr-0002.supersede
+  status: pass
+  head: b78eb8b50fb4fd498771b680d9b7311af4adc620
+  at: '2026-10-25T03:07:52+00:00'
+  note: 'acc.r3-adr-0002.note. The ADR 0001 header note links ADR 0002 and lists the replaced sections:
+    the branch rules (header Branch line, invariant 2, §14), the §6.3 repository table, the W6
+    one-bundle rule, and W8 folded into the operations layer. The rest of ADR 0001 is unchanged.'
 decisions: []
