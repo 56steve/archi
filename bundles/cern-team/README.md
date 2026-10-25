@@ -43,7 +43,7 @@ is `docs/cern-team-demo.md` at the repo top level. Summary:
 ```bash
 # 0. Prerequisites: okg venv with the archi wheel installed; a
 #    Postgres reachable by DSN; an empty database for the instance.
-export OKG_PROFILES_DIR=<archi repo>/bundles
+archi render --bundle cern-team --instance .   # ./profiles/cern-team; run okg from here
 export OKG_DEPLOYMENTS_DIR=<your deployments root>
 export OKG_DSN=postgresql://<user>:<password>@<host>:<port>/<db>
 

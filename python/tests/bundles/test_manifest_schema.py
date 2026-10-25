@@ -20,7 +20,7 @@ from archi.bundles.manifest import (
     validate_pack,
 )
 
-from bundle_support import CATALOG, edit_yaml
+from bundles.bundle_support import CATALOG, edit_yaml
 
 
 def _catalog(root: Path) -> discovery.Catalog:

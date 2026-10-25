@@ -24,7 +24,7 @@ import yaml
 from archi.bundles.render import PROFILES_DIR, render
 from archi.bundles.resolve import resolve
 
-from bundle_support import (
+from bundles.bundle_support import (
     CATALOG,
     CERN_TEAM,
     CERN_TEAM_DEFAULT,

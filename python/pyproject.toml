@@ -20,6 +20,14 @@ dependencies = [
 archi = "archi.bundles.cli:main"
 archi-profiles-dir = "archi.paths:main"
 
+# Where `archi bundles list` finds packs and bundles (ADR 0002 3.4). A
+# third-party package registers its own roots in these same groups.
+[project.entry-points."archi.packs"]
+archi = "archi.paths:packs_dir"
+
+[project.entry-points."archi.bundles"]
+archi = "archi.paths:profiles_dir"
+
 [project.optional-dependencies]
 # ADR SS10's definition of done mandates `black --check .` and `isort --check .`;
 # without this extra neither tool (nor pytest) is declared anywhere, so the DoD

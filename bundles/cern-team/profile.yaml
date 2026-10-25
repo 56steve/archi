@@ -10,7 +10,7 @@
 #
 # Install (the okg profile installer consumes this file):
 #
-#   export OKG_PROFILES_DIR="$(archi-profiles-dir)"
+#   archi render --bundle cern-team --instance .   # ./profiles/cern-team
 #   okg install --profile cern-team \
 #     --deployment-name <slug> \
 #     --postgres-dsn 'postgresql://...'
