@@ -65,7 +65,7 @@ tasks:
 
     - python/tests/packs/test_pack_isolation.py [evidence: executed_test]'
 evidence:
-- kind: pytest
+- kind: executed_test
   requirement: req.r3-packs-split.packs
   status: pass
   command: python -m pytest python/tests/packs/test_packs.py -q
