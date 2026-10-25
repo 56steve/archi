@@ -3,7 +3,15 @@ from datetime import datetime, timedelta, timezone
 
 from archi.ops.context_gate import GateCheck, GateResult
 from archi.ops.escalation import Escalation
-from archi.ops.loop import BudgetCheck, BudgetExceeded, Demotion, MediatorResult, OutcomeResult, ReadResult
+from archi.ops.loop import (
+    BudgetCheck,
+    BudgetExceeded,
+    Demotion,
+    MediatorResult,
+    OutcomeResult,
+    PromotionState,
+    ReadResult,
+)
 from archi.ops.record import OpsRecords
 
 T0 = datetime(2026, 10, 25, 12, 0, 0, tzinfo=timezone.utc)
@@ -152,9 +160,26 @@ class Budget:
 
 
 class Demotions:
+    """The synchronous log (`record`) and the published history (`value`); `latest` is the later of the two."""
+
     def __init__(self, latest=None):
-        self.value, self.calls = latest, []
+        self.value, self.calls, self.recorded = latest, [], []
 
     def latest(self, automation, generation):
         self.calls.append((automation, generation))
-        return self.value
+        logged = [Demotion(at, reason) for (name, _, at, reason) in self.recorded if name == automation]
+        return max([d for d in [self.value, *logged] if d is not None], key=lambda d: d.at, default=None)
+
+    def record(self, automation, run_id, at, reason):
+        self.recorded.append((automation, run_id, at, reason))
+
+
+class Promotions:
+    """Approves the named PACT change (or not), as the okg ledger would."""
+
+    def __init__(self, approved=True, at=None, reason=""):
+        self.state, self.calls = (approved, at, reason), []
+
+    def check(self, automation, change):
+        self.calls.append((automation, change))
+        return PromotionState(*self.state)

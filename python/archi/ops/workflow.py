@@ -89,6 +89,7 @@ from archi.ops.loop import (
     MediationRefused,
     MediatorResult,
     OutcomeResult,
+    PromotionState,
     ReadResult,
     Signal,
     make_run_id,
@@ -139,6 +140,14 @@ def _runtime() -> RuntimeConfig:
 
 def _io(rt: RuntimeConfig) -> OpsIO:
     return OpsIO(rt.dsn, rt.deployment)
+
+
+def is_applied_replay(error: Exception, row: Mapping[str, Any]) -> bool:
+    """Is this EscalationStateError the applied -> applied move of a replay? Only then it is harmless:
+    the row is `applied` now and the error says it was asked to become applied. Any other state error
+    (a decided row that cannot be consumed, a timed-out one, ...) takes the loop's error path."""
+    status = (row.get("attrs") or {}).get("status")
+    return status == "applied" and "applied" in str(error)
 
 
 def expected_escalation_id(workflow_id: str) -> str:
@@ -373,15 +382,33 @@ def _decision_step(escalation_id: str) -> dict:
 
 @deployment_step(name="archi_ops_demotions")
 def _demotion_step(automation: str, generation: str) -> Optional[dict]:
-    """The latest recorded demotion of the automation to shadow, from the pinned ops records."""
-    rows = _io(_runtime()).read_nodes("ops_proposal", generation, {"automation": automation, "mode": "shadow"})
-    best = None
-    for row in rows:
+    """The latest demotion of the automation to shadow: the synchronous log (`archi_ops.demotions`,
+    written when a run is demoted) and the published ops records at the pinned generation (history).
+    The later of the two."""
+    io = _io(_runtime())
+    candidates = []
+    logged = io.latest_demotion(automation)
+    if logged:
+        candidates.append(logged)
+    for row in io.read_nodes("ops_proposal", generation, {"automation": automation, "mode": "shadow"}):
         attrs = row.get("attrs") or {}
         reason, at = attrs.get("mode_reason") or "", attrs.get("proposed_at")
-        if reason.startswith(DEMOTED_PREFIX) and at and (best is None or _moment(at) > _moment(best["at"])):
-            best = {"at": at, "reason": reason}
-    return best
+        if reason.startswith(DEMOTED_PREFIX) and at:
+            candidates.append({"at": at, "reason": reason})
+    return max(candidates, key=lambda c: _moment(c["at"])) if candidates else None
+
+
+@deployment_step(name="archi_ops_demotion_record")
+def _demotion_record_step(automation: str, run_id: str, at: str, reason: str) -> None:
+    _io(_runtime()).record_demotion(automation, run_id, _moment(at), reason)
+
+
+@deployment_step(name="archi_ops_promotion")
+def _promotion_step(automation: str) -> dict:
+    """Is the automation's promotion approved? Read from okg's decision ledger, in a step."""
+    rt = _runtime()
+    change = rt.settings[automation].promotion
+    return _io(rt).promotion_status(rt.instance_dir, change)
 
 
 @deployment_step(name="archi_ops_outcome")
@@ -455,6 +482,15 @@ class _Demotions:
         d = _demotion_step(automation, generation)
         return None if d is None else Demotion(_moment(d["at"]), d["reason"])
 
+    def record(self, automation: str, run_id: str, at: datetime, reason: str) -> None:
+        _demotion_record_step(automation, run_id, at.isoformat(), reason)
+
+
+class _Promotions:
+    def check(self, automation: str, change: Optional[str]) -> PromotionState:
+        d = _promotion_step(automation)
+        return PromotionState(bool(d["approved"]), _moment(d["at"]) if d.get("at") else None, d.get("reason") or "")
+
 
 class _Recorder:
     """Collects records in memory; `flush` submits them all in one admission step.
@@ -501,18 +537,23 @@ class _Decider:
 
     def wait(self, escalation: Escalation) -> Decision:
         timeout_error, state_error = _private_okg()[1], _private_okg()[3]
+        replay_error: Optional[Exception] = None
         remaining = max((escalation.timeout_at - _Clock().now()).total_seconds(), 1.0)
         try:
             request_escalation(subject=subject_for(escalation.proposal_id), reason=self.reason,
                                decision_schema=DECISION_SCHEMA_REF, timeout_seconds=remaining)
         except timeout_error:
             pass  # okg marked the row timed_out; the row below says so
-        except state_error:
+        except state_error as exc:
+            replay_error = exc
+        row = _decision_step(escalation.escalation_id)  # a step: a replay sees the row it saw before
+        if replay_error is not None and not is_applied_replay(replay_error, row):
+            raise replay_error
+        if replay_error is not None:
             # A replay of a run whose escalation okg already marked `applied`: request_escalation asks to move
             # applied -> applied and is refused (upstream ask O14). The recv already returned the recorded
-            # decision, so the row is read below exactly as in the first execution.
+            # decision, so the row is read exactly as in the first execution.
             log.info("request_escalation: escalation %s was already applied; reading its row", escalation.escalation_id)
-        row = _decision_step(escalation.escalation_id)  # a step: a replay sees the row it saw before
         return decision_from_row(escalation.escalation_id, row["subject"], row["attrs"])
 
 
@@ -552,7 +593,7 @@ def real_deps(rt: RuntimeConfig, automation: str) -> Deps:
     return Deps(gate=_Gate(automation), reader=reader, proposer=_Proposer(automation),
                 decider=_Decider(rt), mediator=_Mediator(automation), outcome=_Outcome(automation),
                 recorder=_Recorder(reader), halt=_Halt(), clock=_Clock(), budget=_Budget(),
-                demotions=_Demotions())
+                demotions=_Demotions(), promotions=_Promotions())
 
 
 # --- the workflows ---------------------------------------------------------------------
@@ -586,6 +627,7 @@ def scan_once(rt: RuntimeConfig, io: Any, start: Callable[[str, str, dict], None
     the scanner schedule is paused (a manual trigger of a paused schedule still runs this function).
     """
     started: list[str] = []
+    io.ensure_tables()  # idempotent: the worker does not depend on init or halt having made them
     if any(io.schedules().values()):
         say("archi_ops_scan: halted (schedule paused); starting nothing")
         return started

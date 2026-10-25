@@ -71,6 +71,8 @@ from archi.ops.levels import LevelError, level_problem, rank, resolve_level
 from archi.ops.proposers import Proposed, ProposeRequest, Proposer
 
 MODES = ("shadow", "live")
+#: Proposal `mode_reason` prefix when `mode: live` was not honoured: no approved promotion.
+NOT_PROMOTED_PREFIX = "not promoted: "
 #: Proposal `mode_reason` prefix when a live automation was dropped to shadow.
 DEMOTED_PREFIX = "demoted to shadow: "
 #: Proposal `mode` of a placeholder written when no real proposal exists.
@@ -109,9 +111,12 @@ class AutomationConfig:
     estimate_cost: float = 0.0
     #: how long an L2 escalation waits for a person
     timeout_seconds: int = 4 * 3600
-    #: when an operator last promoted the automation to live (`archi ops promote`). A demotion
-    #: recorded after this keeps the automation in shadow.
+    #: when an operator last approved the automation's promotion. The runtime fills it from the PACT
+    #: ledger (`Deps.promotions`); a demotion recorded after it keeps the automation in shadow.
     promoted_at: Optional[datetime] = None
+    #: the PACT change `archi ops promote` opened (ops.yaml `promotion`). `mode: live` counts only while
+    #: this change is approved.
+    promotion_change: Optional[str] = None
 
     @classmethod
     def from_block(
@@ -122,6 +127,7 @@ class AutomationConfig:
         mode: str = "shadow",
         timeout_seconds: int = 4 * 3600,
         promoted_at: Optional[datetime] = None,
+        promotion_change: Optional[str] = None,
         estimate_cost: Optional[float] = None,
     ) -> "AutomationConfig":
         """From a rendered automation block (`<instance>/automations/<name>.yaml`)."""
@@ -148,6 +154,7 @@ class AutomationConfig:
             estimate_cost=float(estimate_cost if estimate_cost is not None else (budget.get("cost_per_run") or 0.0)),
             timeout_seconds=timeout_seconds,
             promoted_at=promoted_at,
+            promotion_change=promotion_change,
         )
 
 
@@ -347,7 +354,26 @@ class Demotion:
 
 class DemotionLog(Protocol):
     def latest(self, automation: str, generation: str) -> Optional[Demotion]:
-        """The most recent demotion of `automation` in the ops records at `generation`."""
+        """The most recent demotion of `automation`: the synchronous log first, then the ops records
+        published at `generation` (history). A demotion never waits for a publish to take effect."""
+
+    def record(self, automation: str, run_id: str, at: datetime, reason: str) -> None:
+        """Write a demotion to the synchronous log, once per run id."""
+
+
+@dataclass(frozen=True)
+class PromotionState:
+    """Whether an operator approved the automation's promotion (an approved PACT change)."""
+
+    approved: bool
+    #: when it was approved
+    at: Optional[datetime] = None
+    #: why not, when it is not approved
+    reason: str = ""
+
+
+class PromotionCheck(Protocol):
+    def check(self, automation: str, change: Optional[str]) -> PromotionState: ...
 
 
 class BudgetGuard(Protocol):
@@ -453,6 +479,8 @@ class Deps:
     budget: BudgetGuard
     #: where demotions are read from; None means demotions are not persisted
     demotions: Optional[DemotionLog] = None
+    #: where promotions are checked; when given, `mode: live` counts only for an approved promotion
+    promotions: Optional[PromotionCheck] = None
 
 
 class SystemClock:
@@ -616,13 +644,30 @@ class _Run:
             failure = gate.message
         elif gate is not None and gate.generation not in (None, self.generation):
             failure = f"context gate read generation {gate.generation} but the run pinned {self.generation}"
+        promoted_at = a.promoted_at
+        if self.mode == "live" and deps.promotions is not None:
+            # `mode: live` in ops.yaml is a request. It counts only while the PACT change that
+            # `archi ops promote` opened is approved by a person; hand-editing ops.yaml is not enough.
+            promotion = deps.promotions.check(a.name, a.promotion_change)
+            if not promotion.approved:
+                self.mode_reason = f"{NOT_PROMOTED_PREFIX}{promotion.reason}"
+                self.mode = "shadow"
+            else:
+                promoted_at = promotion.at or promoted_at
         if failure is not None:
-            self.mode_reason = (DEMOTED_PREFIX if self.mode == "live" else "context gate failed: ") + failure
+            if self.mode == "live":
+                self.mode_reason = DEMOTED_PREFIX + failure
+                if deps.demotions is not None:
+                    # written now, not at the next publish: the next run reads it
+                    deps.demotions.record(a.name, self.run_id, deps.clock.now(), self.mode_reason)
+            else:
+                earlier = f"{self.mode_reason}; " if self.mode_reason else ""
+                self.mode_reason = f"{earlier}context gate failed: {failure}"
             self.mode = "shadow"
 
         if self.mode == "live" and failure is None and deps.demotions is not None:
             demoted = deps.demotions.latest(a.name, self.generation)
-            if demoted is not None and (a.promoted_at is None or demoted.at > a.promoted_at):
+            if demoted is not None and (promoted_at is None or demoted.at > promoted_at):
                 # A failing gate demoted this automation earlier; a passing gate does not undo that.
                 # Only `archi ops promote` does (it stamps promoted_at after the demotion).
                 self.mode_reason = persisted_demotion_reason(demoted)

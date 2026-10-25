@@ -9,7 +9,7 @@ from archi.cli import init as init_mod
 from archi.cli import up as up_mod
 from archi.stack.okg import OkgError
 
-from test_stack import _runner, instance  # noqa: F401  (the fixture and the fake compose runner)
+from .test_stack import _runner, instance  # noqa: F401  (the fixture and the fake compose runner)
 
 DBOS_MISSING = 'relation "dbos.workflow_status" does not exist'
 
@@ -79,6 +79,8 @@ def test_up_bootstraps_the_runtime_once_the_database_is_ready_when_an_automation
 
     monkeypatch.setattr(up_mod, "commit_all", lambda d, m: False)
     monkeypatch.setattr(up_mod, "has_automations", lambda d: True)
+    tables = []
+    monkeypatch.setattr(up_mod, "ensure_ops_tables", lambda inst, secrets: tables.append(inst.name))
     monkeypatch.setattr(stack_compose, "wait_for", lambda *a, **k: None)
     monkeypatch.setattr(stack_compose, "http_status", lambda url, **k: 0)
     monkeypatch.setattr(webui, "admin_token", lambda *a, **k: "tok")
@@ -90,6 +92,7 @@ def test_up_bootstraps_the_runtime_once_the_database_is_ready_when_an_automation
 
     up_mod.up(instance, echo=lines.append, compose_runner=_runner({}), okg_runner=okg)
     assert calls[0] == ["runtime", "bootstrap"] and ["chat", "sync"] in calls
+    assert tables == [instance.name]  # created again after the bootstrap, idempotently
     assert any("no runtime worker yet" in line for line in lines)
 
 
@@ -106,3 +109,45 @@ def test_up_without_an_automation_does_not_touch_the_runtime(monkeypatch, instan
     up_mod.up(instance, echo=lambda _: None, compose_runner=_runner({}),
               okg_runner=lambda cmd, **kw: calls.append(cmd[1:3]) or subprocess.CompletedProcess(cmd, 0, "", ""))
     assert ["runtime", "bootstrap"] not in calls
+
+
+def test_install_and_publish_creates_the_archi_ops_tables_after_the_bootstrap_when_an_automation_is_selected(
+        monkeypatch, instance):
+    from archi.stack.instance import read_env
+
+    monkeypatch.setattr(init_mod, "commit_all", lambda d, m: False)
+    monkeypatch.setattr(init_mod.stack_compose, "write_stack_files", lambda i: None)
+    monkeypatch.setattr(init_mod, "role_password", lambda path, role: "pw")
+    monkeypatch.setattr(init_mod, "write_env", lambda path, values: None)
+    monkeypatch.setattr(init_mod, "has_automations", lambda d: True)
+    order = []
+    okg = Okg(bootstrapped=True)
+    real_run = okg.run
+    okg.run = lambda *a, **k: order.append(a[0] if a[0] != "runtime" else "runtime bootstrap") or real_run(*a, **k)
+    monkeypatch.setattr(init_mod, "ensure_ops_tables", lambda inst, secrets: order.append("ops tables"))
+    init_mod.install_and_publish(instance, read_env(instance.env_path), okg, "prof", {}, echo=lambda _: None)
+    assert order == ["install", "provision", "runtime bootstrap", "ops tables", "db"]
+
+
+def test_install_and_publish_without_an_automation_makes_no_ops_tables(monkeypatch, instance):
+    from archi.stack.instance import read_env
+
+    monkeypatch.setattr(init_mod, "commit_all", lambda d, m: False)
+    monkeypatch.setattr(init_mod.stack_compose, "write_stack_files", lambda i: None)
+    monkeypatch.setattr(init_mod, "role_password", lambda path, role: "pw")
+    monkeypatch.setattr(init_mod, "write_env", lambda path, values: None)
+    monkeypatch.setattr(init_mod, "has_automations", lambda d: False)
+    monkeypatch.setattr(init_mod, "ensure_ops_tables", lambda *a: pytest.fail("no automation, no tables"))
+    init_mod.install_and_publish(instance, read_env(instance.env_path), Okg(bootstrapped=True), "prof", {},
+                                 echo=lambda _: None)
+
+
+def test_ensure_ops_tables_runs_the_ddl_against_the_instance_database(monkeypatch, instance):
+    from archi.ops import okg_io
+    from archi.stack.instance import graph_dsn, read_env
+
+    seen = {}
+    monkeypatch.setattr(okg_io.OpsIO, "ensure_tables", lambda self: seen.update(dsn=self.dsn, name=self.deployment))
+    secrets = read_env(instance.env_path)
+    init_mod.ensure_ops_tables(instance, secrets)
+    assert seen == {"dsn": graph_dsn(instance, secrets), "name": instance.name}

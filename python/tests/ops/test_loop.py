@@ -26,6 +26,7 @@ from archi.ops.loop import (
 from archi.ops.proposers import StubProposer
 from loop_fakes import (
     Demotions,
+    Promotions,
     FAIL,
     GEN,
     PASS,
@@ -101,7 +102,7 @@ def config(level="L2", mode="live", **over):
 
 class World:
     def __init__(self, proposal=PROPOSAL, gate=PASS, decision=None, after=60, halt=(False,), budget=None,
-                 cost=0.1, clock=None, gate_raises=None, pin_raises=None, nodes=None, demotions=None, **decider):
+                 cost=0.1, clock=None, gate_raises=None, pin_raises=None, nodes=None, demotions=None, promotions=None, **decider):
         self.clock = clock or Clock()
         self.gate, self.reader = Gate(gate, gate_raises), Reader(pin_raises, **({"nodes": nodes} if nodes else {}))
         self.proposer = StubProposer({"default": proposal, "cost": cost})
@@ -110,10 +111,11 @@ class World:
         self.recorder, self.halt = Recorder(), Halt(*halt)
         self.budget = budget or Budget()
         self.demotions = demotions
+        self.promotions = promotions
 
     def run(self, automation, run_id=RUN):
         deps = Deps(self.gate, self.reader, self.proposer, self.decider, self.mediator, self.outcome,
-                    self.recorder, self.halt, self.clock, self.budget, self.demotions)
+                    self.recorder, self.halt, self.clock, self.budget, self.demotions, self.promotions)
         return run_once(automation, SIGNAL, deps, run_id=run_id)
 
     @property
@@ -737,3 +739,57 @@ def test_a_failing_gate_demotes_even_when_a_demotion_is_already_recorded():
     w.run(config())
     assert w.recorder.calls[1][2]["mode_reason"] == DEMOTED_PREFIX + FAIL.message
     assert log.calls == []
+
+
+def test_a_demotion_takes_effect_before_it_is_published():
+    """The first run's demotion is in the synchronous log; a second run starts at once, with nothing published."""
+    log = Demotions(None)
+    first = World(decision=approved(), gate=FAIL, demotions=log)
+    first.run(config())
+    assert [(name, run_id) for name, run_id, _, _ in log.recorded] == [("triage", RUN)]
+    assert log.recorded[0][3] == DEMOTED_PREFIX + FAIL.message
+    second = World(decision=approved(), demotions=log)  # the gate passes now; no published record exists
+    result = second.run(config(), run_id=make_run_id("triage", "sig-2", 1))
+    assert result.mode == "shadow" and result.status == "observed" and second.decider.calls == []
+    assert second.recorder.calls[1][2]["mode_reason"].startswith(DEMOTED_PREFIX + PERSISTS_MARK)
+    assert log.recorded and len(log.recorded) == 1  # a persisted shadow run does not write a new demotion
+
+
+PERSISTS_MARK = "demotion persists"
+
+
+def test_live_without_an_approved_promotion_runs_in_shadow_and_says_why():
+    promotions = Promotions(approved=False, reason="the PACT change promote-x is awaiting_review")
+    w = World(decision=approved(), promotions=promotions)
+    result = w.run(config(promotion_change="promote-x"))
+    reason = "not promoted: the PACT change promote-x is awaiting_review"
+    assert result.mode == "shadow" and result.status == "observed" and not result.mediated
+    assert w.recorder.calls[1] == proposal(mode="shadow", mode_reason=reason)
+    assert promotions.calls == [("triage", "promote-x")]
+    assert w.decider.calls == [] and w.mediator.calls == []
+
+
+def test_an_approved_promotion_makes_live_count():
+    w = World(decision=approved(), promotions=Promotions(approved=True, at=at(-60)))
+    assert w.run(config(promotion_change="promote-x")).mode == "live"
+
+
+def test_a_shadow_automation_never_asks_about_promotion():
+    promotions = Promotions(approved=False)
+    World(promotions=promotions).run(config(mode="shadow", level="L0"))
+    assert promotions.calls == []
+
+
+def test_the_approval_time_lifts_an_earlier_demotion_and_a_later_demotion_still_counts():
+    earlier = Demotions(Demotion(at(-3600), DEMOTED_PREFIX + "x"))
+    assert World(decision=approved(), demotions=earlier, promotions=Promotions(True, at(-60))).run(config()).mode == "live"
+    later = Demotions(Demotion(at(-3600), DEMOTED_PREFIX + "x"))
+    assert World(decision=approved(), demotions=later, promotions=Promotions(True, at(-7200))).run(config()).mode == "shadow"
+
+
+def test_a_failing_gate_on_an_unpromoted_automation_adds_to_the_reason_and_records_no_demotion():
+    log = Demotions(None)
+    w = World(gate=FAIL, demotions=log, promotions=Promotions(False, reason="no promotion"))
+    w.run(config())
+    assert w.recorder.calls[1][2]["mode_reason"] == "not promoted: no promotion; context gate failed: " + FAIL.message
+    assert log.recorded == []

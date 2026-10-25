@@ -397,3 +397,16 @@ def test_submit_passes_the_idempotency_key(monkeypatch):
     cmd = seen["cmd"]
     assert cmd[cmd.index("--idempotency-key") + 1] == "wf|record-1"
     assert cmd[cmd.index("--max-wait-seconds") + 1] == "20"
+
+
+def test_ops_yaml_names_the_promotion_change_and_a_hand_written_promoted_at_is_refused(instance):
+    inst, _, _ = instance
+    write_instance(inst, {"fixture-triage": "L2"},
+                   {"automations": {"fixture-triage": {"mode": "live", "promotion": "promote-x"}}})
+    rt = load_runtime({"ARCHI_INSTANCE": str(inst), "OKG_DSN": "postgresql://x"})
+    config = rt.automation("fixture-triage")
+    assert (config.mode, config.promotion_change, config.promoted_at) == ("live", "promote-x", None)
+    write_instance(inst, ops_yaml={"automations": {"fixture-triage": {"mode": "live",
+                                                                       "promoted_at": "2026-10-25T00:00:00Z"}}})
+    with pytest.raises(RuntimeConfigError, match="unknown keys"):
+        read_settings(inst)

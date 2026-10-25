@@ -238,6 +238,14 @@ def has_automations(instance_dir: Path) -> bool:
         return False
 
 
+def ensure_ops_tables(instance: Instance, secrets: Mapping[str, str]) -> None:
+    """Create the `archi_ops` tables (signals, halts, mediations, demotions) in the graph database.
+    Idempotent. Without them every approved L2 run would end as an error at its mediator step."""
+    from archi.ops.okg_io import OpsIO
+
+    OpsIO(graph_dsn(instance, secrets), instance.name).ensure_tables()
+
+
 def provision(okg: Okg, name: str, *, runtime: bool, echo: Callable[[str], None]):
     """`okg provision`, and with an automation pack (runtime enabled from the start) the one hand step.
 
@@ -283,7 +291,10 @@ def install_and_publish(
     # okg publishes only from committed configuration; the install just wrote it.
     stack_compose.write_stack_files(instance)
     commit_all(instance_dir, f"archi init: okg deployment {name}")
-    result = provision(okg, name, runtime=has_automations(instance_dir), echo=echo)
+    runtime = has_automations(instance_dir)
+    result = provision(okg, name, runtime=runtime, echo=echo)
+    if runtime:
+        ensure_ops_tables(instance, secrets)
     if result.returncode == 8:
         echo("note: published, but the publish held the publisher lock past okg's capacity "
              "bar (okg provision exit 8, capacity_warning); the generation is published")

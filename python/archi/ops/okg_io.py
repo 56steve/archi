@@ -22,17 +22,21 @@ with the upstream ask (docs/ops-runtime-akmon-asks.md) that removes it:
 | raw SQL on `okg.deployment_cost_caps` and `okg.deployment_cost_ledger` | `day_spend` | O4: cost attribution per actor |
 | `dbos.DBOSClient` (schedules, workflow lists, cancel) | `schedules`, `pause`, `resume`, `runs`, `run_input`, `cancel`, `cancel_unconfirmed_admission`, `requeue_cancelled_signals` | O5: a first-class kill switch |
 | the `okg_admission_submit` workflow name and its input | `cancel_unconfirmed_admission` | O13: a queued admission blocks the next worker start |
+| `okg pact view <change> --format status --json` (`derived_state`) | `promotion_status` | none: documented CLI; its JSON shape is not versioned |
+| raw SQL on `okg.pact_decisions` (when a change was approved) | `promotion_status` | O15: say when and by whom a PACT change was approved |
 | `okg doctor --check sources` JSON (`sources[].coverage.watermark`) | `doctor_sources` | none: documented CLI output, but its shape is not versioned |
 
 The tables archi creates itself are in the `archi_ops` schema of the deployment
-database: `signals`, `halts`, `mediations`.
+database: `signals`, `halts`, `mediations`, `demotions`.
 """
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from archi.ops.control import LIVE_RUN_STATES, RunInfo
@@ -63,6 +67,15 @@ CREATE TABLE IF NOT EXISTS archi_ops.mediations (
     result          text,
     started_at      timestamptz NOT NULL DEFAULT now(),
     finished_at     timestamptz
+);
+-- a demotion to shadow, written when it happens (a run reads it at once; the published ops records
+-- carry the same history later)
+CREATE TABLE IF NOT EXISTS archi_ops.demotions (
+    automation text NOT NULL,
+    run_id     text NOT NULL,
+    demoted_at timestamptz NOT NULL,
+    reason     text NOT NULL,
+    PRIMARY KEY (automation, run_id)
 );
 -- schedules `archi ops halt` paused, so `resume` leaves alone any an operator paused earlier
 CREATE TABLE IF NOT EXISTS archi_ops.halts (
@@ -331,6 +344,52 @@ class OpsIO:
         with self.connect() as conn:
             conn.execute("UPDATE archi_ops.mediations SET status = %s, result = %s, finished_at = now() "
                          "WHERE idempotency_key = %s", (status, result, key))
+
+    # --- demotions and promotions --------------------------------------------
+
+    def record_demotion(self, automation: str, run_id: str, at: datetime, reason: str) -> None:
+        with self.connect() as conn:
+            conn.execute("INSERT INTO archi_ops.demotions (automation, run_id, demoted_at, reason) "
+                         "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING", (automation, run_id, at, reason))
+
+    def latest_demotion(self, automation: str) -> Optional[dict]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT demoted_at, reason FROM archi_ops.demotions WHERE automation = %s "
+                               "ORDER BY demoted_at DESC LIMIT 1", (automation,)).fetchone()
+        return {"at": row[0].isoformat(), "reason": row[1]} if row else None
+
+    def promotion_status(self, instance_dir: Path, change: Optional[str]) -> dict:
+        """Is the PACT change `archi ops promote` opened approved? `{approved, at, reason}`.
+
+        Approved means okg's decision ledger derives the change as `retired` (an approve verdict).
+        Anything unreadable is not approved.
+        """
+        if not change:
+            return {"approved": False, "at": None, "reason": "ops.yaml names no promotion change; run "
+                    "`archi ops promote <automation>` and have an operator approve the change it opens"}
+        env = {**os.environ, "OKG_PACT_QUIET_NUDGE": "1", "OKG_PACT_GRAPH_DEPLOYMENT": self.deployment,
+               "OKG_DSN": self.dsn}
+        env.setdefault("OKG_DEPLOYMENTS_DIR", str(Path(instance_dir) / "deployments"))
+        done = subprocess.run([self.okg or _okg(), "pact", "--root", str(instance_dir), "view", change,
+                               "--format", "status", "--json"], capture_output=True, text=True, env=env,
+                              cwd=str(instance_dir))
+        try:
+            derived = json.loads(done.stdout)["derived_state"]
+        except (ValueError, KeyError, TypeError):
+            return {"approved": False, "at": None, "reason": f"could not read the state of PACT change {change}: "
+                    f"{(done.stderr or done.stdout)[-300:].strip()}"}
+        state = derived.get("state")
+        if state != "retired" or not derived.get("authoritative"):
+            return {"approved": False, "at": None, "reason": (
+                f"PACT change {change} is {state}"
+                + ("" if derived.get("authoritative") else " (the ledger was not consulted)")
+                + f"; an operator approves it with `okg pact decide {change} --verdict approve`")}
+        with self.connect() as conn:
+            row = conn.execute("SELECT decided_at FROM okg.pact_decisions WHERE change_id = %s AND verdict = 'approve' "
+                               "ORDER BY id DESC LIMIT 1", (change,)).fetchone()
+        if row is None:
+            return {"approved": False, "at": None, "reason": f"PACT change {change} has no approve verdict in the ledger"}
+        return {"approved": True, "at": row[0].isoformat(), "reason": ""}
 
     def mark_signal(self, automation: str, signal_id: str, status: str) -> None:
         with self.connect() as conn:

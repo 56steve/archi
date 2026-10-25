@@ -271,7 +271,10 @@ def test_the_escalation_id_follows_okgs_rule():
 class ScanIO:
     def __init__(self, signals, runs=(), paused=False):
         self.signals, self._runs, self.paused = dict(signals), list(runs), paused
-        self.marked = []
+        self.marked, self.ensured = [], 0
+
+    def ensure_tables(self):
+        self.ensured += 1
 
     def schedules(self):
         return {"archi_ops_scan": self.paused}
@@ -310,6 +313,12 @@ def test_a_run_in_flight_holds_back_its_automations_next_signal():
     io = ScanIO({"a": [sig("s1")], "b": [sig("s3")]}, runs=[RunInfo("a~s0~1", "a", "PENDING")])
     out = wf.scan_once(rt("a", "b"), io, lambda *a: None, say=lambda m: None)
     assert out == ["b~s3~1"]
+
+
+def test_the_scanner_makes_the_archi_ops_tables_before_anything_else_even_when_paused():
+    io = ScanIO({"a": [sig("s1")]}, paused=True)
+    wf.scan_once(rt("a"), io, lambda *a: None, say=lambda m: None)
+    assert io.ensured == 1
 
 
 def test_a_paused_scanner_starts_nothing():
@@ -369,3 +378,71 @@ def test_any_other_error_from_request_escalation_still_propagates_to_the_loop(mo
     monkeypatch.setattr(wf, "_Clock", lambda: SimpleNamespace(now=lambda: T0))
     with pytest.raises(RuntimeError, match="db down"):
         wf._Decider(None).wait(Escalation("esc-1", "prop-1", OPENED, DEADLINE))
+
+
+def test_only_the_applied_to_applied_replay_is_tolerated(monkeypatch):
+    class StateError(Exception):
+        pass
+
+    monkeypatch.setattr(wf, "_private_okg", lambda: (None, RuntimeError, None, StateError))
+    monkeypatch.setattr(wf, "_Clock", lambda: SimpleNamespace(now=lambda: T0))
+
+    def wait_with(status, message):
+        monkeypatch.setattr(wf, "request_escalation", lambda **kw: (_ for _ in ()).throw(StateError(message)))
+        subject, attrs = row(status=status)
+        monkeypatch.setattr(wf, "_decision_step", lambda esc_id: {"found": True, "subject": subject, "attrs": attrs})
+        return wf._Decider(None).wait(Escalation("esc-1", "prop-1", OPENED, DEADLINE))
+
+    assert wait_with("applied", "escalation esc-1: applied -> applied is illegal").status == "approved"
+    for status in ("decided", "pending", "timed_out"):
+        with pytest.raises(StateError):
+            wait_with(status, "escalation esc-1 is in status 'decided'; expected applied")
+    with pytest.raises(StateError):  # an applied row but an error that is about something else
+        wait_with("applied", "escalation esc-1 is in status 'pending'; expected decided")
+
+
+def test_is_applied_replay():
+    assert wf.is_applied_replay(Exception("applied -> applied"), {"attrs": {"status": "applied"}})
+    assert not wf.is_applied_replay(Exception("applied -> applied"), {"attrs": {"status": "decided"}})
+    assert not wf.is_applied_replay(Exception("anything"), {"attrs": {"status": "applied"}})
+    assert not wf.is_applied_replay(Exception("applied"), {"attrs": None})
+
+
+def test_promotion_is_read_from_the_ledger_through_a_step(monkeypatch):
+    monkeypatch.setattr(wf, "_promotion_step", lambda a: {"approved": True, "at": "2026-10-25T11:00:00+00:00", "reason": ""})
+    state = wf._Promotions().check("triage", "promote-x")
+    assert state.approved and state.at == datetime(2026, 10, 25, 11, tzinfo=timezone.utc)
+    monkeypatch.setattr(wf, "_promotion_step", lambda a: {"approved": False, "at": None, "reason": "awaiting_review"})
+    state = wf._Promotions().check("triage", "promote-x")
+    assert (state.approved, state.at, state.reason) == (False, None, "awaiting_review")
+
+
+def test_a_demotion_is_logged_through_a_step(monkeypatch):
+    seen = []
+    monkeypatch.setattr(wf, "_demotion_record_step", lambda *a: seen.append(a))
+    wf._Demotions().record("triage", "triage~s~1", T0, "demoted to shadow: x")
+    assert seen == [("triage", "triage~s~1", T0.isoformat(), "demoted to shadow: x")]
+
+
+def test_the_demotion_step_takes_the_later_of_the_log_and_the_published_history(monkeypatch):
+    class Io:
+        def __init__(self, logged, published):
+            self.logged, self.published = logged, published
+
+        def latest_demotion(self, automation):
+            return self.logged
+
+        def read_nodes(self, subtype, generation, where):
+            return [{"attrs": {"mode_reason": r, "proposed_at": at}} for r, at in self.published]
+
+    def step(io):
+        monkeypatch.setattr(wf, "_io", lambda rt: io)
+        monkeypatch.setattr(wf, "_runtime", lambda: None)
+        return wf._demotion_step("triage", "gen-1")
+
+    old = ("demoted to shadow: old", "2026-10-25T10:00:00Z")
+    new_logged = {"at": "2026-10-25T11:00:00+00:00", "reason": "demoted to shadow: logged"}
+    assert step(Io(new_logged, [old]))["reason"] == "demoted to shadow: logged"
+    assert step(Io(None, [old, ("not a demotion", "2026-10-25T12:00:00Z")]))["reason"] == "demoted to shadow: old"
+    assert step(Io({"at": "2026-10-25T09:00:00+00:00", "reason": "demoted to shadow: stale log"}, [old]))["reason"] == "demoted to shadow: old"
+    assert step(Io(None, [])) is None

@@ -15,7 +15,7 @@ database and imports no okg:
           mode: live              # shadow (default) | live
           timeout_seconds: 60     # how long an L2 escalation waits
           estimate_cost: 0.1      # checked against the budget before each proposal (default: the pack's cost_per_run)
-          promoted_at: 2026-10-26T09:00:00Z  # set by `archi ops promote`; a demotion recorded after it holds
+          promotion: promote-scratch-triage-20261026t090000z  # set by `archi ops promote`; live counts only while that PACT change is approved
           proposer: {kind: stub, fixture: {...}}   # see archi.ops.proposers.StubProposer
           outcome: {kind: marker}                  # the outcome check (stub for now)
           test_gate_seconds: 0    # TEST ONLY: wait this long for a release message just before the mediator step
@@ -52,8 +52,8 @@ class AutomationSettings:
     mode: str = "shadow"
     timeout_seconds: int = 4 * 3600
     estimate_cost: Optional[float] = None
-    #: when `archi ops promote` last set the automation live
-    promoted_at: Optional[datetime] = None
+    #: the PACT change `archi ops promote` opened; `mode: live` counts only while it is approved
+    promotion: Optional[str] = None
     #: test-only: the run waits on DBOS topic `archi_ops_test_gate` for this long between the
     #: loop's decision and the mediator step, so a test can change the world in that window
     test_gate_seconds: float = 0.0
@@ -77,7 +77,7 @@ class RuntimeConfig:
         return load_automation(
             self.instance_dir, name, instance_level=raw_levels(self.instance_dir).get(name),
             mode=s.mode, timeout_seconds=s.timeout_seconds, estimate_cost=s.estimate_cost,
-            promoted_at=s.promoted_at,
+            promotion_change=s.promotion,
         )
 
 
@@ -107,7 +107,7 @@ def read_settings(instance_dir: Path) -> dict[str, AutomationSettings]:
     for name, body in (data.get("automations") or {}).items():
         body = body or {}
         unknown = sorted(set(body) - {"mode", "timeout_seconds", "estimate_cost", "proposer", "outcome",
-                                  "promoted_at", "test_gate_seconds"})
+                                  "promotion", "test_gate_seconds"})
         if unknown:
             raise RuntimeConfigError(f"{path}: automations.{name}: unknown keys {unknown}")
         out[name] = AutomationSettings(
@@ -115,7 +115,7 @@ def read_settings(instance_dir: Path) -> dict[str, AutomationSettings]:
             mode=body.get("mode", "shadow"),
             timeout_seconds=int(body.get("timeout_seconds", 4 * 3600)),
             estimate_cost=None if body.get("estimate_cost") is None else float(body["estimate_cost"]),
-            promoted_at=parse_moment(body.get("promoted_at")),
+            promotion=body.get("promotion") or None,
             test_gate_seconds=float(body.get("test_gate_seconds", 0.0)),
             proposer=dict(body.get("proposer") or {}),
             outcome=dict(body.get("outcome") or {}),

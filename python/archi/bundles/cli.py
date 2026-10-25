@@ -218,7 +218,7 @@ def cmd_diff(args: argparse.Namespace) -> int:
     return 0 if drift.clean else 1
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(load_ops: bool = True) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="archi", description="Archi pack and bundle tooling.")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -291,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     from archi.cli import register
 
-    register(sub, roots)
+    register(sub, roots, load_ops)
     return parser
 
 
@@ -300,7 +300,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Progress lines interleave with okg and compose output in order.
     sys.stdout.reconfigure(line_buffering=True)
-    args = build_parser().parse_args(argv)
+    # Only the ops command needs archi.cli.ops (and what it pulls in); every other command skips it.
+    wanted = sys.argv[1:] if argv is None else argv
+    args = build_parser(load_ops="ops" in wanted).parse_args(argv)
     finalize(args)
     return args.func(args)
 

@@ -9,9 +9,11 @@
     archi ops pending              escalations waiting for a person
     archi ops approve ESC [--note] answer an escalation about an ops proposal of this instance
     archi ops reject  ESC [--note]
-    archi ops promote AUTOMATION   set a shadow automation live: needs a passing shadow report, records
-                                   the operator's approval as a PACT decision in the instance repo
-                                   and commits ops.yaml (see archi.ops.promotion)
+    archi ops promote AUTOMATION   ask for a shadow automation to go live: needs a passing shadow report;
+                                   opens a PACT change in the instance repo holding the report and the
+                                   thresholds, names it in ops.yaml and stops. An operator approves the
+                                   change (`okg pact decide`, a step archi never takes); the runtime
+                                   counts `mode: live` only while it is approved (archi.ops.promotion)
 
 decided_by is the OS user. `--as X` is recorded as "<os user> for X": nothing authenticates the
 caller until okg offers an authenticated proposal API (docs/ops-runtime-akmon-asks.md, O3), so a
@@ -38,6 +40,7 @@ from typing import Any, Callable, Collection, Mapping, Optional
 
 import yaml
 
+from archi.cli import OPS_HELP
 from archi.ops.control import BudgetUsage, build_status, halt_plan, resume_plan
 from archi.ops.escalation import OPEN_STATES, SUBJECT_PREFIX
 from archi.ops.loop import AutomationConfig, load_automation, parse_run_id
@@ -369,18 +372,20 @@ def cmd_promote(args: argparse.Namespace) -> int:
     from archi.ops.promotion import PromotionRefused, promote
 
     io = make_io(args)
+    thresholds = {"min_proposals": args.min_proposals, "min_answered": args.min_answered,
+                  "min_response_coverage": args.min_coverage, "min_agreement": args.min_agreement,
+                  "max_false_rate": args.max_false_rate}
     source = shadow_mod.okg_source(io.deployment, dsn=io.dsn)
     report = shadow_mod.score_automation(source, args.automation)
-    readiness = shadow_mod.promotion_readiness(
-        report, min_proposals=args.min_proposals, min_answered=args.min_answered,
-        min_response_coverage=args.min_coverage, min_agreement=args.min_agreement, max_false_rate=args.max_false_rate)
+    readiness = shadow_mod.promotion_readiness(report, **thresholds)
     try:
         result = promote(Path(args.instance), args.automation, report=report, readiness=readiness,
-                         principal=decider_name(args.as_user), note=args.note or "", dsn=io.dsn, deployment=io.deployment)
+                         thresholds=thresholds, principal=decider_name(args.as_user), note=args.note or "",
+                         dsn=io.dsn, deployment=io.deployment)
     except PromotionRefused as exc:
         raise OpsCliError(str(exc)) from exc
     print(json.dumps(result, indent=2) if args.json else
-          f"promoted {args.automation} to live (PACT {result['change']}, committed in the instance repo)")
+          f"opened PACT change {result['change']} (awaiting review) and committed it; {result['next']}")
     return 0
 
 
@@ -399,7 +404,7 @@ def _guarded(func: Callable[[argparse.Namespace], int]) -> Callable[[argparse.Na
 
 
 def add_parser(sub, roots=None) -> None:
-    ops = sub.add_parser("ops", help="status, halt, resume and answer the operations automations")
+    ops = sub.add_parser("ops", help=OPS_HELP)
     ops.add_argument("--instance", type=Path, default=Path("."), help="instance directory")
     ops.add_argument("--deployment", help="okg deployment name (default: the instance's name)")
     ops.add_argument("--dsn", help="graph database (default: $OKG_DSN, else the instance's secrets)")
@@ -431,7 +436,7 @@ def add_parser(sub, roots=None) -> None:
         p.add_argument("--min-agreement", type=float, default=0.8)
         p.add_argument("--max-false-rate", type=float, default=0.1)
 
-    command("promote", "set an automation live after a passing shadow report, as a PACT decision", cmd_promote,
+    command("promote", "ask for an automation to go live: opens a PACT change for an operator to approve", cmd_promote,
             extra=promote_args)
     command("resume", "resume the schedules halt paused", cmd_resume)
     command("pending", "escalations waiting for a person", cmd_pending)

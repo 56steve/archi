@@ -445,8 +445,8 @@ Settings that belong to the instance, not the pack:
 - `ops.yaml`, `automations.<name>`: `mode` (`shadow`, the default, or `live`),
   `timeout_seconds` (how long an L2 escalation waits; default 4 hours),
   `estimate_cost` (checked against the budget before each proposal; default
-  the pack's `budget.cost_per_run`), `promoted_at` (written by `archi ops
-  promote`), and the `proposer` and `outcome` stubs used until the
+  the pack's `budget.cost_per_run`), `promotion` (the PACT change `archi ops
+  promote` opened; see below), and the `proposer` and `outcome` stubs used until the
   model-backed ones land. `test_gate_seconds` is for tests only.
 
 One scanner (`archi_ops_scan`, a `@deployment_scheduled` workflow) starts the
@@ -456,8 +456,16 @@ workflow id `<automation>~<signal id>~<attempt>`. Neither an automation name
 nor a signal id may contain `~`, so two runs never share an id. Each external
 effect is a durable step. A live automation whose context gate fails runs in
 shadow for that run, with the failing checks in the proposal's `mode_reason`,
-and it stays in shadow, because the demotion is an ops record the next runs
-read, until `archi ops promote` stamps `promoted_at` after it.
+and it stays in shadow until a promotion approved after the demotion. The
+demotion is written to `archi_ops.demotions` when it happens, so the very next
+run sees it without waiting for a publish; the published ops records carry the
+same history.
+
+`mode: live` in `ops.yaml` is a request. The runtime counts it only while the
+PACT change named by `promotion:` is approved in okg's decision ledger; with no
+such change, or one still awaiting review, the run is in shadow and its
+proposal's `mode_reason` says "not promoted: ...". Hand-editing `ops.yaml` to say
+live changes nothing.
 
 An L2 proposal waits for an okg escalation. Only an approval made before the
 deadline, by a named person, for that proposal and escalation, reaches the
@@ -477,6 +485,11 @@ bundles validate` refuses an L2 action class whose tool is not): given the same
 key twice it has the effect once, because the step cannot know whether a
 crashed call finished.
 
+Runbook: an `unknown` outcome after a crash may mean the tool ran or did not.
+The attempt row is written before the call, so a crash between that row and the
+tool call leaves the same trace as a crash inside the call. Check the external
+system before acting; do not assume it ran, and do not assume it did not.
+
 ### Commands
 
 | Command | What it does |
@@ -486,7 +499,7 @@ crashed call finished.
 | `archi ops approve <id> [--note] [--as]` | Approve (`reject` refuses). Only an open escalation about an `ops_proposal:` of this instance's automations is accepted; a timed-out or already-decided one exits non-zero with the reason. |
 | `archi ops halt [--no-cancel]` | Pause the scanner, answer each open escalation of a run with `reject` (decided by `archi ops halt`), cancel runs that have not finished, record them as `halted`. It reports any escalation it could not close and exits non-zero. `--no-cancel` leaves runs in flight; their mediator step refuses to act. |
 | `archi ops resume` | Resume what halt paused. A cancelled run is not resumed; its signal runs again as attempt 2. |
-| `archi ops promote <automation>` | Needs a shadow report that passes `promotion_readiness` (thresholds: `--min-proposals` and the others). Records the operator's approval as a PACT decision in the instance repo (a small PACT change from `okg pact new` whose one test is the readiness check, with a junit file as its evidence; then `okg pact gate task-done` and `okg pact decide --verdict approve`), sets the automation live in `ops.yaml` and commits the change directory and `ops.yaml`. `.okg/` is ignored by the instance repo. Refuses without a passing report, and outside a git repository. |
+| `archi ops promote <automation>` | Needs a shadow report that passes `promotion_readiness` (thresholds: `--min-proposals` and the others). Opens a PACT change in the instance repo that holds the shadow report and the thresholds used, with the readiness verdict as its junit evidence, names it in `ops.yaml` (`mode: live`, `promotion: <change>`), commits both, and stops. An operator then approves it: `okg pact decide <change> --verdict approve --principal <name>`, a step archi never takes; commit the archived change. Until then the automation runs in shadow. Refuses without a passing report, and outside a repository. `.okg/` is ignored by the instance repo. |
 
 `decided_by` is the OS user. `--as X` is recorded as "<os user> for X", not as
 X: nothing authenticates the caller until okg offers an authenticated proposal
