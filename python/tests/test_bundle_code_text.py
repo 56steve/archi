@@ -1,4 +1,4 @@
-"""The code-text pack stores function bodies (okg#3982).
+"""The code-text pack stores function bodies.
 
 The code-symbols pack gives a function's name, signature, docstring and line
 numbers, never its body, so "what does this function do when the name
@@ -239,7 +239,7 @@ def test_the_shipped_parameters_store_a_function_body(tmp_path):
     lines = _MODULE.splitlines()
     start = int(attrs["start_line"])
     end = int(attrs["end_line"])
-    # The range may start at the blank lines above the `def` (okg#3982 item 5);
+    # The range may start at the blank lines above the `def`;
     # it must still cover the whole function.
     assert "def bucket_label" in "\n".join(lines[start - 1:end])
     assert "zanzibar" in "\n".join(lines[start - 1:end])

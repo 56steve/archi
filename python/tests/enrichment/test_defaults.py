@@ -97,7 +97,7 @@ def test_linker_config_routes_reference_document_chunk():
     routes = defaults.load_linker_config()["routes"]
     for id_type, by_src in routes.items():
         # Every identifier is read from chunk text. A JIRA key is also
-        # read from a commit message (okg#3649).
+        # read from a commit message.
         expected = {"document_chunk"}
         if id_type == "cms_jira_key":
             expected.add("git_commit")

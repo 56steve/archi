@@ -78,7 +78,7 @@ def test_compops_superset_gains_narrowings():
 
 def test_flag_is_scoped_to_varying_endpoints_only():
     """Everything both consumers guarantee stays strict, so an accidentally
-    dropped module still fails loudly (the okg#1282 hazard: a silently skipped
+    dropped module still fails loudly (a silently skipped
     narrowing surfaces later as an ingest-time ProducerPolicyViolation)."""
     guaranteed = set(_compose(CERN_TEAM_MODULES).subtypes) & set(
         _compose(COMPOPS_MODULES).subtypes

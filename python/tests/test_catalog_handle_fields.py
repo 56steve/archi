@@ -1,4 +1,4 @@
-"""Archi types declare their catalog handle fields (mitdbg/okg#3192).
+"""Archi types declare their catalog handle fields.
 
 okg reads a record's title, creation date and last-modified date from the
 attribute a class names in `okg_title_from`, `okg_created_at_from` and

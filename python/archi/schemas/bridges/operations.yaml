@@ -621,7 +621,7 @@ classes:
       # to that ticket: the cms_jira_key extractor route for git_commit in
       # enrichment/defaults/linker_config.yaml. The target is matched
       # exactly (ProjectionAliasBackend); a key with no ticket in the graph
-      # makes no edge and stays an unresolved link_retry row (okg#3649).
+      # makes no edge and stays an unresolved link_retry row.
       # Optional so a deployment without the git_graph module composes.
       git_commit_references_jira_issue:
         annotations:

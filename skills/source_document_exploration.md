@@ -22,7 +22,7 @@ finds a promising chunk but not enough surrounding context.
   `kind: "node"` gives its metadata (title, URL) only. For a long page,
   repeat the call with the returned `continuation_token` in the target while
   `complete` is false. Prefer this read over the ordered-chunk SQL below.
-  It needs okg with mitdbg/okg#2697 (merged 2026-09-28); an older okg refuses
+  It needs an okg release from 2026-09-28 or later; an older okg refuses
   it ("inspect target kind must be one of ..."). Then fall back to Parent To
   Ordered Chunks.
 - Give the best supported CMS operator answer from retrieved evidence, with
