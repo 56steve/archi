@@ -8,8 +8,10 @@ Environment: ARCHI_INSTANCE, OKG_DSN, ARCHI_OPS_DEPLOYMENT.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import pickle
 import sys
 import time
 from pathlib import Path
@@ -69,8 +71,22 @@ def cmd_signal(a: argparse.Namespace) -> None:
     print(f"{AUTOMATION}-{a.id}-1")
 
 
+def decode(output):
+    """DBOS stores a workflow's return value as a base64 pickle (serialization py_pickle)."""
+    if isinstance(output, str):
+        try:
+            return pickle.loads(base64.b64decode(output, validate=True))
+        except Exception:
+            try:
+                return json.loads(output)
+            except ValueError:
+                return output
+    return output
+
+
 def run_status(conn, wid: str):
-    return conn.execute("SELECT status, output FROM dbos.workflow_status WHERE workflow_uuid = %s", (wid,)).fetchone()
+    row = conn.execute("SELECT status, output FROM dbos.workflow_status WHERE workflow_uuid = %s", (wid,)).fetchone()
+    return (row[0], decode(row[1])) if row else None
 
 
 def cmd_wait(a: argparse.Namespace) -> None:
@@ -80,7 +96,7 @@ def cmd_wait(a: argparse.Namespace) -> None:
         while time.time() < deadline:
             row = run_status(conn, a.wid)
             if row and (row[0] == a.status if a.status else row[0] in ("SUCCESS", "ERROR", "CANCELLED")):
-                print(json.dumps({"status": row[0], "output": row[1]}))
+                print(json.dumps({"status": row[0], "output": row[1]}, default=str))
                 return
             time.sleep(1)
     row = None
@@ -122,7 +138,7 @@ def cmd_stale(a: argparse.Namespace) -> None:
             "AND table_name='source_watermarks'").fetchall()]
         print("source_watermarks columns:", cols, file=sys.stderr)
         n = conn.execute(f"UPDATE okg.source_watermarks SET last_reconcile_at = {interval} "
-                         "WHERE source_name = %s", (SOURCE,)).rowcount
+                         "WHERE source = %s", (SOURCE,)).rowcount
         print(n)
 
 

@@ -164,6 +164,7 @@ class FakeIO:
     def paused_by_halt(self): return list(self._halts)
     def clear_halt(self, name): self.calls.append(("clear_halt", name)); self._halts.remove(name)
     def cancel(self, wid): self.calls.append(("cancel", wid))
+    def cancel_unconfirmed_admission(self, key): self.calls.append(("cancel_admission", key)); return ["adm-1"]
 
     def escalations(self, open_only=True, workflow_ids=None):
         return [e for e in self._escalations if workflow_ids is None or e["requested_by_workflow"] in workflow_ids]
@@ -185,7 +186,7 @@ def test_halt_pauses_then_closes_escalations_then_cancels_and_records():
     assert [c[0] for c in io.calls] == ["ensure", "pause", "record_halt", "respond", "cancel"]
     assert io.calls[3] == ("respond", "esc-1", "reject", "closed by archi ops halt", "archi ops halt")
     assert out == {"paused": ["archi_ops_scan"], "already_paused": [], "closed": ["esc-1"],
-                   "cancelled": ["r1"], "recorded": ["r1"], "left_final": ["r2"]}
+                   "cancelled": ["r1"], "recorded": ["r1"], "unrecorded": [], "left_final": ["r2"]}
     records, kw = submitted[0]
     verdicts = {n["attrs"]["record_id"]: n["attrs"].get("verdict") for n in records.nodes.values()}
     assert verdicts["dec-r1-halt"] == "halted"
@@ -202,8 +203,10 @@ def test_halt_goes_on_when_the_records_cannot_be_confirmed():
         raise RecordError("okg admission submit failed: pending")
 
     out = ops.do_halt(io, log=messages.append, submit_records=unconfirmed)
-    assert out["cancelled"] == ["r1"] and out["recorded"] == []
+    assert out["cancelled"] == ["r1"] and out["recorded"] == [] and out["unrecorded"] == ["r1"]
     assert any("not confirmed" in m for m in messages)
+    # the queued admission is cancelled, or okg would refuse to start a worker again
+    assert ("cancel_admission", "r1|halt") in io.calls
 
 
 def test_halt_survives_an_escalation_that_is_already_closed():

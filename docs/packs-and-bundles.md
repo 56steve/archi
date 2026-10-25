@@ -410,3 +410,46 @@ repeated, listed twice or not defined, an invalid `payload_schema`, a mediator
 that resolves to neither a declared live tool nor a registered step, a bundle
 bound for a pack that is not an automation pack, and a missing or mistyped
 proposal field.
+
+## Running automations (`archi ops`)
+
+An automation runs as an okg deployment workflow, `archi.ops.workflow`. Any
+render that selects an automation pack writes `runtime: {enabled: true,
+workflows: [archi.ops.workflow]}` into the deployment defaults, so it is in
+`deployment.yaml` when `okg install` starts. (Editing `runtime:` after install
+makes publish refuse until `okg catalog load --apply`.) Because the runtime is
+on from the start, `okg install` stops at its last stage, `ingest`, with
+`ingest_failed`: the DBOS schema does not exist yet. Run `okg runtime
+bootstrap --deployment <name>`, start `okg runtime worker --deployment <name>`
+(with `ARCHI_INSTANCE`, `OKG_DSN` and `ARCHI_OPS_DEPLOYMENT` set), then `okg
+ingest` and `okg run --once --apply`.
+
+Settings that belong to the instance, not the pack:
+
+- `archi.yaml`, `automations.<name>.level`: the level to run at. L3 and
+  unknown values are refused when `archi.yaml` loads, and again at run start.
+- `ops.yaml`, `automations.<name>`: `mode` (`shadow`, the default, or `live`),
+  `timeout_seconds` (how long an L2 escalation waits; default 4 hours),
+  `estimate_cost` (checked against the budget before each proposal), and the
+  `proposer` and `outcome` stubs used until the model-backed ones land.
+
+One scanner (`archi_ops_scan`, a `@deployment_scheduled` workflow) starts one
+`archi_ops_run` per new signal, with the workflow id
+`<automation>-<signal id>-<attempt>`. Each external effect is a durable step.
+A live automation whose context gate fails runs in shadow for that run, with
+the failing checks in the proposal's `mode_reason`. An L2 proposal waits for an
+okg escalation; only an approval made before the deadline, by a named person,
+for that proposal and escalation, reaches the mediator, which checks halt and
+the escalation again in its own step.
+
+| Command | What it does |
+|---|---|
+| `archi ops status [--json]` | Effective level, mode, scanner state, pending escalations, today's budget against its cap, shadow counts and scores. |
+| `archi ops pending` | Escalations waiting for a person. |
+| `archi ops approve <id> [--note] [--as]` | Approve (`reject` refuses). `--as` defaults to the OS user. |
+| `archi ops halt` | Pause the scanner, answer each open escalation of a run with `reject` (decided by `archi ops halt`), cancel runs that have not finished, record them as `halted`. |
+| `archi ops resume` | Resume what halt paused. Cancelled runs are not resumed. |
+
+Put `--instance`, `--deployment` and `--dsn` (default `$OKG_DSN`) before the
+subcommand: `archi ops --dsn ... pending`. `python/tests/ops/scratch_ops_runtime_run.sh`
+runs every case above on a scratch okg 0.2.0 instance.

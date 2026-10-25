@@ -193,6 +193,22 @@ class OpsIO:
     def cancel(self, workflow_id: str) -> None:
         self._client().cancel_workflow(workflow_id)
 
+    def cancel_unconfirmed_admission(self, idempotency_key: str) -> list[str]:
+        """Cancel the queued okg admission workflow(s) submitted with `idempotency_key`.
+
+        An `okg admission submit` made while no worker runs leaves an ENQUEUED
+        `okg_admission_submit` with no application version, and okg 0.2.0 then refuses to
+        start a worker (RuntimeCutoverBlocked) until it is cancelled. Only workflows whose
+        input carries this exact key are touched. Returns the cancelled workflow ids.
+        """
+        client = self._client()
+        cancelled = []
+        for wf in client.list_workflows(name="okg_admission_submit", status=["ENQUEUED"], load_input=True):
+            if idempotency_key in json.dumps(_val(wf, "input"), default=str):
+                client.cancel_workflow(_val(wf, "workflow_id"))
+                cancelled.append(_val(wf, "workflow_id"))
+        return cancelled
+
     # --- budgets -------------------------------------------------------------
 
     def day_spend(self, automation: str, today: Optional[datetime] = None) -> tuple[Optional[float], Optional[float]]:

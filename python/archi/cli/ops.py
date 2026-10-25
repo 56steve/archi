@@ -119,7 +119,7 @@ def _now() -> str:
 
 
 def do_halt(io, *, who: str = HALT_ACTOR, submit_records: Callable[..., Any] = submit,
-            log: Callable[[str], None] = print) -> dict[str, Any]:
+            log: Callable[[str], None] = lambda m: print(m, file=sys.stderr)) -> dict[str, Any]:
     """Stop every automation; return what was paused, closed, cancelled and recorded."""
     io.ensure_tables()
     plan = halt_plan(io.schedules(), io.runs())
@@ -127,7 +127,7 @@ def do_halt(io, *, who: str = HALT_ACTOR, submit_records: Callable[..., Any] = s
         io.pause(name)
         log(f"paused schedule {name}")
     io.record_halt(plan.pause, who)
-    closed, cancelled, recorded = [], [], []
+    closed, cancelled, recorded, unrecorded = [], [], [], []
     for run in plan.cancel:
         for esc in io.escalations(open_only=True, workflow_ids=[run.workflow_id]):
             try:
@@ -144,14 +144,19 @@ def do_halt(io, *, who: str = HALT_ACTOR, submit_records: Callable[..., Any] = s
             submit_records(halted_records(run, signal, io, who), deployment=io.deployment, dsn=io.dsn,
                            idempotency_key=f"{run.workflow_id}|halt", max_wait_seconds=SUBMIT_WAIT_SECONDS)
             recorded.append(run.workflow_id)
-        except Exception as exc:  # e.g. the worker is down: okg queued the admission, so it still lands
-            log(f"halted record for {run.workflow_id} not confirmed within {SUBMIT_WAIT_SECONDS:g}s "
-                f"(okg keeps the admission queued; resubmitting is safe): {type(exc).__name__}: {exc}")
+        except Exception as exc:
+            # Most likely the worker is down. Its queued admission would keep okg from starting a worker
+            # again (RuntimeCutoverBlocked), so cancel it: the halted record is not written.
+            cancelled_admissions = io.cancel_unconfirmed_admission(f"{run.workflow_id}|halt")
+            log(f"halted record for {run.workflow_id} not confirmed within {SUBMIT_WAIT_SECONDS:g}s; "
+                f"cancelled {len(cancelled_admissions)} queued admission(s), so the record is not written "
+                f"({type(exc).__name__}: {exc})")
+            unrecorded.append(run.workflow_id)
     return {"paused": list(plan.pause), "already_paused": list(plan.already_paused), "closed": closed,
-            "cancelled": cancelled, "recorded": recorded, "left_final": [r.workflow_id for r in plan.final]}
+            "cancelled": cancelled, "recorded": recorded, "unrecorded": unrecorded, "left_final": [r.workflow_id for r in plan.final]}
 
 
-def do_resume(io, log: Callable[[str], None] = print) -> dict[str, Any]:
+def do_resume(io, log: Callable[[str], None] = lambda m: print(m, file=sys.stderr)) -> dict[str, Any]:
     """Un-pause the schedules halt paused. Cancelled runs stay cancelled."""
     io.ensure_tables()
     names = resume_plan(io.schedules(), io.paused_by_halt())
