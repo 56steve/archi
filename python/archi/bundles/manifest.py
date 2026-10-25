@@ -99,9 +99,35 @@ def _schema_problems(kind: str, data: Any, path: Path) -> list[Problem]:
     return out
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that refuses a repeated mapping key instead of keeping the last."""
+
+
+def _construct_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False):
+    seen: set[Any] = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping
+)
+
+
+def load_unique_yaml(text: str) -> Any:
+    """yaml.safe_load that raises yaml.YAMLError on a duplicate mapping key."""
+    return yaml.load(text, Loader=_UniqueKeyLoader)
+
+
 def _read_yaml(path: Path, problems: list[Problem]) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
+        return load_unique_yaml(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         problems.append(Problem(path, "file is missing"))
     except yaml.YAMLError as exc:
@@ -224,6 +250,11 @@ class Bundle:
     def okg(self) -> str:
         return self.manifest["okg"]
 
+    @property
+    def automation_bounds(self) -> dict[str, str]:
+        """Automation name -> the highest level this bundle allows it."""
+        return {n: b["max_level"] for n, b in self.manifest.get("automations", {}).items()}
+
 
 # ---------------------------------------------------------------------------
 # Packs
@@ -314,8 +345,19 @@ def _question_problems(path: Path, data: Any) -> tuple[list[Problem], set[str]]:
     return problems, ids
 
 
-def validate_pack(directory: Path) -> list[Problem]:
-    """Every problem with the pack in `directory` (empty list when valid)."""
+def validate_pack(
+    directory: Path,
+    *,
+    packs: Optional[Mapping[str, "Pack"]] = None,
+    defer_requires: bool = False,
+) -> list[Problem]:
+    """Every problem with the pack in `directory` (empty list when valid).
+
+    An automation pack's mediators resolve against the live tools of the packs
+    it requires. `packs` is the catalog to look them up in (any root); without
+    it the required packs are looked for next to this one. `defer_requires`
+    skips that lookup, for the catalog to repeat once every pack is loaded.
+    """
     directory = Path(directory)
     manifest_path = directory / PACK_FILE
     problems: list[Problem] = []
@@ -440,19 +482,25 @@ def validate_pack(directory: Path) -> list[Problem]:
 
     if "action_classes" in data:
         apath = pack.path("action_classes")
+        before = len(problems)
         body = _read_yaml(apath, problems)
-        if not isinstance(body, Mapping) or not isinstance(body.get("action_classes"), Mapping):
+        if len(problems) == before and (
+            not isinstance(body, Mapping) or not isinstance(body.get("action_classes"), Mapping)
+        ):
             problems.append(Problem(apath, "must hold an `action_classes:` mapping keyed by id"))
 
+    from archi.bundles.automation import automation_problems
+
+    problems.extend(automation_problems(directory, data, packs=packs, check_requires=not defer_requires))
     return problems
 
 
-def load_pack(directory: Path) -> Pack:
+def load_pack(directory: Path, *, defer_requires: bool = False) -> Pack:
     """Load the pack in `directory`, raising ManifestError if it is invalid."""
-    problems = validate_pack(directory)
+    problems = validate_pack(directory, defer_requires=defer_requires)
     if problems:
         raise ManifestError(problems)
-    return Pack(Path(directory), yaml.safe_load((Path(directory) / PACK_FILE).read_text(encoding="utf-8")))
+    return Pack(Path(directory), load_unique_yaml((Path(directory) / PACK_FILE).read_text(encoding="utf-8")))
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +528,10 @@ def read_bundle(directory: Path) -> tuple[Optional[Bundle], list[Problem]]:
     overlap = sorted(set(data["packs"].get("default", ())) & set(data["packs"].get("optional", ())))
     if overlap:
         problems.append(Problem(manifest_path, f"packs listed as both default and optional: {overlap}"))
+    from archi.ops.levels import settings_problems
+
+    for message in settings_problems(data.get("automations"), "max_level", "automations"):
+        problems.append(Problem(manifest_path, message))
     from archi.bundles.versions import OkgRangeError, parse_range
 
     try:
@@ -535,6 +587,11 @@ def validate_bundle(
         for name in bundle.manifest["packs"].get(group, ()):
             if name not in packs:
                 problems.append(Problem(manifest_path, f"packs.{group}: unknown pack {name!r}"))
+    for name in bundle.automation_bounds:
+        if name in packs and packs[name].kind != "automation":
+            problems.append(Problem(manifest_path, f"automations.{name}: pack {name!r} is not an automation pack"))
+        elif name not in packs:
+            problems.append(Problem(manifest_path, f"automations.{name}: unknown automation pack {name!r}"))
     if problems:
         return problems
 

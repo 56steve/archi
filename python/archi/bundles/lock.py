@@ -132,6 +132,7 @@ def build_lock(
             "freshness": comp.freshness,
             "live_tools": comp.live_tools,
             "action_classes": comp.action_classes,
+            "automations": comp.automations,
         },
         "deployment": str(deployment) if deployment is not None else None,
     }

@@ -44,7 +44,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         directory = _manifest_dir(Path(raw))
         checked += 1
         if (directory / PACK_FILE).is_file():
-            problems.extend(validate_pack(directory))
+            problems.extend(validate_pack(directory, packs=catalog.packs))
         elif (directory / BUNDLE_FILE).is_file():
             problems.extend(validate_bundle(directory, catalog.packs, catalog.bundles))
         else:

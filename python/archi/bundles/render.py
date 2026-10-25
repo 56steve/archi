@@ -64,6 +64,22 @@ def _write(path: Path, data: bytes | str) -> None:
         path.write_text(data, encoding="utf-8")
 
 
+AUTOMATIONS_DIR = "automations"
+
+
+def write_automations(instance_dir: Path, comp: Composition) -> None:
+    """Write `<instance>/automations/<name>.yaml`, one per selected automation pack.
+
+    The runtime reads these (and `composed.automations` in archi.lock). The
+    directory is rewritten on every render, so a dropped pack leaves no file.
+    """
+    out = instance_dir / AUTOMATIONS_DIR
+    if out.exists():
+        shutil.rmtree(out)
+    for name, body in comp.automations.items():
+        _write(out / f"{name}.yaml", _dump(body))
+
+
 def render(
     resolution: Resolution,
     instance_dir: Path,
@@ -120,6 +136,7 @@ def render(
     _write(out / "skills" / PROMPT_FILE, comp.prompt)
     if comp.triggers is not None:
         _write(out / "skills" / TRIGGERS_FILE, _dump(comp.triggers))
+    write_automations(Path(instance_dir), comp)
     return Rendered(out, name, comp)
 
 

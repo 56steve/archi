@@ -65,6 +65,8 @@ class Composition:
     playbooks: dict[str, bytes] = field(default_factory=dict)
     triggers: Optional[dict[str, Any]] = None
     action_classes: dict[str, Any] = field(default_factory=dict)
+    #: automation name -> its declaration, for the runtime (see `_automation`)
+    automations: dict[str, dict[str, Any]] = field(default_factory=dict)
     freshness: dict[str, dict[str, str]] = field(default_factory=dict)
     search_subtypes: list[str] = field(default_factory=list)
     #: named okg search profiles other than `content`
@@ -122,6 +124,31 @@ def _merge_value(
         )
     target[key] = value
     comp.own(kind, key, pack.name)
+
+
+def _automation(pack: Pack, resolution: Resolution, action_classes: Mapping[str, Any]) -> dict[str, Any]:
+    """What the runtime reads about one automation.
+
+    The pack's `automation:` block, with the playbook as the path it takes in
+    the rendered profile (`skills/<playbook>`), the bundles' upper bound on its
+    level (`bundle_max_level`, the lowest any selected bundle sets, or None)
+    and the action classes it may propose, by id and in full. The instance's
+    own level is not here: it is set in archi.yaml.
+    """
+    from archi.ops.levels import min_level
+
+    block = copy.deepcopy(dict(pack.manifest["automation"]))
+    block["playbook"] = f"skills/{block['playbook']}"
+    block["pack"] = pack.name
+    block["version"] = pack.version
+    block["pack_max_level"] = block.pop("max_level")
+    block["bundle_max_level"] = min_level(
+        *(b.automation_bounds.get(pack.name) for b in resolution.bundles)
+    )
+    block["action_class_definitions"] = {
+        aid: copy.deepcopy(action_classes[aid]) for aid in block["action_classes"]
+    }
+    return block
 
 
 def render_template(pack: Pack, source: str, text: str) -> str:
@@ -247,6 +274,10 @@ def compose(resolution: Resolution) -> Composition:
             body = yaml.safe_load(pack.path("action_classes").read_text(encoding="utf-8"))
             for aid, value in body["action_classes"].items():
                 _merge_value(comp, comp.action_classes, "action_class", aid, value, pack)
+
+        if pack.kind == "automation":
+            comp.automations[pack.name] = _automation(pack, resolution, comp.action_classes)
+            comp.own("automation", pack.name, pack.name)
 
         for rel in pack.files:
             _merge_bytes(comp, comp.files, "file", rel, (pack.dir / rel).read_bytes(), pack)
