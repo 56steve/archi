@@ -125,5 +125,17 @@ tasks:
     Test plan:
 
     - links [evidence: manual]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.r3-bundle-format.manifests
+  status: pass
+  command: python -m pytest python/tests/bundles/test_manifest_schema.py -q
+  head: 4b653632b9a922a4edabf67799d53579e774944c
+  at: '2026-10-25T13:03:35+00:00'
+  note: 'acc.r3-bundle-format.schema: 45 passed. Both published JSON schemas are valid draft
+    2020-12 schemas that refuse unknown keys; the valid fixture catalog loads clean; one test
+    per rejection: unknown keys, missing files, a credential value in the manifest, in a source
+    template and in a question default, an unknown template reference, a bundle with no credential-free
+    default pack (inherited defaults count), an extends cycle. archi bundles validate exits
+    1 and lists every problem. Full suite: 1953 passed, 1 skipped.'
 decisions: []

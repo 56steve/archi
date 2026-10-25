@@ -15,7 +15,7 @@ Replace the path and digest with the actual authorized snapshot and independentl
 
 ## Enabling it in the cern-team bundle
 
-The packaged example is `archi/bundles/cern-team/source-defaults/cmssw_releases_frozen.yaml.example`.
+The packaged example is `archi/_payload/bundles/cern-team/source-defaults/cmssw_releases_frozen.yaml.example`.
 
 **Enabling it replaces the live default; it does not add to it.** Both files declare the same source id (`cmssw_releases`), and the installer merges source-defaults by that id, so leaving both in place lets one silently win and discards the other without a warning. Delete `cmssw_releases.yaml` when you rename the example.
 
