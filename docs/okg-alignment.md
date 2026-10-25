@@ -20,6 +20,16 @@ reimplementation of OKG services.
 
 ## Current state (update this section when it changes)
 
+**archi composes bundles itself and reads okg's profile planner (2026-10-25).**
+okg has no profile composition (ADR 0002 §9 ask 3), so `archi render` writes one
+ordinary profile into the instance's `./profiles/`, which okg's discovery
+cascade already searches; no step sets `OKG_PROFILES_DIR`. `archi diff` and
+`archi add` import okg's planner (`build_plan`, `discover_profile`,
+`planned_writes`, `source_default_entries`) to see what a profile produces for a
+deployment's answers, and `archi add` runs the claim → load → ingest → publish
+commands. Tested against the v0.2.0 release (no pin change). PACT
+`r3-bundle-format`.
+
 **The distribution is now `archi-kb` (2026-10-25).** ADR 0002 D2: the name
 `archi` on PyPI belongs to an unrelated package. The import name is still
 `archi`, and nothing on the okg side changes. The wheel is now
@@ -422,7 +432,16 @@ okg.substrate.enrichers.derived_edges:
 okg.substrate.library.linkers:    _chronos
 okg.substrate.library.linkers.declarative: DeclarativeLinker
 okg.substrate.alias.protocol:     AliasMatch
+okg.substrate.deployment_bootstrap.profile_init:
+    build_plan, discover_profile, planned_writes, source_default_entries
 ```
+
+**The bundle tooling reads okg's profile planner (2026-10-25).** `archi diff`
+and `archi add` (`python/archi/bundles/lock.py`, PACT `r3-bundle-format`) ask
+okg what a rendered profile produces for a deployment's answers, so they compare
+and extend a registry with okg's own interpolation rather than a copy of it.
+These four names are the profile installer's planner; profile composition in
+okg (ADR 0002 §9 ask 3) would replace both the renderer and this use.
 
 **The dropped fields are read by the substrate, not by us (2026-09-16).** Archi
 never referenced `next_cursor`, but the runner does, on the result of whatever
@@ -466,7 +485,8 @@ policy with `output_signature` + `output_scope_summary`, `sync:` block); deploym
 manifest keys (`modules:`, `schema_dir`, `nomos.rollout` deferral); the
 edit → `catalog ownership claim` → `catalog load --apply` → `ingest` sequence;
 `okg deployment lint` codes; LinkML deployment schemas + `schemas/bridges/`
-narrowings; install profiles (`OKG_PROFILES_DIR` cascade) for bundles; the closed
+narrowings; install profiles (the `./profiles/` step of the discovery cascade,
+which `archi render` writes into) for bundles; the closed
 `SourceHealth`/preflight status vocabulary; MCP read surface for validation.
 
 ## Mapping: #1178 sub-issues ↔ Archi needs and evidence
