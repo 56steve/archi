@@ -4,7 +4,7 @@ Status: **filed 2026-10-25** on `mitdbg/akmon` as #14–#26, one per ask, each
 tracked here by an `upstream-ask` issue (#814–#826). The links are under each
 heading.
 
-Asks O1–O6 are the six ADR 0002 §9 item 7 names. O7–O13 were found while
+Asks O1–O6 are the six ADR 0002 §9 item 7 names. O7–O14 were found while
 building the loop on okg v0.2.0. Each says whether it was **proven** by
 running code on a scratch instance (submit76, okg 0.2.0, 2026-10-25) or
 **read** from okg's source only. Each names the archi code that goes away
@@ -266,3 +266,26 @@ starts and runs the admission.
 **archi deletes.** In `archi ops halt`, the 20 s wait for its records and
 the cancellation of its own queued admission when they are not confirmed,
 which today means halt records are lost when the worker is down.
+
+## O14. `request_escalation` fails on replay once the decision is applied
+
+**Problem (proven, and checked in source).** After a decision arrives,
+`request_escalation` marks the escalation `applied`
+(`okg/deployment/_internal/escalation.py`, step 3), calling
+`transition_to_applied`, which accepts only a move from `decided`
+(`okg/substrate/runtime/escalation.py`, `expected_from_statuses=("decided",)`).
+That call is not a DBOS step. So when DBOS replays the workflow after a
+crash, `recv` returns the recorded decision, the transition runs again on
+an `applied` row, and `request_escalation` raises `EscalationStateError`.
+The replayed run then fails with `DBOSUnexpectedStepError`. Seen in the
+scratch run's crash-recovery case.
+
+**Ask.** Make the `applied` transition idempotent (`applied` to `applied`
+is a no-op), or record it in a DBOS step so a replay does not repeat it.
+
+**Acceptance.** Kill the worker after a decision is applied and before
+the workflow's next step; on restart, `request_escalation` returns the same
+decision.
+
+**archi deletes.** The narrow catch of that one `EscalationStateError` in
+`archi.ops.workflow` (`_Decider.wait`), which reads the row back instead.
