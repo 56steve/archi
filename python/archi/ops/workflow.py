@@ -408,7 +408,7 @@ def _promotion_step(automation: str) -> dict:
     """Is the automation's promotion approved? Read from okg's decision ledger, in a step."""
     rt = _runtime()
     change = rt.settings[automation].promotion
-    return _io(rt).promotion_status(rt.instance_dir, change)
+    return _io(rt).promotion_status(rt.instance_dir, change, automation)
 
 
 @deployment_step(name="archi_ops_outcome")

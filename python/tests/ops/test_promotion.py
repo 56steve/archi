@@ -84,7 +84,11 @@ def test_a_passing_report_opens_the_change_and_stops_without_approving(repo):
     assert git(repo, "log", "-1", "--format=%s").strip() == f"request promotion of triage ({change})"
     assert sorted(git(repo, "show", "--name-only", "--format=", "HEAD").split()) == sorted(
         ["ops.yaml", f"pact/changes/{change}/pact.yaml", f"pact/changes/{change}/shadow-report.json",
-         f"pact/changes/{change}/thresholds.json", f"pact/changes/{change}/readiness.xml"])
+         f"pact/changes/{change}/thresholds.json", f"pact/changes/{change}/readiness.xml",
+         f"pact/changes/{change}/promotion.json"])
+    record = json.loads((change_dir / "promotion.json").read_text())
+    assert record == {"automation": "triage", "change": change, "requested_at": "2026-10-25T14:30:05Z",
+                      "requested_by": "mohoney"}
     assert git(repo, "status", "--porcelain").strip() == ""
     assert "okg pact decide" in result["next"] and "shadow" in result["next"]
 

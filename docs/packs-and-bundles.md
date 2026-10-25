@@ -465,7 +465,10 @@ same history.
 PACT change named by `promotion:` is approved in okg's decision ledger; with no
 such change, or one still awaiting review, the run is in shadow and its
 proposal's `mode_reason` says "not promoted: ...". Hand-editing `ops.yaml` to say
-live changes nothing.
+live changes nothing, and so does naming another approved change: the change must
+carry this automation's name in its own `promotion.json`, must be the newest
+promotion change for it, and its approval must come after the latest demotion.
+If okg cannot be run to read the ledger, the run is in shadow with that reason.
 
 An L2 proposal waits for an okg escalation. Only an approval made before the
 deadline, by a named person, for that proposal and escalation, reaches the

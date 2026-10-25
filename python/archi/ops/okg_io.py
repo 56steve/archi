@@ -86,6 +86,10 @@ CREATE TABLE IF NOT EXISTS archi_ops.halts (
 """
 
 
+#: pg_advisory_xact_lock key that serialises the archi_ops DDL ("archiops" as a number).
+DDL_LOCK_KEY = 0x6172636869_6f70 % (2 ** 63)
+
+
 def _val(obj: Any, key: str) -> Any:
     return obj.get(key) if isinstance(obj, Mapping) else getattr(obj, key, None)
 
@@ -265,7 +269,11 @@ class OpsIO:
     # --- signals (the table trigger the scratch automations use) and halt state ---
 
     def ensure_tables(self) -> None:
-        with self.connect() as conn:
+        """Create the archi_ops tables. Idempotent, and safe to run from `archi up` and a starting worker at once:
+        `CREATE ... IF NOT EXISTS` is not atomic in Postgres, so the DDL runs in one transaction behind a
+        transaction-level advisory lock with a fixed key."""
+        with self.connect() as conn, conn.transaction():
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (DDL_LOCK_KEY,))
             conn.execute(SIGNALS_DDL)
 
     def record_halt(self, schedules: Sequence[str], by: str) -> None:
@@ -358,21 +366,42 @@ class OpsIO:
                                "ORDER BY demoted_at DESC LIMIT 1", (automation,)).fetchone()
         return {"at": row[0].isoformat(), "reason": row[1]} if row else None
 
-    def promotion_status(self, instance_dir: Path, change: Optional[str]) -> dict:
-        """Is the PACT change `archi ops promote` opened approved? `{approved, at, reason}`.
+    def promotion_status(self, instance_dir: Path, change: Optional[str], automation: Optional[str] = None) -> dict:
+        """Is `change` an approved promotion of `automation`? `{approved, at, reason}`.
 
-        Approved means okg's decision ledger derives the change as `retired` (an approve verdict).
-        Anything unreadable is not approved.
+        Bound first, then asked of the ledger. The change must carry this automation's name in its own
+        `promotion.json` (an id in ops.yaml proves nothing), and must be the newest promotion change for the
+        automation. Approved then means okg's decision ledger derives it as `retired` (an approve verdict).
+        Whether the approval came after the latest demotion is the loop's check (it has the demotion log).
+        Anything unreadable, including a missing okg binary, is not approved.
         """
+        from archi.ops.promotion import latest_promotion_change, promotion_record
+
+        def no(reason: str) -> dict:
+            return {"approved": False, "at": None, "reason": reason}
+
         if not change:
-            return {"approved": False, "at": None, "reason": "ops.yaml names no promotion change; run "
-                    "`archi ops promote <automation>` and have an operator approve the change it opens"}
+            return no("ops.yaml names no promotion change; run `archi ops promote <automation>` and have an "
+                      "operator approve the change it opens")
+        record = promotion_record(instance_dir, change)
+        if record is None:
+            return no(f"PACT change {change} is not an archi promotion (it has no {'promotion.json'}); "
+                      "`archi ops promote` opens the change this automation needs")
+        if automation is not None and record.get("automation") != automation:
+            return no(f"PACT change {change} is a promotion of {record.get('automation')!r}, not of {automation!r}")
+        newest = latest_promotion_change(instance_dir, record.get("automation"))
+        if newest != change:
+            return no(f"PACT change {change} is not the newest promotion of {record.get('automation')!r}; "
+                      f"{newest} is, and it needs its own approval")
         env = {**os.environ, "OKG_PACT_QUIET_NUDGE": "1", "OKG_PACT_GRAPH_DEPLOYMENT": self.deployment,
                "OKG_DSN": self.dsn}
         env.setdefault("OKG_DEPLOYMENTS_DIR", str(Path(instance_dir) / "deployments"))
-        done = subprocess.run([self.okg or _okg(), "pact", "--root", str(instance_dir), "view", change,
-                               "--format", "status", "--json"], capture_output=True, text=True, env=env,
-                              cwd=str(instance_dir))
+        try:
+            done = subprocess.run([self.okg or _okg(), "pact", "--root", str(instance_dir), "view", change,
+                                   "--format", "status", "--json"], capture_output=True, text=True, env=env,
+                                  cwd=str(instance_dir))
+        except OSError as exc:  # no okg binary, or it cannot run: shadow, with the reason
+            return no(f"could not run okg to read PACT change {change}: {type(exc).__name__}: {exc}")
         try:
             derived = json.loads(done.stdout)["derived_state"]
         except (ValueError, KeyError, TypeError):

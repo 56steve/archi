@@ -21,7 +21,9 @@ An operator reads the change and approves it:
     okg pact decide <change> --verdict approve --principal <name> --dsn $OKG_DSN
 
 (okg moves the approved change to `pact/archive/<change>`; commit that too.) The runtime counts
-`mode: live` only while the named change is approved in okg's decision ledger (`OpsIO.promotion_status`,
+`mode: live` only while the named change is approved in okg's decision ledger AND is bound to this
+automation (its `promotion.json` names it), is the newest promotion change for it, and was approved after the
+latest demotion (`OpsIO.promotion_status`,
 `archi.ops.loop` `Deps.promotions`); until then an automation runs in shadow and records why, and
 hand-editing `ops.yaml` to say live changes nothing. The ledger's approval time is the `promoted_at`
 that lifts an earlier demotion: a demotion recorded after it keeps the automation in shadow.
@@ -73,6 +75,34 @@ def readiness_junit(readiness: Mapping[str, Any], report: Mapping[str, Any], thr
     return ('<?xml version="1.0" encoding="utf-8"?>\n<testsuites><testsuite name="archi-ops-promotion" tests="1" '
             f'failures="{int(failed)}" errors="0"><testcase classname="promotion.shadow_report" '
             f'name="test_promotion_readiness">{body}<system-out>{out}</system-out></testcase></testsuite></testsuites>\n')
+
+
+PROMOTION_FILE = "promotion.json"
+
+
+def promotion_record(instance_dir: Path, change: str) -> Optional[dict]:
+    """The `promotion.json` of a change under pact/changes or pact/archive, or None if it is not an archi promotion."""
+    for where in ("changes", "archive"):
+        path = Path(instance_dir) / "pact" / where / change / PROMOTION_FILE
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                return None
+            return data if isinstance(data, dict) else None
+    return None
+
+
+def latest_promotion_change(instance_dir: Path, automation: str) -> Optional[str]:
+    """The newest promotion change opened for `automation` (by its recorded request time), approved or not."""
+    found = []
+    for where in ("changes", "archive"):
+        base = Path(instance_dir) / "pact" / where
+        for path in base.glob(f"*/{PROMOTION_FILE}") if base.is_dir() else ():
+            record = promotion_record(instance_dir, path.parent.name)
+            if record and record.get("automation") == automation:
+                found.append((str(record.get("requested_at") or ""), path.parent.name))
+    return max(found)[1] if found else None
 
 
 def _git(directory: Path, *args: str, run: Runner) -> subprocess.CompletedProcess:
@@ -147,6 +177,10 @@ def promote(
     (change_dir / "shadow-report.json").write_text(json.dumps(report, indent=2, sort_keys=True, default=str),
                                                    encoding="utf-8")
     (change_dir / "thresholds.json").write_text(json.dumps(thresholds, indent=2, sort_keys=True), encoding="utf-8")
+    # What binds the change to this automation: the runtime reads it back, so an id in ops.yaml is not enough.
+    (change_dir / PROMOTION_FILE).write_text(json.dumps(
+        {"automation": automation, "change": change, "requested_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+         "requested_by": principal}, indent=2, sort_keys=True), encoding="utf-8")
     (change_dir / "readiness.xml").write_text(readiness_junit(readiness, report, thresholds), encoding="utf-8")
     pact("evidence", "ingest", change, "--pytest-report", f"{rel}/readiness.xml", what="evidence ingest")
     pact("gate", "task-done", change, f"task.{change}", what="gate task-done")

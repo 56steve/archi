@@ -787,6 +787,20 @@ def test_the_approval_time_lifts_an_earlier_demotion_and_a_later_demotion_still_
     assert World(decision=approved(), demotions=later, promotions=Promotions(True, at(-7200))).run(config()).mode == "shadow"
 
 
+def test_an_old_promotion_is_superseded_by_a_later_demotion():
+    """Approved last week, demoted yesterday: the approval predates the demotion, so the run stays in shadow
+    until a promotion is approved after it."""
+    demotions = Demotions(Demotion(at(-3600), DEMOTED_PREFIX + "context gate failed: stale"))
+    old_approval = Promotions(approved=True, at=at(-86400))
+    w = World(decision=approved(), demotions=demotions, promotions=old_approval)
+    result = w.run(config(promotion_change="promote-old"))
+    assert result.mode == "shadow" and not result.mediated
+    assert w.recorder.calls[1][2]["mode_reason"].startswith(DEMOTED_PREFIX + "demotion persists")
+    fresh_approval = Promotions(approved=True, at=at(-60))
+    assert World(decision=approved(), demotions=demotions, promotions=fresh_approval).run(
+        config(promotion_change="promote-new")).mode == "live"
+
+
 def test_a_failing_gate_on_an_unpromoted_automation_adds_to_the_reason_and_records_no_demotion():
     log = Demotions(None)
     w = World(gate=FAIL, demotions=log, promotions=Promotions(False, reason="no promotion"))

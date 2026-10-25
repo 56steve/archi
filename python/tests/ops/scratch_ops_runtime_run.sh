@@ -113,6 +113,11 @@ check "deployment.yaml has runtime.enabled and archi.ops.workflow (written befor
 $T tables | tee "$RUN/tables.json"
 check "init created the archi_ops tables; nothing in this script did" \
   "d == {'signals': True, 'halts': True, 'mediations': True, 'demotions': True}" < "$RUN/tables.json"
+ENSURE="from archi.ops.okg_io import OpsIO; OpsIO('$DSN', '$D').ensure_tables()"
+"$V/python" -c "$ENSURE" & P1=$!; echo $P1 >> "$PIDS"
+"$V/python" -c "$ENSURE"; R2=$?
+wait $P1; R1=$?
+echo "{\"a\": $R1, \"b\": $R2}" | check "two concurrent ensure_tables (archi up and a worker start) both succeed" "d == {'a': 0, 'b': 0}"
 "$V/okg" runtime bootstrap --deployment $D > "$RUN/bootstrap-2.out" 2>&1; echo "{\"exit\": $?}" | check "okg runtime bootstrap is idempotent (archi up repeats it)" "d['exit'] == 0"
 git -C "$INST" log --oneline | head -5
 
@@ -375,6 +380,13 @@ check "the promoted automation ran live, the demotion lifted" "d['status'] == 'S
 $T pact promote-scratch-triage > "$RUN/pact2.json"; cat "$RUN/pact2.json"
 check "both approvals are PACT decisions in the okg ledger, by operator-x" "len(d) == 2 and all(r['verdict'] == 'approve' and r['principal'] == 'operator-x' for r in d)" < "$RUN/pact2.json"
 
+echo "-- 18b. hand-edit ops.yaml to name the older, approved promotion: it is superseded, so the run is shadow"
+$T set-promotion "$CHANGE1"
+WS5=$(new_run dem-5); $T wait "$WS5" | tee "$RUN/dem5.out"
+check "an old approved promotion that is not the newest does not make the automation live" \
+  "d['status'] == 'SUCCESS' and \"'mode': 'shadow'\" in str(d['output'])" < "$RUN/dem5.out"
+$T set-promotion "$CHANGE2"
+
 echo "== 19. publish and read the ops records back"
 sleep 20   # let the queued halted-record admissions run
 publish final
@@ -401,6 +413,7 @@ rb ops_proposal "prop-$WP";  check "named but unapproved: shadow, reason says th
 rb ops_proposal "prop-$WS1"; check "demotion: proposal is shadow with the failing check as the reason" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('demoted to shadow: ') and 'freshness:jira.jira' in rows[0]['attrs']['mode_reason']" < "$RUN/rb-prop-$WS1.jsonl"
 rb ops_proposal "prop-$WS2"; check "persisted demotion: shadow, reason says the demotion persists" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('demoted to shadow: demotion persists')" < "$RUN/rb-prop-$WS2.jsonl"
 rb ops_proposal "prop-$WS3"; check "second promotion unapproved: shadow, not promoted" "rows[0]['attrs']['mode'] == 'shadow' and rows[0]['attrs']['mode_reason'].startswith('not promoted: ')" < "$RUN/rb-prop-$WS3.jsonl"
+rb ops_proposal "prop-$WS5"; check "hand-edited to the old promotion: shadow, reason says it is not the newest" "rows[0]['attrs']['mode'] == 'shadow' and 'not the newest promotion' in rows[0]['attrs']['mode_reason']" < "$RUN/rb-prop-$WS5.jsonl"
 rb ops_proposal "prop-$WS4"; check "after the second approval the proposal is live" "rows[0]['attrs']['mode'] == 'live'" < "$RUN/rb-prop-$WS4.jsonl"
 
 echo "== 20. cleanup: stop the worker this script started"

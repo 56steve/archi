@@ -102,6 +102,18 @@ def cmd_tables(a: argparse.Namespace) -> None:
                           for t in ("signals", "halts", "mediations", "demotions")}))
 
 
+def cmd_set_promotion(a: argparse.Namespace) -> None:
+    """Hand-edit ops.yaml to name another PACT change as the promotion, and commit it (what an operator or an
+    attacker with write access could do; the runtime must not take it as a promotion)."""
+    from archi.cli.init import commit_all
+
+    inst, _, _ = env()
+    ops = load(inst / "ops.yaml")
+    ops["automations"][AUTOMATION]["promotion"] = a.change
+    (inst / "ops.yaml").write_text(yaml.safe_dump(ops, sort_keys=False), encoding="utf-8")
+    commit_all(inst, f"hand-edit: promotion {a.change}")
+
+
 def cmd_demotions(a: argparse.Namespace) -> None:
     with psycopg.connect(os.environ["OKG_DSN"], autocommit=True) as conn:
         rows = conn.execute("SELECT automation, run_id, reason FROM archi_ops.demotions ORDER BY demoted_at").fetchall()
@@ -314,6 +326,9 @@ def main() -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init-instance").set_defaults(f=cmd_init_instance)
     sub.add_parser("tables").set_defaults(f=cmd_tables)
+    sp = sub.add_parser("set-promotion")
+    sp.add_argument("change")
+    sp.set_defaults(f=cmd_set_promotion)
     sub.add_parser("demotions").set_defaults(f=cmd_demotions)
     ap = sub.add_parser("approve-promotion")
     ap.add_argument("change")
