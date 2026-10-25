@@ -376,7 +376,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
         min_response_coverage=args.min_coverage, min_agreement=args.min_agreement, max_false_rate=args.max_false_rate)
     try:
         result = promote(Path(args.instance), args.automation, report=report, readiness=readiness,
-                         principal=decider_name(args.as_user), note=args.note or "", dsn=io.dsn)
+                         principal=decider_name(args.as_user), note=args.note or "", dsn=io.dsn, deployment=io.deployment)
     except PromotionRefused as exc:
         raise OpsCliError(str(exc)) from exc
     print(json.dumps(result, indent=2) if args.json else

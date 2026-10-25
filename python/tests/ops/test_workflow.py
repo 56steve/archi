@@ -249,7 +249,10 @@ def test_the_decider_reads_the_row_in_a_step_and_treats_a_timeout_as_the_rows_wo
     class Timeout(Exception):
         pass
 
-    monkeypatch.setattr(wf, "_private_okg", lambda: (None, Timeout, None))
+    class StateError(Exception):
+        pass
+
+    monkeypatch.setattr(wf, "_private_okg", lambda: (None, Timeout, None, StateError))
     monkeypatch.setattr(wf, "request_escalation", lambda **kw: (_ for _ in ()).throw(Timeout()))
     monkeypatch.setattr(wf, "_Clock", lambda: SimpleNamespace(now=lambda: T0))
     subject, attrs = row(status="timed_out", verdict="approve")
@@ -344,3 +347,25 @@ def test_start_workflow_is_never_given_a_queue(monkeypatch):
     source = inspect.getsource(wf)
     for forbidden in (".enqueue(", "Queue(", "queue_name", "queue=", "okg-{"):
         assert forbidden not in source.replace("okg-<deployment>", "")
+
+
+def test_a_replay_of_an_applied_escalation_still_reads_the_row(monkeypatch):
+    """okg refuses applied -> applied when request_escalation runs again after a restart (O14)."""
+    class StateError(Exception):
+        pass
+
+    monkeypatch.setattr(wf, "_private_okg", lambda: (None, RuntimeError, None, StateError))
+    monkeypatch.setattr(wf, "request_escalation", lambda **kw: (_ for _ in ()).throw(StateError("applied -> applied")))
+    monkeypatch.setattr(wf, "_Clock", lambda: SimpleNamespace(now=lambda: T0))
+    subject, attrs = row(status="applied")
+    monkeypatch.setattr(wf, "_decision_step", lambda esc_id: {"found": True, "subject": subject, "attrs": attrs})
+    decision = wf._Decider(None).wait(Escalation("esc-1", "prop-1", OPENED, DEADLINE))
+    assert (decision.status, decision.decided_by) == ("approved", "alice")
+
+
+def test_any_other_error_from_request_escalation_still_propagates_to_the_loop(monkeypatch):
+    monkeypatch.setattr(wf, "_private_okg", lambda: (None, ValueError, None, KeyError))
+    monkeypatch.setattr(wf, "request_escalation", lambda **kw: (_ for _ in ()).throw(RuntimeError("db down")))
+    monkeypatch.setattr(wf, "_Clock", lambda: SimpleNamespace(now=lambda: T0))
+    with pytest.raises(RuntimeError, match="db down"):
+        wf._Decider(None).wait(Escalation("esc-1", "prop-1", OPENED, DEADLINE))

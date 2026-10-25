@@ -231,14 +231,17 @@ in_log "$POS" "archi_ops_mediate refused (halted)" | check "the worker log shows
 check "no marker was written" "d == $BASE" < <(markers)
 $OPS resume > /dev/null
 echo "-- 13b. approve in time, make the escalation row late, release: the step refuses (timed_out)"
+configure --timeout 40   # the deadline passes while the run waits at the gate
 POS=$(logpos); WG2=$(new_run gate-late-1); ESCG2=$($T pending "$WG2" --timeout 120)
 $OPS approve "$ESCG2" --as scratch-op
 $T wait-log "$RUN/worker.log" "archi_ops test gate: waiting" --after "$POS" --timeout 90
+echo "waiting past the 40 s deadline at the gate"; sleep 45
 $T tamper late "$WG2"; $T release-gate "$WG2"
 $T wait "$WG2" --timeout 90 | tee "$RUN/gate-late.out"
 check "the run ends timed_out" "d['status'] == 'SUCCESS' and 'timed_out' in str(d['output'])" < "$RUN/gate-late.out"
 in_log "$POS" "archi_ops_mediate refused (timed_out)" | check "the worker log shows the mediator step refusing the late approval" "d['found']"
 check "no marker was written" "d == $BASE" < <(markers)
+configure --timeout 300
 echo "-- 13c. approve in time, supersede the decision (reject), release: the step refuses (error)"
 POS=$(logpos); WG3=$(new_run gate-super-1); ESCG3=$($T pending "$WG3" --timeout 120)
 $OPS approve "$ESCG3" --as scratch-op

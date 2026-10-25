@@ -240,3 +240,18 @@ the worker is ready.
 
 **archi deletes.** `OpsIO.cancel_unconfirmed_admission` and the halt path that cancels its own
 unconfirmed admission (the halted record is not written when the worker is down).
+
+## O14. `request_escalation` is not replay-safe once the escalation is applied
+
+**Problem (proven, submit76, okg 0.2.0).** `request_escalation` ends by moving the escalation `decided` ->
+`applied`. When DBOS replays the workflow after a restart, the call runs again: `DBOS.recv` returns the
+recorded decision, then the move `applied` -> `applied` is refused with `EscalationStateError`. A workflow
+that has already received a decision therefore cannot be recovered through that call.
+
+**Ask.** Make the move idempotent (an escalation already `applied` by this workflow step is not an error), or
+return the recorded decision without touching the row on replay.
+
+**Acceptance.** Kill the worker after a decision was applied and before the workflow ends; the recovered
+workflow passes the call and carries on.
+
+**archi deletes.** The `except state_error` branch in `archi.ops.workflow._Decider.wait`.

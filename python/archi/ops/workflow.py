@@ -43,6 +43,7 @@ ask (docs/ops-runtime-akmon-asks.md) that removes it. `archi.ops.okg_io` lists i
 | `okg.deployment._internal.context.bind_sdk_context` | `_private_okg` | O9: a public way to bind a workflow's deployment context |
 | `okg.deployment._internal.escalation.EscalationTimeoutError` | `_private_okg` | O9 |
 | `okg.deployment._internal.cost_budget.BudgetExhaustedError` | `_private_okg` | O9 |
+| `okg.substrate.runtime.escalation.EscalationStateError` (a replay of an applied escalation raises it) | `_private_okg` | O14: `request_escalation` is not replay-safe after the row is applied |
 | the escalation id rule `"esc-" + sha1("<workflow id>|_create_escalation")[:24]` | `expected_escalation_id` | O3: `request_escalation` should return the id before it waits |
 | raw SQL on `okg.escalation_live` (through `OpsIO`) | `_decision_step`, `run_mediation` | O3 |
 | `okg.deployment_cost_caps` (cap lookup before a charge) | `_cap_of` | O4 |
@@ -119,8 +120,9 @@ def _private_okg():
     from okg.deployment._internal.context import bind_sdk_context
     from okg.deployment._internal.cost_budget import BudgetExhaustedError
     from okg.deployment._internal.escalation import EscalationTimeoutError
+    from okg.substrate.runtime.escalation import EscalationStateError
 
-    return bind_sdk_context, EscalationTimeoutError, BudgetExhaustedError
+    return bind_sdk_context, EscalationTimeoutError, BudgetExhaustedError, EscalationStateError
 
 
 def _bind(conn, deployment: str):
@@ -498,13 +500,18 @@ class _Decider:
         return Escalation(expected_escalation_id(DBOS.workflow_id), proposal_id, _Clock().now(), timeout_at)
 
     def wait(self, escalation: Escalation) -> Decision:
-        timeout_error = _private_okg()[1]
+        timeout_error, state_error = _private_okg()[1], _private_okg()[3]
         remaining = max((escalation.timeout_at - _Clock().now()).total_seconds(), 1.0)
         try:
             request_escalation(subject=subject_for(escalation.proposal_id), reason=self.reason,
                                decision_schema=DECISION_SCHEMA_REF, timeout_seconds=remaining)
         except timeout_error:
             pass  # okg marked the row timed_out; the row below says so
+        except state_error:
+            # A replay of a run whose escalation okg already marked `applied`: request_escalation asks to move
+            # applied -> applied and is refused (upstream ask O14). The recv already returned the recorded
+            # decision, so the row is read below exactly as in the first execution.
+            log.info("request_escalation: escalation %s was already applied; reading its row", escalation.escalation_id)
         row = _decision_step(escalation.escalation_id)  # a step: a replay sees the row it saw before
         return decision_from_row(escalation.escalation_id, row["subject"], row["attrs"])
 

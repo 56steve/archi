@@ -36,12 +36,13 @@ class FakeOkg:
     """Stands in for `okg pact new` / `okg pact decide`; `fail` names a subcommand that exits 1."""
 
     def __init__(self, root: Path, fail=None):
-        self.root, self.fail, self.calls = root, fail, []
+        self.root, self.fail, self.calls, self.envs = root, fail, [], []
 
     def __call__(self, cmd, **kw):
         if cmd[0] == "git":
             return subprocess.run(cmd, **kw)
         self.calls.append(cmd)
+        self.envs.append(kw.get("env") or {})
         verb = cmd[cmd.index("--root") + 2]
         if verb == self.fail:
             return subprocess.CompletedProcess(cmd, 1, "", f"{verb} refused")
@@ -55,7 +56,7 @@ class FakeOkg:
 def run(repo, report=GOOD, fail=None, **kw):
     okg = FakeOkg(repo, fail)
     result = promote(repo, "triage", report=report, readiness=promotion_readiness(report), principal="mohoney",
-                     now=NOW, run=okg, okg="okg", dsn="postgresql://x", **kw)
+                     now=NOW, run=okg, okg="okg", dsn="postgresql://x", deployment="dep", **kw)
     return result, okg
 
 
@@ -63,18 +64,23 @@ def test_a_passing_report_records_the_decision_sets_live_and_commits_by_name(rep
     result, okg = run(repo, note="reviewed the 40 incidents")
     change = "promote-triage-20261025t143005z"
     assert result["change"] == change == change_id("triage", NOW)
-    new, decide = okg.calls
+    new, ingest, gate, decide = okg.calls
     assert new[:5] == ["okg", "pact", "--root", str(repo), "new"] and new[5] == change
+    assert ingest[4:7] == ["evidence", "ingest", change]
+    assert ingest[ingest.index("--pytest-report") + 1] == f"pact/changes/{change}/readiness.xml"
+    assert gate[4:7] == ["gate", "task-done", change] and gate[7] == f"task.{change}"
     assert decide[decide.index("decide") + 1] == change
     assert decide[decide.index("--verdict") + 1] == "approve" and decide[decide.index("--principal") + 1] == "mohoney"
     assert "scored=40" in decide[decide.index("--note") + 1] and "reviewed the 40 incidents" in decide[decide.index("--note") + 1]
     assert decide[decide.index("--dsn") + 1] == "postgresql://x"
+    assert okg.envs[-1]["OKG_PACT_GRAPH_DEPLOYMENT"] == "dep" and okg.envs[-1]["OKG_DSN"] == "postgresql://x"
     ops = yaml.safe_load((repo / "ops.yaml").read_text())["automations"]["triage"]
     assert ops == {"mode": "live", "timeout_seconds": 60, "promoted_at": "2026-10-25T14:30:05Z"}
     assert json.loads((repo / "pact" / "changes" / change / "shadow-report.json").read_text())["scored"] == 40
     assert git(repo, "log", "-1", "--format=%s").strip() == f"promote triage to live ({change})"
     assert sorted(git(repo, "show", "--name-only", "--format=", "HEAD").split()) == sorted(
-        ["ops.yaml", f"pact/changes/{change}/pact.yaml", f"pact/changes/{change}/shadow-report.json"])
+        ["ops.yaml", f"pact/changes/{change}/pact.yaml", f"pact/changes/{change}/shadow-report.json",
+         f"pact/changes/{change}/readiness.xml"])
     assert git(repo, "status", "--porcelain").strip() == ""
 
 
@@ -110,10 +116,11 @@ def test_an_automation_ops_yaml_does_not_know_is_refused(repo):
                 run=FakeOkg(repo), okg="okg")
 
 
-@pytest.mark.parametrize("fail", ["new", "decide"])
-def test_when_okg_pact_fails_the_automation_stays_in_shadow_and_nothing_is_committed(repo, fail):
+@pytest.mark.parametrize("fail, what", [("new", "new"), ("evidence", "evidence ingest"), ("gate", "gate task-done"),
+                                        ("decide", "decide")])
+def test_when_okg_pact_fails_the_automation_stays_in_shadow_and_nothing_is_committed(repo, fail, what):
     before = git(repo, "rev-parse", "HEAD")
-    with pytest.raises(PromotionRefused, match=f"okg pact {fail} failed"):
+    with pytest.raises(PromotionRefused, match=f"okg pact {what} failed"):
         run(repo, fail=fail)
     assert git(repo, "rev-parse", "HEAD") == before
     assert yaml.safe_load((repo / "ops.yaml").read_text())["automations"]["triage"]["mode"] == "shadow"

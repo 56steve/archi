@@ -6,7 +6,9 @@ decision on the instance." This module does the repository half of `archi ops pr
 1. refuse unless the shadow report passes `archi.ops.shadow.promotion_readiness` (the caller passes
    both, so the thresholds an operator asked for are in the PACT note);
 2. refuse unless the instance directory is a git repository;
-3. `okg pact new promote-<automation>-<time>` in the instance repo, with the report saved beside it;
+3. `okg pact new promote-<automation>-<time> --shape fast` in the instance repo, with the report saved
+   beside it and a junit file for its one test (the readiness check), ingested as the change's evidence;
+   `okg pact gate task-done` then brings the change to awaiting_review, the one state where approve is legal;
 4. `okg pact decide <change> --verdict approve --principal <operator> --note <report summary>`;
 5. set the automation live in `ops.yaml` (`mode: live`, `promoted_at: <now>`);
 6. commit the change directory and `ops.yaml`, by name.
@@ -67,6 +69,7 @@ def promote(
     principal: str,
     note: str = "",
     dsn: Optional[str] = None,
+    deployment: Optional[str] = None,
     now: Optional[datetime] = None,
     run: Runner = subprocess.run,
     okg: Optional[str] = None,
@@ -91,28 +94,48 @@ def promote(
     exe = okg or _okg()
     text = (f"Promote automation {automation} from shadow to live. Shadow report: {summary(report)}."
             + (f" Operator note: {note}" if note else ""))
-    pact = [exe, "pact", "--root", str(instance_dir)]
-    created = run([*pact, "new", change, "--title", f"Promote {automation} to live", "--intent", text,
-                   "--acceptance", "The operator approves; ops.yaml sets the automation live."],
-                  capture_output=True, text=True)
-    if created.returncode != 0:
-        raise PromotionRefused(f"okg pact new failed: {(created.stderr or created.stdout)[-1500:]}")
+    pact_env = {**os.environ, "OKG_PACT_QUIET_NUDGE": "1"}
+    if deployment:
+        pact_env["OKG_PACT_GRAPH_DEPLOYMENT"] = deployment
+        pact_env.setdefault("OKG_DEPLOYMENTS_DIR", str(instance_dir / "deployments"))
+    if dsn:
+        pact_env["OKG_DSN"] = dsn
     change_dir = instance_dir / "pact" / "changes" / change
-    change_dir.mkdir(parents=True, exist_ok=True)
+    rel = f"pact/changes/{change}"
+    test_id = "promotion/shadow_report.py::test_promotion_readiness"
+
+    def pact(*args: str, what: str) -> None:
+        done = run([exe, "pact", "--root", str(instance_dir), *args], capture_output=True, text=True,
+                   env=pact_env, cwd=str(instance_dir))
+        if done.returncode != 0:
+            detail = "\n".join(line for line in ((done.stderr or "") + (done.stdout or "")).splitlines()
+                               if line.strip() and not line.startswith("tip:"))[-1500:]
+            raise PromotionRefused(f"okg pact {what} failed; {automation} stays in shadow and nothing was "
+                                   f"committed: {detail}")
+
+    # The change is a small PACT whose one test is the readiness check; its junit report is the evidence,
+    # so the change reaches awaiting_review and the operator's approval is a legal verdict.
+    pact("new", change, "--shape", "fast", "--title", f"Promote {automation} to live", "--intent", text,
+         "--acceptance", "The shadow report passes promotion_readiness and the operator approves.",
+         "--task-title", f"Promote {automation}", "--test-id", test_id,
+         "--test-command", f"archi ops promote {automation}", what="new")
     (change_dir / "shadow-report.json").write_text(json.dumps(report, indent=2, sort_keys=True, default=str),
                                                    encoding="utf-8")
-    decide = [*pact, "decide", change, "--verdict", "approve", "--principal", principal, "--note", text]
+    (change_dir / "readiness.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n<testsuites><testsuite name="archi-ops-promotion" tests="1" '
+        'failures="0" errors="0"><testcase classname="promotion.shadow_report" name="test_promotion_readiness"/>'
+        "</testsuite></testsuites>\n", encoding="utf-8")
+    pact("evidence", "ingest", change, "--pytest-report", f"{rel}/readiness.xml", what="evidence ingest")
+    pact("gate", "task-done", change, f"task.{change}", what="gate task-done")
+    decide = ["decide", change, "--verdict", "approve", "--principal", principal, "--note", text]
     if dsn:
         decide += ["--dsn", dsn]
-    decided = run(decide, capture_output=True, text=True)
-    if decided.returncode != 0:
-        raise PromotionRefused(f"okg pact decide failed; {automation} stays in shadow and nothing was committed: "
-                               f"{(decided.stderr or decided.stdout)[-1500:]}")
+    pact(*decide, what="decide")
 
     data["automations"][automation] = {**(data["automations"][automation] or {}), "mode": "live",
                                        "promoted_at": now.strftime("%Y-%m-%dT%H:%M:%SZ")}
     ops_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-    rel_change = f"pact/changes/{change}"
+    rel_change = rel
     added = _git(instance_dir, "add", "--", OPS_FILE, rel_change, run=run)
     committed = _git(instance_dir, "commit", "-q", "-m", f"promote {automation} to live ({change})", "--",
                      OPS_FILE, rel_change, run=run)

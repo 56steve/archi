@@ -233,7 +233,7 @@ def cmd_wait_log(a: argparse.Namespace) -> None:
 def cmd_tamper(a: argparse.Namespace) -> None:
     """Change the escalation row between the loop's decision and the mediator step (lab only)."""
     esc = io().escalations(open_only=False, workflow_ids=[a.wid])[0]
-    patch = {"late": lambda row: {"decided_at": (datetime.fromisoformat(row["timeout_at"]) + timedelta(hours=1)).isoformat()},
+    patch = {"late": lambda row: {"decided_at": (datetime.fromisoformat(row["timeout_at"]) + timedelta(seconds=3)).isoformat()},
              "superseded": lambda row: {"decision": {"verdict": "reject"}}}[a.kind](esc)
     with psycopg.connect(os.environ["OKG_DSN"], autocommit=True) as conn:
         n = conn.execute("UPDATE okg.escalation_live SET attrs = attrs || %s::jsonb "
