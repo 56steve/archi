@@ -112,5 +112,26 @@ tasks:
     Test plan:
 
     - links [evidence: manual]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.r3-ops-runtime.pack
+  status: pass
+  command: python -m pytest python/tests/ops/test_manifest.py python/tests/ops/test_levels.py python/tests/ops/test_render.py
+    -q; python -m pytest python/tests -q (submit76, okg 0.2.0)
+  head: 4804f5c979322f01db104611397584bbb9aed575
+  at: '2026-10-25T17:29:57+00:00'
+  note: 'acc.r3-ops-runtime.schema: a pack of kind automation declares its trigger (schedule, ticket queue
+    or watched signal), context gate (the context_gate.GateSpec keys), playbook, action classes (payload
+    JSON Schema, mediator, reversible, blast radius, max level), proposal schema (the six ops_proposal
+    fields with their types) and budget (cost per run and per day, runs per hour), and archi bundles
+    validate enforces it. Invalid fixture packs each fail with their own message: duplicate or undefined
+    action classes, an unresolvable mediator (resolved through the catalog, so a third-party pack may
+    require a shipped tool pack), an L2 class on a workflow-step mediator (only side-effect-free steps
+    in python/archi/ops/steps.py), a missing playbook, a bad payload or proposal schema, a bad gate, a
+    non-positive budget or a cron that fires more often than runs_per_hour, duplicate YAML keys. Levels
+    above L2 or unknown are refused citing ADR 0002 D13 at every place a level is set: pack default and
+    max level, each action class, the bundle bound and the instance archi.yaml (the validate half of
+    acc.no-l3; the run-start half is req.loop). The automation block reaches the rendered instance
+    and archi.lock. Full suite 2468 passed, 17 skipped, 2 failed: the two anonymizer wall-clock tests at
+    load average above 40. Two independent reviews; their findings were fixed in b11d26c1 and 4804f5c9.'
 decisions: []
