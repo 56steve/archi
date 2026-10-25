@@ -1,9 +1,8 @@
 """PACT r3-ops-record: the ops-record pack and its schema slice.
 
 acc.r3-ops-record.load: the catalog loads with the slice composed on
-cern-team and on cluster-manager. Both bundles are built at test time:
-cern-team is the shipped profile regrouped into packs (bundle_support), and
-cluster-manager, which PACT r3-bundle-cluster-manager ships later, is its
+cern-team and on cluster-manager. cern-team is the shipped bundle and its
+packs, ops-record included (copied by bundle_support), and cluster-manager, which PACT r3-bundle-cluster-manager ships later, is its
 ADR 0002 §5 shape with the packs that exist today (docsite + ops-record,
 jira optional). okg itself composes the catalog (`okg catalog load`, no
 --apply), from the deployment okg's own planner scaffolds from the rendered
@@ -11,7 +10,6 @@ profile.
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -42,7 +40,6 @@ def _narrowings():
 @pytest.fixture(scope="module")
 def catalog(tmp_path_factory):
     root = build_cern_team_catalog(tmp_path_factory.mktemp("ops-record-catalog"))
-    shutil.copytree(PACK, root / "packs" / "ops-record")
     write_bundle(
         root,
         "cluster-manager",

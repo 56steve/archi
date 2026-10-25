@@ -26,7 +26,8 @@ from okg.substrate.catalog.modules_compose import compose_catalog  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 SCHEMAS = REPO / "python" / "archi" / "schemas"
-BUNDLE_SCHEMAS = REPO / "bundles" / "cern-team" / "schemas"
+# The slices a pack installs (every pack links the same package files).
+BUNDLE_SCHEMAS = REPO / "bundles" / "packs" / "jira" / "schemas"
 
 CERN_TEAM_MODULES = ["document_starter", "person", "extraction"]
 COMPOPS_MODULES = ["document_starter", "person", "extraction", "dataset", "repo_starter"]
@@ -89,7 +90,7 @@ def test_documentation_page_title_is_a_path_field(modules, label):
 
 
 def test_bundle_copy_matches_the_package_schema():
-    """The cern-team bundle ships its own copy of sources.yaml; a declaration
+    """Each pack ships sources.yaml (a link to the package file); a declaration
     added to one copy and not the other would reach only one consumer."""
     assert (BUNDLE_SCHEMAS / "sources.yaml").read_bytes() == (
         SCHEMAS / "sources.yaml"

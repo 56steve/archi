@@ -5,8 +5,7 @@
 # Usage: ARCHI_SCRATCH_DSN=postgresql://... scratch_add_run.sh <empty work dir>
 #
 # Needs an EMPTY database on an AKMON Postgres (the quickstart's
-# ghcr.io/mitdbg/akmon-postgres image), network access for the CMSSW release
-# map, and okg + archi installed in the Python environment whose bin/ holds
+# ghcr.io/mitdbg/akmon-postgres image), and okg + archi installed in the Python environment whose bin/ holds
 # `python` (set V to that bin/ directory; default: the one on PATH).
 set -euo pipefail
 
@@ -20,13 +19,16 @@ RUN="$(cd "$RUN" && pwd)"
 cd "$RUN"
 unset OKG_PROFILES_DIR
 
-echo "== 0. inputs: the cern-team packs (regrouped from the shipped profile) and a local git repo"
+echo "== 0. inputs: the shipped cern-team packs, a docsite cache and a local git repo"
 "$V/python" -c "
 import sys; sys.path.insert(0, '$REPO/python/tests')
 from pathlib import Path
 from bundles.bundle_support import build_cern_team_catalog
 build_cern_team_catalog(Path('$RUN/catalog'))
 "
+mkdir -p data/docsite
+printf '[{"title": "Start", "url": "https://docs.example.org/start", "body": "How to start."}]\n' \
+  > data/docsite/records.json
 mkdir demo-repo
 git -C demo-repo init -q -b main
 printf '# demo\n\nA tiny repository for the archi add run.\n' > demo-repo/README.md
@@ -38,9 +40,9 @@ ROOTS=(--pack-root "$RUN/catalog/packs"
        --pack-root "$REPO/python/tests/bundles/fixtures/thirdparty/archi_fixture_packs/packs"
        --bundle-root "$RUN/catalog")
 
-echo "== 1. render the instance (bare cern-team: cmssw-releases + playbooks)"
+echo "== 1. render the instance (cern-team without indico: docsite + playbooks)"
 mkdir instance
-"$V/archi" render --bundle cern-team --instance instance "${ROOTS[@]}"
+"$V/archi" render --bundle cern-team --without indico --instance instance "${ROOTS[@]}"
 
 echo "== 2. install and publish with okg, from the instance dir (no OKG_PROFILES_DIR)"
 # Not a git repo: the rendered profile declares standalone release provenance.

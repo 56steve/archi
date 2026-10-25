@@ -18,7 +18,8 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 SCHEMAS = REPO / "python" / "archi" / "schemas"
-BUNDLE_SCHEMAS = REPO / "bundles" / "cern-team" / "schemas"
+# The slices a pack installs (every pack links the same package files).
+BUNDLE_SCHEMAS = REPO / "bundles" / "packs" / "jira" / "schemas"
 
 EXPECTED = {
     "JiraIssue": ["issue_key"],

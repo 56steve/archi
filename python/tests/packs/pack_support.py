@@ -99,7 +99,12 @@ def manifest(pack: str) -> dict:
 
 
 def context_packs() -> list[str]:
-    return [p.name for p in pack_dirs() if manifest(p.name)["kind"] == "context"]
+    """Packs that bring sources. (ops-record is a context pack with none: its
+    records arrive through okg admission, so it has nothing to ingest alone.)"""
+    return [
+        p.name for p in pack_dirs()
+        if manifest(p.name)["kind"] == "context" and "sources" in manifest(p.name)
+    ]
 
 
 def credential_names() -> set[str]:

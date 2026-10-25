@@ -140,11 +140,11 @@ def test_a_hand_edit_to_the_registry_shows_in_diff(cern, installed):
     instance, deployment = installed
     registry = deployment / "source_registry.yaml"
     data = yaml.safe_load(registry.read_text())
-    data["sources"]["cmssw-releases.cmssw_releases"]["params"]["fetch"] = False
+    data["sources"]["docsite.docsite"]["params"]["required"] = False
     registry.write_text(yaml.safe_dump(data, sort_keys=False))
     drift = diff(instance, cern, deployment)
     assert drift.deployment == [
-        "source cmssw-releases.cmssw_releases: registry differs from the profile in ['params']"
+        "source docsite.docsite: registry differs from the profile in ['params']"
     ]
 
 
@@ -152,12 +152,12 @@ def test_a_source_removed_from_or_added_to_the_registry_shows_in_diff(cern, inst
     instance, deployment = installed
     registry = deployment / "source_registry.yaml"
     data = yaml.safe_load(registry.read_text())
-    entry = data["sources"].pop("cmssw-releases.cmssw_releases")
+    entry = data["sources"].pop("docsite.docsite")
     data["sources"]["handmade"] = entry
     registry.write_text(yaml.safe_dump(data, sort_keys=False))
     drift = diff(instance, cern, deployment)
     assert drift.deployment == [
-        "source cmssw-releases.cmssw_releases: in the profile, not in the registry",
+        "source docsite.docsite: in the profile, not in the registry",
         "source handmade: in the registry, not in the profile",
     ]
 
@@ -178,15 +178,15 @@ def test_an_upstream_pack_change_shows_in_diff(cern_root, installed, tmp_path):
     instance, _ = installed
     changed = tmp_path / "changed"
     shutil.copytree(cern_root, changed)
-    manifest = changed / "packs" / "cmssw-releases" / "pack.yaml"
+    manifest = changed / "packs" / "docsite" / "pack.yaml"
     manifest.write_text(manifest.read_text().replace("version: 0.1.0", "version: 0.2.0"))
-    playbook = next((changed / "packs" / "cern-playbooks" / "playbooks").glob("*.md"))
+    playbook = next((changed / "packs" / "core-playbooks" / "playbooks").glob("*.md"))
     playbook.write_text(playbook.read_text() + "\nmore\n")
     catalog = discovery.from_roots([changed / "packs", THIRD_PARTY_PACKS], [changed])
     drift = diff(instance, catalog)
     assert drift.upstream == [
-        "pack cmssw-releases: version 0.1.0 locked, 0.2.0 installed",
-        "pack cern-playbooks: content changed at version 0.1.0",
+        "pack docsite: version 0.1.0 locked, 0.2.0 installed",
+        "pack core-playbooks: content changed at version 0.1.0",
     ]
 
 
@@ -196,7 +196,9 @@ def test_diff_command_exit_codes(cern_root, installed, capsys):
              "--bundle-root", str(cern_root)]
     assert archi_main(["diff", "--instance", str(instance), "--deployment", str(deployment), *roots]) == 0
     (deployment / "source_registry.yaml").write_text(
-        (deployment / "source_registry.yaml").read_text().replace("fetch: true", "fetch: false")
+        (deployment / "source_registry.yaml").read_text().replace(
+            "/docsite/records.json", "/docsite/other.json"
+        )
     )
     capsys.readouterr()
     rc = archi_main(["diff", "--instance", str(instance), "--deployment", str(deployment),
@@ -218,7 +220,7 @@ def test_add_extends_an_installed_deployment(cern, installed):
     assert result.added_sources == ["repo-mirror.repo"]
 
     registry = yaml.safe_load((deployment / "source_registry.yaml").read_text())["sources"]
-    assert sorted(registry) == ["cmssw-releases.cmssw_releases", "repo-mirror.repo"]
+    assert sorted(registry) == ["docsite.docsite", "indico.indico_live", "repo-mirror.repo"]
     assert registry["repo-mirror.repo"]["params"]["url"] == "file:///srv/demo.git"
     assert registry["repo-mirror.repo"]["params"]["repo_root"] == "/srv/data/repos/mirror"
     manifest = yaml.safe_load((deployment / "deployment.yaml").read_text())
@@ -236,32 +238,34 @@ def test_add_extends_an_installed_deployment(cern, installed):
 
 def test_add_copies_new_schema_slices_and_files(cern, tmp_path):
     instance = tmp_path / "instance"
-    render_and_lock(cern, instance, ["cern-team"], without_packs=["cmssw-releases"],
+    render_and_lock(cern, instance, ["cern-team"], without_packs=["docsite", "indico"],
                     with_packs=["repo-mirror"])
     deployment = _scaffold(instance, "cern-team",
                            {**BASE_ANSWERS, "repo_mirror_url": "file:///srv/demo.git"})
     assert not (deployment / "schemas" / "sources.yaml").exists()
-    add(instance, cern, "github", {"github_github_repo_url": "https://example.org/x.git"},
+    # code-text brings git-code, which it requires, and extractors.yaml.
+    add(instance, cern, "code-text", {"git_code_repo_url": "https://example.org/x.git"},
         deployment_dir=deployment, run_okg=False, echo=lambda *_: None)
     assert (deployment / "schemas" / "sources.yaml").is_file()
     assert (deployment / "extractors.yaml").is_file()
     registry = yaml.safe_load((deployment / "source_registry.yaml").read_text())["sources"]
-    assert {"github.github_repo", "github.code_text"} <= set(registry)
+    assert {"git-code.repo", "git-code.git_history", "code-text.code_text"} <= set(registry)
 
 
 def test_add_refuses_a_pack_already_installed(cern, installed):
     instance, deployment = installed
     with pytest.raises(LockError, match="already in this instance"):
-        add(instance, cern, "cmssw-releases", {}, deployment_dir=deployment, run_okg=False)
+        add(instance, cern, "docsite", {}, deployment_dir=deployment, run_okg=False)
 
 
 def test_add_refuses_to_overwrite_a_diverged_file(cern, tmp_path):
     instance = tmp_path / "instance"
-    render_and_lock(cern, instance, ["cern-team"], with_packs=["gitlab"])
+    render_and_lock(cern, instance, ["cern-team"])
     deployment = _scaffold(instance, "cern-team", BASE_ANSWERS)
-    (deployment / "extractors.yaml").write_text("locally: changed\n")
-    with pytest.raises(LockError, match="extractors.yaml differs"):
-        add(instance, cern, "github", {}, deployment_dir=deployment, run_okg=False,
+    # jira ships the same shared slice docsite and indico installed.
+    (deployment / "schemas" / "sources.yaml").write_text("locally: changed\n")
+    with pytest.raises(LockError, match="sources.yaml differs"):
+        add(instance, cern, "jira", {}, deployment_dir=deployment, run_okg=False,
             echo=lambda *_: None)
 
 

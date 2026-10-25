@@ -248,23 +248,16 @@ def test_the_shipped_parameters_store_a_function_body(tmp_path):
     assert methods and "self.data[key] = value" in methods[0].attrs["text"]
 
 
-def test_the_guide_tells_an_existing_deployment_how_to_paste_the_entry():
-    """The paste-by-hand route names the qualified predecessor and the claim.
-
-    On a staging deployment a bare `github_repo` predecessor was refused with
-    `PredecessorNotRun`, and a registry edit without a fresh ownership claim
-    was refused as drifted. The guide and both examples must say so.
-    """
-    guide = (BUNDLE.parents[1] / "docs" / "cern-team-quickstart.md").read_text(
-        encoding="utf-8"
-    )
+def test_the_guide_tells_an_existing_deployment_how_to_add_the_pack():
+    """An installed instance adds code-text with `archi add`, which does the
+    registry edit, the extractors.yaml copy and the ownership claim the guide
+    once listed as manual steps (a bare `github_repo` predecessor and a
+    registry edit without a fresh claim were both refused on a staging
+    deployment). The template's predecessor is an ownership id, so it
+    survives the pack-qualified source ids."""
+    guide = (PACK.parents[2] / "docs" / "cern-team-quickstart.md").read_text(encoding="utf-8")
     section = guide.split("### Function bodies, not only signatures", 1)[1]
     section = section.split("\n## ", 1)[0]
-    assert "Already installed?" in section
-    assert "myteam.github-repo" in section
-    assert "okg catalog ownership claim" in section
-    for path in EXAMPLES.values():
-        header = path.read_text(encoding="utf-8").split("\n\n", 2)
-        text = "\n".join(header[:2])
-        assert "okg catalog ownership claim" in text
-        assert "qualified id" in text
+    assert "archi add code-text" in section
+    assert "--code-text-extractors-dir" in section
+    assert _entry("code_text")["params"]["predecessor_source"] == "${deployment_name}.git-repo"

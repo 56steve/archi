@@ -131,6 +131,9 @@ def test_shared_schema_slices_are_the_package_slices():
             continue
         for path in sorted(schemas.rglob("*.yaml")):
             rel = path.relative_to(schemas)
+            if not (package / rel).is_file():
+                continue  # a pack's own slice (ops-record's), owned once
+            assert path.is_symlink(), f"{directory.name}: {rel} is a copy, not a link"
             assert path.resolve() == (package / rel).resolve(), f"{directory.name}: {rel}"
 
 

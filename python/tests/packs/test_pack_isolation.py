@@ -4,7 +4,9 @@ For each pack this renders a profile holding only that pack (and the packs it
 requires), installs it with okg into a fresh database, feeds it the fixture
 inputs in `pack_support.FIXTURES`, and runs the publish. It passes when okg
 publishes a generation, the deployment lints with zero blockers, and the
-pack's own coverage invariant holds on the published graph.
+pack's own coverage invariant holds on the published graph. The same run
+installs the cern-team bundle with every optional pack, the proof that
+cern-team installs from packs.
 
 Needs a real Postgres with okg's extensions (AKMON's image, see
 docs/cern-team-quickstart.md step 2), named by ARCHI_PACK_ISOLATION_DSN:
@@ -44,7 +46,7 @@ DSN = os.environ.get("ARCHI_PACK_ISOLATION_DSN")
 needs_db = pytest.mark.skipif(not DSN, reason="ARCHI_PACK_ISOLATION_DSN is not set")
 
 
-def test_every_context_pack_has_isolation_fixtures():
+def test_every_pack_with_sources_has_isolation_fixtures():
     missing = sorted(set(context_packs()) - set(FIXTURES))
     assert not missing, f"packs with no fixture inputs in pack_support.FIXTURES: {missing}"
 
@@ -85,11 +87,28 @@ def _report(result) -> str:
 @needs_db
 @pytest.mark.parametrize("pack", sorted(FIXTURES))
 def test_pack_installs_alone_and_publishes(tmp_path, pack):
-    _recreate_database(DSN)
     catalog = solo_catalog(tmp_path, pack)
     resolution = resolve(catalog, [f"solo-{pack}"])
     assert resolution.pack_names == tuple(_closure(pack))
+    _install_and_publish(tmp_path, resolution, f"solo-{pack}")
 
+
+@needs_db
+def test_cern_team_installs_from_packs_and_publishes(tmp_path):
+    """The cern-team bundle, every optional pack selected, from fixture inputs."""
+    from packs.pack_support import shipped_catalog
+
+    catalog = shipped_catalog()
+    optional = list(catalog.bundles["cern-team"].optional_packs)
+    resolution = resolve(catalog, ["cern-team"], with_packs=optional)
+    assert set(resolution.pack_names) == set(catalog.bundles["cern-team"].default_packs) | set(optional)
+    _install_and_publish(tmp_path, resolution, "cern-team")
+
+
+def _install_and_publish(tmp_path: Path, resolution, name: str) -> None:
+    """Render, install with okg, commit, ingest and publish; then check lint
+    and that each selected pack's invariants were installed."""
+    _recreate_database(DSN)
     instance = tmp_path / "instance"
     deployments = instance / "deployments"
     data = tmp_path / "data"
@@ -98,14 +117,14 @@ def test_pack_installs_alone_and_publishes(tmp_path, pack):
     git(["init", "-q"], deployments)
     git(["commit", "-q", "--allow-empty", "-m", "baseline"], deployments)
 
-    rendered = render(resolution, instance, name=f"solo-{pack}")
+    rendered = render(resolution, instance, name=name)
 
     server = FixtureServer()
     try:
         answers = {"postgres_dsn": DSN, "archi_data_root": str(data)}
-        for name in resolution.pack_names:
-            for local, value in FIXTURES[name](data, server).items():
-                answers[name.replace("-", "_") + "_" + local] = value
+        for pack in resolution.pack_names:
+            for local, value in FIXTURES.get(pack, lambda d, s: {})(data, server).items():
+                answers[pack.replace("-", "_") + "_" + local] = value
         known = {q["id"] for q in rendered.composition.questions}
         assert set(answers) <= known, sorted(set(answers) - known)
 

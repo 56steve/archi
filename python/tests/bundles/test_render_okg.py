@@ -1,19 +1,19 @@
 """Render to an okg profile, and let okg itself judge the result.
 
-Real input: `build_cern_team_catalog` regroups the shipped cern-team profile
-into packs at test time (see bundle_support.py). Three properties:
+Real input: the shipped cern-team bundle and its packs (bundles/cern-team/,
+bundles/packs/), copied by `build_cern_team_catalog`. Two properties:
 
 - acc.r3-bundle-format.okg-accepts: every rendered profile in the matrix
   passes `okg install --dry-run`, run from the instance directory with no
-  OKG_PROFILES_DIR, and its scaffold passes `okg deployment lint`.
+  OKG_PROFILES_DIR, and its scaffold passes `okg deployment lint` with no
+  blocker. The two template blockers the cern-team profile carried (docsite's
+  reserved `params.source_name`, git_history's drifted admission blocks) were
+  fixed when the packs were split out (PACT r3-packs-split).
 - acc.r3-bundle-format.no-trace: rendering base+P with P removed is
   byte-identical to rendering base, and nothing P owns appears in it.
-- The rendered registry equals what okg builds from the hand-written
-  cern-team profile, entry for entry, once ids are pack-qualified.
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,25 +26,37 @@ from archi.bundles.resolve import resolve
 
 from bundles.bundle_support import (
     CATALOG,
-    CERN_TEAM,
     CERN_TEAM_DEFAULT,
-    CERN_TEAM_PACKS,
+    CERN_TEAM_OPTIONAL,
     build_cern_team_catalog,
     load_catalog,
 )
 
 OKG = str(Path(sys.executable).with_name("okg"))
-OPTIONAL = [p for p in CERN_TEAM_PACKS if p not in CERN_TEAM_DEFAULT]
+OPTIONAL = CERN_TEAM_OPTIONAL
 
-#: Answers for the hand-written profile, by its question ids.
-ORIGINAL_ANSWERS = {
+#: Answers for the questions a full render asks, by rendered id.
+ANSWERS = {
     "deployment_name": "qt",
     "postgres_dsn": "postgresql://localhost:1/qt",
     "archi_data_root": "/srv/archi-data",
-    "github_repo_url": "https://example.org/demo.git",
-    "gitlab_repo_url": "https://gitlab.example.org/demo.git",
+    "git_code_repo_url": "https://example.org/demo.git",
     "twiki_eos_root": "/srv/twiki",
 }
+
+
+def _requires(cern, pack):
+    """`pack` preceded by the packs it requires (a --with list that resolves)."""
+    out = []
+
+    def visit(name):
+        for dep in cern.packs[name].requires_packs:
+            visit(dep)
+        if name not in out:
+            out.append(name)
+
+    visit(pack)
+    return out
 
 
 @pytest.fixture(scope="module")
@@ -63,13 +75,9 @@ def _tree(directory: Path) -> dict[str, bytes]:
 
 
 def _rendered_answers(rendered) -> dict[str, str]:
-    """ORIGINAL_ANSWERS under the rendered (pack-namespaced) ids."""
-    out = {}
-    for q in rendered.composition.questions:
-        for original, value in ORIGINAL_ANSWERS.items():
-            if q["id"] == original or q["id"].endswith("_" + original):
-                out[q["id"]] = value
-    return out
+    """ANSWERS for the questions this render asks."""
+    asked = {q["id"] for q in rendered.composition.questions}
+    return {qid: value for qid, value in ANSWERS.items() if qid in asked}
 
 
 # ---------------------------------------------------------------------------
@@ -84,15 +92,15 @@ def test_render_writes_an_okg_profile(cern, tmp_path):
     assert profile["name"] == "cern-team"
     assert profile["source_defaults"] == "source-defaults/"
     assert sorted(p.name for p in (out.profile_dir / "source-defaults").iterdir()) == [
-        "cmssw-releases.cmssw_releases.yaml"
+        "docsite.docsite.yaml", "indico.indico_live.yaml"
     ]
     assert (out.profile_dir / "skills" / "chat-system-prompt.md").is_file()
 
 
 def test_render_starts_from_an_empty_directory(cern, tmp_path):
-    render(resolve(cern, ["cern-team"], with_packs=["indico"]), tmp_path)
+    render(resolve(cern, ["cern-team"], with_packs=["twiki"]), tmp_path)
     out = render(resolve(cern, ["cern-team"]), tmp_path)
-    assert not any(p.startswith("source-defaults/indico.") for p in _tree(out.profile_dir))
+    assert not any(p.startswith("source-defaults/twiki.") for p in _tree(out.profile_dir))
 
 
 def test_render_is_deterministic(cern, tmp_path):
@@ -102,13 +110,15 @@ def test_render_is_deterministic(cern, tmp_path):
 
 
 def test_rendered_deployment_defaults_carry_the_bundle_chat(cern, tmp_path):
-    out = render(resolve(cern, ["cern-team"], with_packs=["docsite"]), tmp_path)
+    out = render(resolve(cern, ["cern-team"], with_packs=["jira"]), tmp_path)
     defaults = yaml.safe_load((out.profile_dir / "deployment-defaults.yaml").read_text())
     assert defaults["search"]["profiles"]["content"]["subtypes"] == [
-        "cmssw_release", "documentation_page", "software_repository", "document_chunk"
+        "documentation_page", "software_repository", "document_chunk",
+        "meeting_minutes", "document", "jira_issue",
     ]
     assert defaults["nomos"]["rollout"]["owner"]["name"] == "archi-cern-team"
-    assert "suggestions" not in defaults["chat"]["preset"]
+    bundle = cern.bundles["cern-team"]
+    assert defaults["chat"]["preset"]["suggestions"] == bundle.chat["suggestions"]
 
 
 # ---------------------------------------------------------------------------
@@ -118,10 +128,12 @@ def test_rendered_deployment_defaults_carry_the_bundle_chat(cern, tmp_path):
 
 @pytest.mark.parametrize("pack", OPTIONAL)
 def test_base_plus_pack_minus_pack_equals_base(cern, tmp_path, pack):
-    base = render(resolve(cern, ["cern-team"]), tmp_path / "base")
-    plus = render(resolve(cern, ["cern-team"], with_packs=[pack]), tmp_path / "plus")
+    deps = _requires(cern, pack)[:-1]  # code-text and code-symbols need git-code
+    base = render(resolve(cern, ["cern-team"], with_packs=deps), tmp_path / "base")
+    plus = render(resolve(cern, ["cern-team"], with_packs=deps + [pack]), tmp_path / "plus")
     minus = render(
-        resolve(cern, ["cern-team"], with_packs=[pack], without_packs=[pack]), tmp_path / "minus"
+        resolve(cern, ["cern-team"], with_packs=deps + [pack], without_packs=[pack]),
+        tmp_path / "minus",
     )
     assert _tree(minus.profile_dir) == _tree(base.profile_dir)
     assert _tree(plus.profile_dir) != _tree(base.profile_dir)
@@ -153,27 +165,35 @@ def test_fixture_base_plus_pack_minus_pack_equals_base(tmp_path):
     assert "source-defaults/beta.issues.yaml" in _tree(plus.profile_dir)
 
 
+def test_a_bare_render_composes_only_the_modules_its_packs_need(cern, tmp_path):
+    """The old cern-team profile composed git_graph even with no git source;
+    the rendered one composes it only when a git pack is selected."""
+    out = render(resolve(cern, ["cern-team"]), tmp_path)
+    modules = yaml.safe_load((out.profile_dir / "modules.yaml").read_text())["modules"]
+    assert "git_graph" not in modules
+    out = render(resolve(cern, ["cern-team"], with_packs=["git-code"]), tmp_path)
+    assert "git_graph" in yaml.safe_load((out.profile_dir / "modules.yaml").read_text())["modules"]
+
+
 # ---------------------------------------------------------------------------
-# Equivalence with the hand-written profile
+# okg accepts every rendered profile in the matrix
 # ---------------------------------------------------------------------------
 
+def _matrix():
+    """Bare, each optional pack (with what it requires), and all of them."""
+    from bundles.bundle_support import SHIPPED_PACKS
 
-def _original_plan(tmp_path):
-    from okg.substrate.deployment_bootstrap.profile_init import build_plan, discover_profile
+    def requires(name):
+        data = yaml.safe_load((SHIPPED_PACKS / name / "pack.yaml").read_text())
+        return data.get("requires", {}).get("packs", [])
 
-    profiles = tmp_path / "original"
-    shutil.copytree(CERN_TEAM, profiles / "cern-team", symlinks=False)
-    sd = profiles / "cern-team" / "source-defaults"
-    for packs in CERN_TEAM_PACKS.values():
-        for filename in packs[0]:
-            if filename.endswith(".example"):
-                (sd / filename).rename(sd / filename[: -len(".example")])
-    return build_plan(
-        profile=discover_profile("cern-team", profiles_root=profiles),
-        deployment_name="qt",
-        deployments_root=tmp_path / "deployments-original",
-        raw_answers=dict(ORIGINAL_ANSWERS),
-    )
+    rows = [[]]
+    for pack in OPTIONAL:
+        rows.append([d for d in requires(pack) if d != pack] + [pack])
+    return rows + [OPTIONAL]
+
+
+MATRIX = _matrix()
 
 
 def _rendered_plan(rendered, instance, tmp_path):
@@ -185,64 +205,6 @@ def _rendered_plan(rendered, instance, tmp_path):
         deployments_root=tmp_path / "deployments-rendered",
         raw_answers=_rendered_answers(rendered),
     )
-
-
-def test_rendered_cern_team_matches_the_hand_written_profile(cern, tmp_path):
-    from okg.substrate.deployment_bootstrap.profile_init import source_default_entries
-
-    original = _original_plan(tmp_path)
-    instance = tmp_path / "instance"
-    rendered = render(resolve(cern, ["cern-team"], with_packs=OPTIONAL), instance)
-    plan = _rendered_plan(rendered, instance, tmp_path)
-
-    before = source_default_entries(original.profile, original.source_defaults)
-    after = source_default_entries(plan.profile, plan.source_defaults)
-    expected_ids = {}
-    for pack, (files, _, _) in CERN_TEAM_PACKS.items():
-        for filename in files:
-            stem = filename.split(".")[0]
-            expected_ids[stem] = f"{pack}.{stem}"
-    assert sorted(after) == sorted(expected_ids.values())
-    for stem, rendered_id in expected_ids.items():
-        assert after[rendered_id] == before[stem], rendered_id
-
-    assert dict(plan.schemas) == dict(original.schemas)
-    assert plan.invariants_text.split("\n", 2)[2] == yaml.safe_dump(
-        yaml.safe_load(original.invariants_text), sort_keys=False, allow_unicode=True, width=88
-    )
-    assert dict(plan.files) == dict(original.files)
-    assert sorted(plan.modules) == sorted(original.modules)
-    original_skills = {k: v for k, v in original.skills if k != "chat-system-prompt.md"}
-    rendered_skills = dict(plan.skills)
-    rendered_skills.pop("chat-system-prompt.md")
-    triggers = rendered_skills.pop("skill-triggers.yaml")
-    assert yaml.safe_load(triggers) == yaml.safe_load(original_skills.pop("skill-triggers.yaml"))
-    assert rendered_skills == original_skills
-
-
-def test_a_bare_render_composes_fewer_modules_than_the_profile(cern, tmp_path):
-    """The hand-written profile composes git_graph even with no git source;
-    the rendered one composes it only when a git pack is selected."""
-    out = render(resolve(cern, ["cern-team"]), tmp_path)
-    modules = yaml.safe_load((out.profile_dir / "modules.yaml").read_text())["modules"]
-    assert "git_graph" not in modules
-    out = render(resolve(cern, ["cern-team"], with_packs=["github"]), tmp_path)
-    assert "git_graph" in yaml.safe_load((out.profile_dir / "modules.yaml").read_text())["modules"]
-
-
-# ---------------------------------------------------------------------------
-# okg accepts every rendered profile in the matrix
-# ---------------------------------------------------------------------------
-
-MATRIX = [[]] + [[p] for p in OPTIONAL] + [OPTIONAL]
-
-#: Lint blockers that live in the shipped cern-team templates themselves, not
-#: in rendering: `test_known_blockers_are_in_the_hand_written_profile` shows the
-#: hand-written profile carries both. Fixing the templates is r3-packs-split.
-KNOWN_TEMPLATE_BLOCKERS = {
-    ("docsite", "deployment.source_registry.param_reserved"),
-    ("git_history", "deployment.source_registry.admission_policy_block_drift"),
-}
 
 
 def _write_scaffold(plan):
@@ -299,32 +261,20 @@ def test_okg_accepts_the_rendered_profile(cern, tmp_path, with_packs):
 
     plan = _rendered_plan(rendered, instance, tmp_path)
     _write_scaffold(plan)
-    expected = {
-        (sid, code)
-        for sid in rendered.composition.sources
-        for stem, code in KNOWN_TEMPLATE_BLOCKERS
-        if sid.split(".", 1)[1] == stem
-    }
-    assert _blockers(plan.deployment_dir, instance) == expected
-
-
-def test_known_blockers_are_in_the_hand_written_profile(tmp_path):
-    plan = _original_plan(tmp_path)
-    _write_scaffold(plan)
-    assert _blockers(plan.deployment_dir, tmp_path) == KNOWN_TEMPLATE_BLOCKERS
+    assert _blockers(plan.deployment_dir, instance) == set()
 
 
 def test_render_command(cern, tmp_path, capsys):
     from archi.bundles.cli import main as archi_main
 
     root = next(iter(cern.packs.values())).dir.parents[1]
-    rc = archi_main(["render", "--bundle", "cern-team", "--with", "docsite,indico",
+    rc = archi_main(["render", "--bundle", "cern-team", "--with", "twiki,jira",
                      "--instance", str(tmp_path), "--pack-root", str(root / "packs"),
                      "--bundle-root", str(root)])
     out = capsys.readouterr().out
     assert rc == 0, out
-    assert "cmssw-releases, cern-playbooks, docsite, indico" in out
-    assert (tmp_path / "profiles" / "cern-team" / "source-defaults" / "indico.indico.yaml").is_file()
+    assert "docsite, indico, core-playbooks, twiki, jira" in out
+    assert (tmp_path / "profiles" / "cern-team" / "source-defaults" / "twiki.twiki_eos.yaml").is_file()
 
 
 def test_render_command_reports_the_rule_that_failed(cern, tmp_path, capsys):
