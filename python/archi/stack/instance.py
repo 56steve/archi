@@ -129,7 +129,12 @@ class Instance:
                 f"{path} does not exist; run `archi init <name>` first, or pass "
                 "--instance <dir> pointing at an instance"
             )
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        from archi.bundles.manifest import load_unique_yaml
+
+        try:
+            data = load_unique_yaml(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            raise InstanceError(f"{path}: {exc}") from exc
         if data.get("instance_version") != INSTANCE_VERSION:
             raise InstanceError(f"{path}: not an archi.yaml version {INSTANCE_VERSION}")
         return cls(

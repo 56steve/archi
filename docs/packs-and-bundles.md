@@ -390,6 +390,12 @@ selected bundles bound the same automation, the lower bound counts.
 for L3 or an unknown value in any input, so the runtime can call it at run
 start. `archi bundles validate`, loading `archi.yaml` and `effective_level`
 all refuse any value other than `L0`, `L1` or `L2`, citing ADR 0002 D13.
+A name under `automations:` in `archi.yaml` must be an automation pack the
+instance selected; `archi doctor` (check `automation-names`) and
+`archi.ops.levels.instance_levels(...)`, which the runtime calls, refuse a
+misspelled name instead of ignoring it. Without a catalog, `validate_pack`
+reports a mediator that needs a required pack's tool as not resolvable; it
+does not guess from neighbouring directories.
 
 ### What the renderer writes
 

@@ -201,3 +201,57 @@ def test_registering_a_step_twice_is_refused():
 def test_registering_a_step_with_l3_is_refused():
     with pytest.raises(ValueError, match="ADR 0002 D13"):
         steps.register_step("x", "L3", "x")
+
+
+# ---- instance names against the selected packs ------------------------------
+
+
+def rendered_instance(tmp_path, automations):
+    from archi.bundles.lock import render_and_lock
+
+    root = library_with_bundle(tmp_path, {"fixture-triage": {"max_level": "L1"}})
+    catalog = discovery.from_roots([root / "packs"], [root / "bundles"])
+    inst = tmp_path / "inst"
+    render_and_lock(catalog, inst, ["triage-team"])
+    data = {
+        "instance_version": 1, "name": "demo", "bundles": ["triage-team"],
+        "data_root": str(tmp_path / "data"), "runtime": "docker",
+        "ports": {"graph_db": 1, "mcp": 2, "webui": 3},
+        "automations": automations,
+    }
+    (inst / "archi.yaml").write_text(yaml.safe_dump(data))
+    return inst
+
+
+def test_instance_levels_resolve_for_the_runtime(tmp_path):
+    from archi.ops.levels import instance_levels
+
+    inst = rendered_instance(tmp_path, {"fixture-triage": {"level": "L2"}})
+    got = instance_levels(inst)["fixture-triage"]
+    assert (got.level, got.limited_by) == ("L1", "bundle")
+
+
+def test_instance_with_a_misspelled_automation_is_refused_for_the_runtime(tmp_path):
+    from archi.ops.levels import instance_levels
+
+    inst = rendered_instance(tmp_path, {"fixture-triaje": {"level": "L1"}})
+    with pytest.raises(InstanceError, match="'fixture-triaje', which no selected automation pack declares"):
+        instance_levels(inst)
+
+
+def test_duplicate_key_in_archi_yaml_is_refused(tmp_path):
+    write_instance(tmp_path, None)
+    path = tmp_path / "archi.yaml"
+    path.write_text(path.read_text() + "runtime: podman\n")
+    with pytest.raises(InstanceError, match="duplicate key 'runtime'"):
+        Instance.load(tmp_path)
+
+
+def test_duplicate_key_in_archi_lock_is_refused(tmp_path):
+    from archi.bundles.lock import LockError, read_lock
+
+    inst = rendered_instance(tmp_path, {})
+    path = inst / "archi.lock"
+    path.write_text(path.read_text() + "lock_version: 1\n")
+    with pytest.raises(LockError, match="duplicate key 'lock_version'"):
+        read_lock(inst)

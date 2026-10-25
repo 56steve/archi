@@ -210,7 +210,7 @@ class Pack:
         path = self.path("init_questions")
         if path is None:
             return []
-        return list((yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get(
+        return list((load_unique_yaml(path.read_text(encoding="utf-8")) or {}).get(
             "init_questions", []
         ))
 
@@ -355,7 +355,8 @@ def validate_pack(
 
     An automation pack's mediators resolve against the live tools of the packs
     it requires. `packs` is the catalog to look them up in (any root); without
-    it the required packs are looked for next to this one. `defer_requires`
+    it a mediator that needs a required pack's tool reports that the pack is
+    not resolvable without a catalog. `defer_requires`
     skips that lookup, for the catalog to repeat once every pack is loaded.
     """
     directory = Path(directory)

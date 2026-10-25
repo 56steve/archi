@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from archi.bundles.cli import main as archi_main
-from archi.bundles.manifest import validate_pack
+from archi.bundles.manifest import load_pack, validate_pack
 
 LIBRARY = Path(__file__).resolve().parent / "fixtures" / "library"
 SHIPPED = Path(__file__).resolve().parents[3] / "bundles" / "packs"
@@ -32,7 +32,13 @@ def edit(root, change, *, pack="fixture-triage", file="pack.yaml"):
 
 
 def messages(root, pack="fixture-triage"):
-    return [p.message for p in validate_pack(root / "packs" / pack)]
+    """Problems with a pack, resolved against the packs next to it as a catalog."""
+    packs = {
+        d.name: load_pack(d, defer_requires=True)
+        for d in (root / "packs").iterdir()
+        if d.name != pack and not validate_pack(d, defer_requires=True)
+    }
+    return [p.message for p in validate_pack(root / "packs" / pack, packs=packs)]
 
 
 def auto(change):
@@ -74,12 +80,12 @@ def test_shipped_packs_still_validate():
 
 
 def test_cli_validates_the_fixture_pack(library, capsys):
-    assert archi_main(["bundles", "validate", str(library / "packs" / "fixture-triage")]) == 0
+    assert archi_main(["bundles", "validate", str(library / "packs" / "fixture-triage"), "--pack-root", str(library / "packs")]) == 0
 
 
 def test_cli_reports_a_problem(library, capsys):
     edit(library, auto(lambda a: a.update(default_level="L3")))
-    assert archi_main(["bundles", "validate", str(library / "packs" / "fixture-triage")]) == 1
+    assert archi_main(["bundles", "validate", str(library / "packs" / "fixture-triage"), "--pack-root", str(library / "packs")]) == 1
     assert "D13" in capsys.readouterr().err
 
 
@@ -473,3 +479,15 @@ def test_cli_validates_a_path_against_the_catalog(capsys):
     pack = THIRD_PARTY_PACKS / "fixture-ops-watch"
     assert archi_main(["bundles", "validate", str(pack), "--pack-root", str(SHIPPED)]) == 0
     assert not (pack.parent / "monit-live").exists()
+
+
+def test_without_a_catalog_a_required_tool_is_not_guessed_from_siblings(library):
+    """fixture-tools sits next to fixture-triage, yet validate_pack(dir) with no
+    catalog does not look: it says what it cannot resolve."""
+    found = [p.message for p in validate_pack(library / "packs" / "fixture-triage")]
+    assert "required pack not resolvable without a catalog (fixture-tools)" in only(found, "set_ticket_status")
+
+
+def test_without_a_catalog_the_packs_own_tool_still_resolves(library):
+    edit(library, lambda d: d.update(requires={"packs": []}, live_tools=["archi.tools.fixture:set_ticket_status"]))
+    assert [p.message for p in validate_pack(library / "packs" / "fixture-triage")] == []

@@ -152,7 +152,7 @@ def test_doctor_report_is_json_for_agents(instance):
     json.dumps(report)
     assert {c["id"] for c in report["checks"]} >= {"okg-lint", "okg-doctor", "published"}
     assert all(c["footgun"] for c in report["checks"]
-               if c["id"] not in ("okg-lint", "okg-doctor", "source-freshness"))
+               if c["id"] not in ("okg-lint", "okg-doctor", "source-freshness", "automation-names"))
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +290,11 @@ def break_okg_doctor(inst):
     return {"okg_json": okg}
 
 
+def break_automation_names(inst):
+    inst.automations = {"ticket-triaje": {"level": "L1"}}
+    inst.save()
+
+
 FIXTURES = {
     "instance-git": break_instance_git,
     "deployment-committed": break_deployment_committed,
@@ -313,6 +318,7 @@ FIXTURES = {
     "okg-lint": break_okg_lint,
     "okg-doctor": break_okg_doctor,
     "source-freshness": break_source_freshness,
+    "automation-names": break_automation_names,
 }
 
 #: A check that warns rather than fails: the setting does not break archi,
@@ -330,7 +336,7 @@ def test_each_check_has_a_failing_fixture(instance, check_id):
 
 
 def test_every_check_has_a_failing_fixture():
-    registered = {check_id for check_id, _, _ in CHECKS} | {"okg-lint", "okg-doctor", "source-freshness"}
+    registered = {check_id for check_id, _, _ in CHECKS} | {"okg-lint", "okg-doctor", "source-freshness", "automation-names"}
     assert registered == set(FIXTURES)
 
 

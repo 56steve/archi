@@ -524,8 +524,29 @@ def source_freshness(ctx: Context) -> Result:
                   data={"sources": rows})
 
 
+def automation_names(ctx: Context) -> Result:
+    """Every `automations:` name in archi.yaml is an automation pack the instance selected."""
+    from archi.bundles.lock import LockError, read_lock
+    from archi.ops.levels import unknown_automation_message, unknown_automations
+
+    settings = ctx.instance.automations
+    if not settings:
+        return Result("automation-names", PASS, "archi.yaml sets no automation levels")
+    try:
+        locked = read_lock(ctx.instance.dir).get("composed", {}).get("automations") or {}
+    except LockError as exc:
+        return Result("automation-names", SKIP, f"cannot compare with the selected packs: {exc}")
+    unknown = unknown_automations(settings, locked)
+    if unknown:
+        return Result("automation-names", FAIL, unknown_automation_message(unknown, locked),
+                      "fix the name under automations: in archi.yaml (it must be a selected automation pack), "
+                      "or add the pack with archi add",
+                      data={"unknown": unknown, "selected": sorted(locked)})
+    return Result("automation-names", PASS, f"{len(settings)} automation setting(s) match selected packs")
+
+
 def run_checks(ctx: Context) -> list[Result]:
-    results = [okg_lint(ctx), okg_doctor(ctx), source_freshness(ctx)]
+    results = [okg_lint(ctx), okg_doctor(ctx), source_freshness(ctx), automation_names(ctx)]
     for check_id, footgun, fn in CHECKS:
         try:
             result = fn(ctx)

@@ -114,3 +114,46 @@ def settings_problems(settings: Any, key: str, where: str) -> list[str]:
         if message:
             out.append(message)
     return out
+
+
+def unknown_automations(settings: Mapping[str, Any], locked: Mapping[str, Any]) -> list[str]:
+    """Names in the instance's `automations:` that no selected automation pack declares.
+
+    `locked` is `composed.automations` of archi.lock. A misspelled name would
+    otherwise be ignored and the automation would run at its default level.
+    """
+    return sorted(n for n in settings if n not in locked)
+
+
+def unknown_automation_message(unknown: list[str], locked: Mapping[str, Any]) -> str:
+    known = ", ".join(sorted(locked)) or "none: no selected pack is an automation pack"
+    return (
+        f"archi.yaml automations names {', '.join(map(repr, unknown))}, which no selected "
+        f"automation pack declares (selected: {known})"
+    )
+
+
+def instance_levels(instance_dir: Any) -> dict[str, Effective]:
+    """The effective level of every automation of the instance, for the runtime.
+
+    Reads archi.yaml and archi.lock. Raises InstanceError for an unknown
+    automation name or a bad level in archi.yaml, and LevelError for a level
+    the lock carries above L2.
+    """
+    from archi.bundles.lock import read_lock
+    from archi.stack.instance import Instance, InstanceError
+
+    instance = Instance.load(instance_dir)
+    locked = read_lock(instance.dir).get("composed", {}).get("automations") or {}
+    unknown = unknown_automations(instance.automations, locked)
+    if unknown:
+        raise InstanceError(unknown_automation_message(unknown, locked))
+    return {
+        name: resolve_level(
+            instance_level=instance.automations.get(name, {}).get("level"),
+            default_level=auto["default_level"],
+            bundle_max=auto.get("bundle_max_level"),
+            pack_max=auto["pack_max_level"],
+        )
+        for name, auto in locked.items()
+    }

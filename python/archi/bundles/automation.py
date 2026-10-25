@@ -139,43 +139,37 @@ def _trigger_messages(trigger: Mapping[str, Any], budget: Mapping[str, Any]) -> 
     return out
 
 
-def _sibling_pack(directory: Path, name: str) -> Optional[Mapping[str, Any]]:
-    path = directory.parent / name / PACK_FILE
-    try:
-        body = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return None
-    return body if isinstance(body, Mapping) else None
-
-
 def _required_tools(
-    directory: Path, data: Mapping[str, Any], packs: Optional[Mapping[str, Any]]
+    data: Mapping[str, Any], packs: Optional[Mapping[str, Any]]
 ) -> tuple[set[str], list[str]]:
-    """Live tools of this pack and of the packs it requires, and the required packs not found.
+    """Live tools of this pack and of the packs it requires, and the required packs not resolved.
 
-    Required packs come from `packs` (the catalog, any root) when given, else
-    from directories next to this pack.
+    Required packs come from `packs`, the catalog (any root). Without a
+    catalog none resolve; nothing is guessed from neighbouring directories.
     """
     tools = set(data.get("live_tools", ()))
-    missing = []
+    unresolved = []
     for dep in data.get("requires", {}).get("packs", ()):
         if packs is not None and dep in packs:
             tools |= set(packs[dep].live_tools)
-            continue
-        manifest = _sibling_pack(directory, dep)
-        if manifest is None:
-            missing.append(dep)
         else:
-            tools |= set(manifest.get("live_tools", ()))
-    return tools, missing
+            unresolved.append(dep)
+    return tools, unresolved
 
 
-def _mediator_message(where: str, cls: Mapping[str, Any], tools: set[str], missing: list[str], check_requires: bool) -> Optional[str]:
+def _mediator_message(
+    where: str, cls: Mapping[str, Any], tools: set[str], unresolved: list[str], has_catalog: bool, check_requires: bool
+) -> Optional[str]:
     mediator = cls["mediator"]
     if TOOL_ENTRY.match(mediator):
         if not check_requires or mediator in tools:
             return None
-        hint = f" (required pack(s) not found: {', '.join(missing)})" if missing else ""
+        if unresolved and not has_catalog:
+            return (
+                f"{where}: mediator {mediator!r} is not a live tool of this pack; "
+                f"required pack not resolvable without a catalog ({', '.join(unresolved)})"
+            )
+        hint = f" (required pack(s) not found: {', '.join(unresolved)})" if unresolved else ""
         return f"{where}: mediator {mediator!r} is not a live tool of this pack or of a pack it requires{hint}"
     step = steps.get_step(mediator)
     if step is None:
@@ -213,7 +207,7 @@ def _action_class_messages(
     if not isinstance(classes, Mapping):
         return []  # validate_pack already reports the shape
 
-    tools, missing = _required_tools(directory, data, packs)
+    tools, unresolved = _required_tools(data, packs)
     out = []
     for cid, cls in classes.items():
         where = f"{rel}: action class {cid!r}"
@@ -227,7 +221,7 @@ def _action_class_messages(
         msg = level_problem(cls["max_level"], f"{where}: max_level")
         if msg:
             out.append(msg)
-        msg = _mediator_message(where, cls, tools, missing, check_requires)
+        msg = _mediator_message(where, cls, tools, unresolved, packs is not None, check_requires)
         if msg:
             out.append(msg)
     for name in names:
