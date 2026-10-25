@@ -444,9 +444,6 @@ def validate_pack(directory: Path) -> list[Problem]:
         if not isinstance(body, Mapping) or not isinstance(body.get("action_classes"), Mapping):
             problems.append(Problem(apath, "must hold an `action_classes:` mapping keyed by id"))
 
-    from archi.bundles.automation import automation_problems
-
-    problems.extend(automation_problems(directory, data))
     return problems
 
 

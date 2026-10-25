@@ -146,65 +146,6 @@
       "description": "YAML file with a top-level action_classes mapping keyed by action-class id (ADR 0002 section 7.2). Merged by id.",
       "$ref": "#/$defs/relpath"
     },
-    "automation": {
-      "description": "The automation an automation pack declares (ADR 0002 section 7.2). Required for kind automation, refused for other kinds. Each action class named in `action_classes` is defined in the pack's top-level `action_classes` file.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["trigger", "context_gate", "playbook", "action_classes", "proposal_schema", "budget", "default_level", "max_level"],
-      "properties": {
-        "trigger": {
-          "description": "What starts a run: type schedule (cron), ticket_queue (system, queue) or signal (source, condition). The keys each type needs are checked by `archi bundles validate`.",
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type"],
-          "properties": {
-            "type": {"enum": ["schedule", "ticket_queue", "signal"]},
-            "cron": {"type": "string", "minLength": 1},
-            "system": {"type": "string", "minLength": 1},
-            "queue": {"type": "string", "minLength": 1},
-            "source": {"type": "string", "minLength": 1},
-            "condition": {"type": "string", "minLength": 1}
-          }
-        },
-        "context_gate": {
-          "description": "The context the automation needs (ADR 0002 section 6.3); the keys of archi.ops.context_gate.GateSpec: sources, max_staleness, min_context_eval_score, invariants.",
-          "type": "object"
-        },
-        "playbook": {
-          "description": "Playbook file, relative to the pack's `playbooks` directory.",
-          "$ref": "#/$defs/relpath"
-        },
-        "action_classes": {
-          "description": "Ids of the action classes this automation may propose.",
-          "type": "array",
-          "minItems": 1,
-          "items": {"type": "string"}
-        },
-        "proposal_schema": {
-          "description": "JSON Schema every proposal must satisfy. Must require summary, evidence_ids, action_class, payload, confidence and rollback, the fields of the ops_proposal record.",
-          "type": "object"
-        },
-        "budget": {
-          "description": "Spend and rate limits: cost_per_run and cost_per_day (USD, positive), runs_per_hour (positive integer).",
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["cost_per_run", "cost_per_day", "runs_per_hour"],
-          "properties": {
-            "cost_per_run": {"type": "number"},
-            "cost_per_day": {"type": "number"},
-            "runs_per_hour": {"type": "integer"}
-          }
-        },
-        "default_level": {
-          "description": "Autonomy level the automation starts at when the instance sets none. L0, L1 or L2; anything above L2 is refused (ADR 0002 D13).",
-          "type": "string"
-        },
-        "max_level": {
-          "description": "The bundle's upper bound on the instance's level for this automation. L0, L1 or L2 (ADR 0002 D13).",
-          "type": "string"
-        }
-      }
-    },
     "files": {
       "description": "Files installed byte for byte at the same path in the deployment root (okg's profile `files:` allow-list applies).",
       "type": "array",
