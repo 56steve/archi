@@ -55,6 +55,17 @@
         }
       }
     },
+    "automations": {
+      "description": "Upper bound on the autonomy level of each automation pack this bundle selects, {<automation>: {max_level}}. The instance sets the level itself, in archi.yaml, and may not exceed any bound. L0, L1 or L2; anything above L2 is refused (ADR 0002 D13).",
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["max_level"],
+        "properties": {"max_level": {"type": "string"}}
+      }
+    },
     "eval": {
       "description": "Eval set (JSONL) run by `archi eval` and by CI.",
       "type": "string",

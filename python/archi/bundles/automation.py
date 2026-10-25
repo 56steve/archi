@@ -23,24 +23,19 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 import yaml
 
-from archi.bundles.manifest import PACK_FILE, Problem, _schema_problems
+from archi.bundles.manifest import PACK_FILE, Problem, _schema_problems, load_unique_yaml
+from archi.ops import steps
 from archi.ops.context_gate import GateSpec, GateSpecError
-
-#: Autonomy levels the 3.0 runtime accepts, lowest first (ADR 0002 section 7.3).
-LEVELS = ("L0", "L1", "L2")
-D13 = "ADR 0002 D13: 3.0 stops at L2, L3 is reserved and refused"
-
-#: Workflow steps a mediator may name instead of a live tool. The loop
-#: (PACT r3-ops-runtime, task loop) implements them.
-WORKFLOW_STEPS = ("record_finding", "draft_reply", "update_ticket")
+from archi.ops.levels import LEVELS, level_problem, rank
 
 #: The ops_proposal fields an automation's proposal carries
-#: (bundles/packs/ops-record/schemas/ops_record.yaml). The runtime adds the
-#: rest (incident_id, mode, autonomy_level, generation_read, ...).
+#: (bundles/packs/ops-record/schemas/ops_record.yaml). The runtime fills the
+#: rest: incident_id, mode, autonomy_level, generation_read, and so on. It also
+#: serialises `payload` to JSON text, which is how the record stores it.
 PROPOSAL_FIELDS = ("summary", "evidence_ids", "action_class", "payload", "confidence", "rollback")
 
 ID = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -54,38 +49,51 @@ TRIGGER_KEYS = {
 }
 
 
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """SafeLoader that keeps a repeated mapping key instead of dropping it."""
+def _cron_values(spec: str, low: int, high: int) -> Optional[set[int]]:
+    """The values a cron minute or hour field matches, or None if it is not plain numeric.
+
+    Handles `*`, `*/n`, `a`, `a-b`, `a-b/n` and comma lists of those.
+    """
+    values: set[int] = set()
+    for part in spec.split(","):
+        m = re.fullmatch(r"(\*|\d+(?:-\d+)?)(?:/(\d+))?", part)
+        if not m:
+            return None
+        rng, step = m.group(1), int(m.group(2) or 1)
+        if step < 1:
+            return None
+        if rng == "*":
+            a, b = low, high
+        elif "-" in rng:
+            a, b = (int(x) for x in rng.split("-"))
+        else:
+            a = int(rng)
+            b = high if m.group(2) else a
+        if not (low <= a <= b <= high):
+            return None
+        values.update(range(a, b + 1, step))
+    return values
 
 
-def _construct_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False):
-    seen: set[Any] = set()
-    for key_node, _ in node.value:
-        key = loader.construct_object(key_node, deep=True)
-        if key in seen:
-            raise yaml.constructor.ConstructorError(
-                None, None, f"duplicate key {key!r}", key_node.start_mark
-            )
-        seen.add(key)
-    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+def cron_runs_per_hour(cron: str) -> int:
+    """The most times `cron` can fire within one hour.
 
-
-_UniqueKeyLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping
-)
-
-
-def level_problem(level: Any, where: str) -> str | None:
-    """Why `level` is refused, or None when it is L0, L1 or L2."""
-    if level in LEVELS:
-        return None
-    if level == "L3":
-        return f"{where}: L3 is refused ({D13})"
-    return f"{where}: unknown level {level!r} is refused; use one of {LEVELS} ({D13})"
-
-
-def _rank(level: str) -> int:
-    return LEVELS.index(level)
+    Reads the minute and hour fields only: the busiest allowed hour fires once
+    per allowed minute. Day-of-month, month and weekday fields can only fire
+    less often, so they are treated as unrestricted, which keeps this an upper
+    bound. Not handled: `@daily` style macros, names (JAN, MON) in the minute
+    or hour field, and seconds or year fields. Those raise ValueError.
+    """
+    fields = cron.split()
+    if len(fields) != 5:
+        raise ValueError("not a five-field cron expression")
+    minutes = _cron_values(fields[0], 0, 59)
+    hours = _cron_values(fields[1], 0, 23)
+    if minutes is None or hours is None:
+        raise ValueError("the minute and hour fields must be numbers, ranges, lists or steps")
+    if not minutes or not hours:
+        raise ValueError("the minute and hour fields match nothing")
+    return len(minutes)
 
 
 def _schema_check(schema: Any, where: str) -> list[str]:
@@ -101,7 +109,7 @@ def _schema_check(schema: Any, where: str) -> list[str]:
     return []
 
 
-def _trigger_messages(trigger: Mapping[str, Any]) -> list[str]:
+def _trigger_messages(trigger: Mapping[str, Any], budget: Mapping[str, Any]) -> list[str]:
     kind = trigger["type"]
     out = []
     allowed = TRIGGER_KEYS[kind]
@@ -114,12 +122,24 @@ def _trigger_messages(trigger: Mapping[str, Any]) -> list[str]:
         fields = trigger["cron"].split()
         if len(fields) != 5 or not all(CRON_FIELD.match(f) for f in fields):
             out.append(f"automation.trigger.cron: {trigger['cron']!r} is not a five-field cron expression")
+        else:
+            try:
+                fires = cron_runs_per_hour(trigger["cron"])
+            except ValueError as exc:
+                out.append(f"automation.trigger.cron: {trigger['cron']!r}: {exc}")
+            else:
+                limit = budget.get("runs_per_hour")
+                if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 and fires > limit:
+                    out.append(
+                        f"automation.trigger.cron: {trigger['cron']!r} can fire {fires} times an hour, "
+                        f"over budget.runs_per_hour {limit}"
+                    )
     if kind == "ticket_queue" and trigger.get("system") not in (None, *SYSTEMS):
         out.append(f"automation.trigger.system: {trigger['system']!r} is not one of {SYSTEMS}")
     return out
 
 
-def _sibling_pack(directory: Path, name: str) -> Mapping[str, Any] | None:
+def _sibling_pack(directory: Path, name: str) -> Optional[Mapping[str, Any]]:
     path = directory.parent / name / PACK_FILE
     try:
         body = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -128,32 +148,72 @@ def _sibling_pack(directory: Path, name: str) -> Mapping[str, Any] | None:
     return body if isinstance(body, Mapping) else None
 
 
-def _action_class_messages(directory: Path, data: Mapping[str, Any], names: list[str]) -> tuple[list[str], dict]:
-    """Messages for the `action_classes` file, and the classes it defines."""
+def _required_tools(
+    directory: Path, data: Mapping[str, Any], packs: Optional[Mapping[str, Any]]
+) -> tuple[set[str], list[str]]:
+    """Live tools of this pack and of the packs it requires, and the required packs not found.
+
+    Required packs come from `packs` (the catalog, any root) when given, else
+    from directories next to this pack.
+    """
+    tools = set(data.get("live_tools", ()))
+    missing = []
+    for dep in data.get("requires", {}).get("packs", ()):
+        if packs is not None and dep in packs:
+            tools |= set(packs[dep].live_tools)
+            continue
+        manifest = _sibling_pack(directory, dep)
+        if manifest is None:
+            missing.append(dep)
+        else:
+            tools |= set(manifest.get("live_tools", ()))
+    return tools, missing
+
+
+def _mediator_message(where: str, cls: Mapping[str, Any], tools: set[str], missing: list[str], check_requires: bool) -> Optional[str]:
+    mediator = cls["mediator"]
+    if TOOL_ENTRY.match(mediator):
+        if not check_requires or mediator in tools:
+            return None
+        hint = f" (required pack(s) not found: {', '.join(missing)})" if missing else ""
+        return f"{where}: mediator {mediator!r} is not a live tool of this pack or of a pack it requires{hint}"
+    step = steps.get_step(mediator)
+    if step is None:
+        return (
+            f"{where}: mediator {mediator!r} is neither a live tool entry (archi.tools.x:fn) "
+            f"nor a registered workflow step ({', '.join(steps.step_names())}); a step that "
+            "changes an external system must be a live tool of a tool pack"
+        )
+    if cls["max_level"] in LEVELS and rank(cls["max_level"]) > rank(step.max_level):
+        return (
+            f"{where}: max_level {cls['max_level']} is above {step.max_level}, the highest level of "
+            f"workflow step {mediator!r}, which has no external effect; an action that runs after "
+            "approval must be a live tool of a tool pack (ADR 0002 section 7.2)"
+        )
+    return None
+
+
+def _action_class_messages(
+    directory: Path,
+    data: Mapping[str, Any],
+    names: list[str],
+    packs: Optional[Mapping[str, Any]],
+    check_requires: bool,
+) -> list[str]:
+    """Messages for the `action_classes` file and the classes the automation names."""
     rel = data.get("action_classes")
     if rel is None:
-        return ["action_classes: an automation pack must declare an `action_classes:` file"], {}
+        return ["action_classes: an automation pack must declare an `action_classes:` file"]
     path = directory / rel
     try:
-        body = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
-    except yaml.YAMLError as exc:
-        reason = getattr(exc, "problem", None) or str(exc)
-        return [f"{rel}: action class ids must be unique: {reason}"], {}
+        body = load_unique_yaml(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return []  # validate_pack already reported the missing file or the parse error
     classes = body.get("action_classes") if isinstance(body, Mapping) else None
     if not isinstance(classes, Mapping):
-        return [], {}  # validate_pack already reports the shape
+        return []  # validate_pack already reports the shape
 
-    own_tools = set(data.get("live_tools", ()))
-    required = list(data.get("requires", {}).get("packs", ()))
-    tools = set(own_tools)
-    unreadable = []
-    for dep in required:
-        dep_manifest = _sibling_pack(directory, dep)
-        if dep_manifest is None:
-            unreadable.append(dep)
-        else:
-            tools |= set(dep_manifest.get("live_tools", ()))
-
+    tools, missing = _required_tools(directory, data, packs)
     out = []
     for cid, cls in classes.items():
         where = f"{rel}: action class {cid!r}"
@@ -167,26 +227,60 @@ def _action_class_messages(directory: Path, data: Mapping[str, Any], names: list
         msg = level_problem(cls["max_level"], f"{where}: max_level")
         if msg:
             out.append(msg)
-        mediator = cls["mediator"]
-        if TOOL_ENTRY.match(mediator):
-            if mediator not in tools:
-                hint = f" (could not read required pack(s) {unreadable})" if unreadable else ""
-                out.append(
-                    f"{where}: mediator {mediator!r} is not a live tool of this pack or of a pack it requires{hint}"
-                )
-        elif mediator not in WORKFLOW_STEPS:
-            out.append(
-                f"{where}: mediator {mediator!r} is neither a live tool entry (archi.tools.x:fn) "
-                f"nor a known workflow step ({', '.join(WORKFLOW_STEPS)})"
-            )
+        msg = _mediator_message(where, cls, tools, missing, check_requires)
+        if msg:
+            out.append(msg)
     for name in names:
         if name not in classes:
             out.append(f"automation.action_classes: {name!r} is not defined in {rel}")
-    return out, dict(classes)
+    return out
 
 
-def automation_problems(directory: Path, data: Mapping[str, Any]) -> list[Problem]:
-    """Problems with the automation a (schema-valid) pack manifest declares."""
+def _proposal_messages(proposal: Mapping[str, Any]) -> list[str]:
+    where = "automation.proposal_schema"
+    out = _schema_check(proposal, where)
+    if out:
+        return out
+    props = proposal.get("properties", {})
+    for field in sorted(set(props) - set(PROPOSAL_FIELDS)):
+        out.append(f"{where}: property {field!r} is not an ops_proposal field ({', '.join(PROPOSAL_FIELDS)})")
+    missing = [f for f in PROPOSAL_FIELDS if f not in proposal.get("required", ())]
+    if missing:
+        out.append(f"{where}: `required` must list {', '.join(missing)}")
+
+    def prop(name: str) -> Mapping[str, Any]:
+        value = props.get(name)
+        return value if isinstance(value, Mapping) else {}
+
+    for name in ("summary", "action_class", "rollback"):
+        if prop(name).get("type") != "string":
+            out.append(f"{where}: property {name!r} must have `type: string`")
+    if prop("payload").get("type") != "object":
+        out.append(f"{where}: property 'payload' must have `type: object`")
+    ev = prop("evidence_ids")
+    items = ev.get("items")
+    if ev.get("type") != "array" or not isinstance(items, Mapping) or items.get("type") != "string":
+        out.append(f"{where}: property 'evidence_ids' must be an array of strings (`type: array`, `items: {{type: string}}`)")
+    conf = prop("confidence")
+    lo, hi = conf.get("minimum"), conf.get("maximum")
+    numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lo, hi))
+    if conf.get("type") != "number" or not numbers or lo < 0 or hi > 1 or lo > hi:
+        out.append(f"{where}: property 'confidence' must be a number within [0, 1] (`type: number`, `minimum` >= 0, `maximum` <= 1)")
+    return out
+
+
+def automation_problems(
+    directory: Path,
+    data: Mapping[str, Any],
+    *,
+    packs: Optional[Mapping[str, Any]] = None,
+    check_requires: bool = True,
+) -> list[Problem]:
+    """Problems with the automation a (schema-valid) pack manifest declares.
+
+    `packs` is the catalog used to resolve live-tool mediators of required
+    packs. With `check_requires=False` that one lookup is skipped.
+    """
     manifest = directory / PACK_FILE
     if data["kind"] != "automation":
         if "automation" in data:
@@ -198,7 +292,7 @@ def automation_problems(directory: Path, data: Mapping[str, Any]) -> list[Proble
     auto = data["automation"]
     messages: list[str] = []
 
-    messages.extend(_trigger_messages(auto["trigger"]))
+    messages.extend(_trigger_messages(auto["trigger"], auto["budget"]))
 
     try:
         gate = GateSpec.from_mapping(auto["context_gate"])
@@ -219,21 +313,8 @@ def automation_problems(directory: Path, data: Mapping[str, Any]) -> list[Proble
     names = auto["action_classes"]
     for name in sorted({n for n in names if names.count(n) > 1}):
         messages.append(f"automation.action_classes: {name!r} is listed more than once")
-    class_messages, classes = _action_class_messages(directory, data, list(dict.fromkeys(names)))
-    messages.extend(class_messages)
-
-    proposal = auto["proposal_schema"]
-    schema_msgs = _schema_check(proposal, "automation.proposal_schema")
-    messages.extend(schema_msgs)
-    if not schema_msgs:
-        props = proposal.get("properties", {})
-        for field in sorted(set(props) - set(PROPOSAL_FIELDS)):
-            messages.append(
-                f"automation.proposal_schema: property {field!r} is not an ops_proposal field ({', '.join(PROPOSAL_FIELDS)})"
-            )
-        missing = [f for f in PROPOSAL_FIELDS if f not in proposal.get("required", ())]
-        if missing:
-            messages.append(f"automation.proposal_schema: `required` must list {', '.join(missing)}")
+    messages.extend(_action_class_messages(directory, data, list(dict.fromkeys(names)), packs, check_requires))
+    messages.extend(_proposal_messages(auto["proposal_schema"]))
 
     budget = auto["budget"]
     for key in ("cost_per_run", "cost_per_day", "runs_per_hour"):
@@ -250,7 +331,7 @@ def automation_problems(directory: Path, data: Mapping[str, Any]) -> list[Proble
         if msg:
             messages.append(msg)
             levels_ok = False
-    if levels_ok and _rank(auto["default_level"]) > _rank(auto["max_level"]):
+    if levels_ok and rank(auto["default_level"]) > rank(auto["max_level"]):
         messages.append(
             f"automation: default_level {auto['default_level']} is above max_level {auto['max_level']}"
         )

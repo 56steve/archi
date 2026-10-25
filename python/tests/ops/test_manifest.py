@@ -190,7 +190,7 @@ def test_playbooks_directory_is_required(library):
 def test_duplicate_action_class_id_is_refused(library):
     path = library / "packs" / "fixture-triage" / "action_classes.yaml"
     path.write_text(path.read_text() + "  draft_reply:\n    mediator: draft_reply\n")
-    assert "action class ids must be unique" in only(messages(library), "unique")
+    assert "duplicate key 'draft_reply'" in only(messages(library), "duplicate key")
 
 
 def test_action_class_listed_twice_is_refused(library):
@@ -246,7 +246,7 @@ def test_mediator_tool_of_the_pack_itself_is_accepted(library):
 
 def test_mediator_must_be_a_known_workflow_step(library):
     edit(library, classes(lambda c: c["draft_reply"].update(mediator="shell")), file="action_classes.yaml")
-    assert "neither a live tool entry (archi.tools.x:fn) nor a known workflow step" in only(messages(library), "'shell'")
+    assert "neither a live tool entry (archi.tools.x:fn) nor a registered workflow step" in only(messages(library), "'shell'")
 
 
 # ---- proposal schema ------------------------------------------------------
@@ -324,3 +324,152 @@ def test_unknown_action_class_level_is_refused(library):
 def test_default_level_may_not_exceed_max_level(library):
     edit(library, auto(lambda a: a.update(default_level="L2", max_level="L1")))
     assert "default_level L2 is above max_level L1" in only(messages(library), "above max_level")
+
+
+# ---- workflow steps are not external actions ------------------------------
+
+
+def test_workflow_step_cannot_carry_l2(library):
+    """A step has no external effect, so an action that runs after approval is a live tool."""
+    edit(library, classes(lambda c: c["draft_reply"].update(max_level="L2")), file="action_classes.yaml")
+    found = only(messages(library), "draft_reply")
+    assert "max_level L2 is above L1, the highest level of workflow step 'draft_reply'" in found
+
+
+def test_record_finding_is_l0_only(library):
+    edit(library, classes(lambda c: c["draft_reply"].update(mediator="record_finding", max_level="L1")), file="action_classes.yaml")
+    assert "above L0, the highest level of workflow step 'record_finding'" in only(messages(library), "record_finding")
+
+
+def test_external_change_is_not_a_workflow_step(library):
+    edit(library, classes(lambda c: c["draft_reply"].update(mediator="update_ticket")), file="action_classes.yaml")
+    found = only(messages(library), "update_ticket")
+    assert "must be a live tool of a tool pack" in found
+
+
+# ---- cron against the run budget ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cron,fires",
+    [
+        ("0 * * * *", 1),
+        ("*/15 * * * *", 4),
+        ("5,35 9-17 * * 1-5", 2),
+        ("* * * * *", 60),
+        ("0-10/5 3 * * *", 3),
+        ("30 */6 1 * *", 1),
+    ],
+)
+def test_cron_runs_per_hour(cron, fires):
+    from archi.bundles.automation import cron_runs_per_hour
+
+    assert cron_runs_per_hour(cron) == fires
+
+
+@pytest.mark.parametrize("cron", ["@daily", "0 0 * * MON-FRI extra", "MON * * * *", "61 * * * *", "*/0 * * * *", "30-10 * * * *"])
+def test_cron_forms_not_handled_are_refused(cron):
+    from archi.bundles.automation import cron_runs_per_hour
+
+    with pytest.raises(ValueError):
+        cron_runs_per_hour(cron)
+
+
+def test_cron_faster_than_the_budget_is_refused(library):
+    edit(library, auto(lambda a: a.update(trigger={"type": "schedule", "cron": "*/5 * * * *"})))
+    assert "can fire 12 times an hour, over budget.runs_per_hour 20" not in messages(library)
+    edit(library, auto(lambda a: a["budget"].update(runs_per_hour=10)))
+    assert "can fire 12 times an hour, over budget.runs_per_hour 10" in only(messages(library), "cron")
+
+
+def test_cron_within_the_budget_is_accepted(library):
+    edit(library, auto(lambda a: a.update(trigger={"type": "schedule", "cron": "*/5 * * * *"})))
+    assert messages(library) == []
+
+
+def test_cron_with_names_is_refused_as_not_handled(library):
+    edit(library, auto(lambda a: a.update(trigger={"type": "schedule", "cron": "0 MON * * *"})))
+    assert "must be numbers, ranges, lists or steps" in only(messages(library), "cron")
+
+
+# ---- proposal schema field types ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "field,patch,needle",
+    [
+        ("evidence_ids", {"type": "string"}, "'evidence_ids' must be an array of strings"),
+        ("evidence_ids", {"type": "array", "items": {"type": "integer"}}, "'evidence_ids' must be an array of strings"),
+        ("confidence", {"type": "string"}, "'confidence' must be a number within [0, 1]"),
+        ("confidence", {"type": "number"}, "'confidence' must be a number within [0, 1]"),
+        ("confidence", {"type": "number", "minimum": 0, "maximum": 5}, "'confidence' must be a number within [0, 1]"),
+        ("payload", {"type": "string"}, "'payload' must have `type: object`"),
+        ("summary", {"minLength": 1}, "'summary' must have `type: string`"),
+    ],
+)
+def test_proposal_field_types_are_required(library, field, patch, needle):
+    edit(library, auto(lambda a: a["proposal_schema"]["properties"].update({field: patch})))
+    assert needle in only(messages(library), "proposal_schema")
+
+
+def test_proposal_field_must_be_declared(library):
+    edit(library, auto(lambda a: a["proposal_schema"]["properties"].pop("rollback")))
+    assert "property 'rollback' must have `type: string`" in only(messages(library), "rollback")
+
+
+# ---- duplicate keys in pack.yaml ------------------------------------------
+
+
+def test_duplicate_key_in_the_automation_block_is_refused(library):
+    path = library / "packs" / "fixture-triage" / "pack.yaml"
+    path.write_text(path.read_text().replace("  default_level: L1\n", "  default_level: L1\n  default_level: L0\n"))
+    found = messages(library)
+    assert len(found) == 1 and "duplicate key 'default_level'" in found[0]
+
+
+def test_duplicate_top_level_key_in_pack_yaml_is_refused(library):
+    path = library / "packs" / "fixture-triage" / "pack.yaml"
+    path.write_text(path.read_text() + "version: 0.2.0\n")
+    assert "duplicate key 'version'" in only(messages(library), "duplicate key")
+
+
+# ---- required packs resolve through the catalog (any root) ----------------
+
+from archi.bundles import discovery  # noqa: E402
+
+THIRD_PARTY_PACKS = (
+    Path(__file__).resolve().parents[1] / "bundles" / "fixtures" / "thirdparty" / "archi_fixture_packs" / "packs"
+)
+
+
+def test_third_party_automation_requires_a_shipped_pack():
+    """fixture-ops-watch lives in the third-party package and uses a tool of
+    the shipped monit-live pack: different roots, so no sibling directory."""
+    catalog = discovery.from_roots([SHIPPED, THIRD_PARTY_PACKS])
+    assert catalog.problems == []
+    assert "fixture-ops-watch" in catalog.packs
+    assert not (THIRD_PARTY_PACKS / "monit-live").exists()
+
+
+def test_cross_root_pack_is_refused_when_the_required_pack_is_absent():
+    catalog = discovery.from_roots([THIRD_PARTY_PACKS])
+    assert "fixture-ops-watch" not in catalog.packs
+    message = only([p.message for p in catalog.problems], "archi_monit_condor_search")
+    assert "required pack(s) not found: monit-live" in message
+
+
+def test_cross_root_tool_that_the_required_pack_lacks_is_refused(tmp_path):
+    root = tmp_path / "third"
+    shutil.copytree(THIRD_PARTY_PACKS / "fixture-ops-watch", root / "fixture-ops-watch")
+    path = root / "fixture-ops-watch" / "action_classes.yaml"
+    path.write_text(path.read_text().replace("archi_monit_condor_search", "archi_monit_nothing"))
+    catalog = discovery.from_roots([SHIPPED, root])
+    assert "is not a live tool of this pack or of a pack it requires" in only(
+        [p.message for p in catalog.problems], "archi_monit_nothing"
+    )
+
+
+def test_cli_validates_a_path_against_the_catalog(capsys):
+    pack = THIRD_PARTY_PACKS / "fixture-ops-watch"
+    assert archi_main(["bundles", "validate", str(pack), "--pack-root", str(SHIPPED)]) == 0
+    assert not (pack.parent / "monit-live").exists()
