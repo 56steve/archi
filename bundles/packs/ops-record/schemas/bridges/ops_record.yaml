@@ -6,7 +6,7 @@
 # References to nodes other packs own (the tickets tracking an incident, the
 # evidence a proposal cites, the site that broke) are attributes, not edges:
 # okg 0.2.0's generic admission cannot admit an edge to a node outside the
-# submitted payload (the draft okg ask is in the pack README). Add the
+# submitted payload (pact/changes/r3-ops-record/okg-asks.md, ask 1). Add the
 # narrowings here, as optional_when_subtypes_missing, once it can.
 
 id: https://archi-physics.org/okg/archi/bridges/ops-record
