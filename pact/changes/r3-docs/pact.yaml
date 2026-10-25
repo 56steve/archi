@@ -1,0 +1,59 @@
+pact_version: 5
+id: r3-docs
+title: Docs for 3.0
+tier: 2
+why: docs/docs/ is still the v2 chatbot documentation (chat app, providers, services). 3.0
+  needs a one-page quickstart, concept pages for the three layers and the swap points, a page
+  per bundle and pack, and a v2 migration guide.
+affected_code:
+- docs/
+requirements:
+- id: req.r3-docs.site
+  statement: 'The docs site covers: what Archi is (ADR 0002 §1), quickstart (one page, the
+    §8 commands), the context layer (properties, context evals, ops-record), the operations
+    layer (the loop, automation packs, autonomy levels, shadow and promotion, halt), bundles
+    and packs, connecting an agent, adding a source, writing an automation, operating (doctor,
+    eval, upgrade), contributing a pack, reference. No v2 page remains outside a clearly labelled
+    v2 section.
+
+
+    Acceptance:
+
+    - acc.r3-docs.build: mkdocs build --strict green. [evidence: executed_test]
+
+    - acc.r3-docs.quickstart: the quickstart commands are the ones the nightly e2e runs. [evidence:
+    pytest]'
+- id: req.r3-docs.generated
+  statement: 'Bundle and pack pages are generated from their manifests, so they cannot drift.
+
+
+    Acceptance:
+
+    - acc.r3-docs.gen: doc generation test. [evidence: pytest]'
+tasks:
+- id: task.r3-docs.site
+  requirement: req.r3-docs.site
+  verification: 'Rewrite the site.
+
+
+    Test plan:
+
+    - mkdocs build --strict [evidence: executed_test]'
+- id: task.r3-docs.bundles
+  requirement: req.r3-docs.generated
+  verification: 'Generate bundle/pack pages.
+
+
+    Test plan:
+
+    - python/tests/test_docs_generated.py [evidence: pytest]'
+- id: task.r3-docs.v2-migration
+  requirement: req.r3-docs.site
+  verification: 'Write the v2 migration guide.
+
+
+    Test plan:
+
+    - review [evidence: manual]'
+evidence: []
+decisions: []

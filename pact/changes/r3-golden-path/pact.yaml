@@ -1,0 +1,116 @@
+pact_version: 5
+id: r3-golden-path
+title: 'One-command setup: archi init / up / doctor / connect'
+tier: 2
+why: 'docs/cern-team-quickstart.md is 1,016 lines, mostly traps: okg -e from a clone, OKG_PROFILES_DIR,
+  git-init the deployments dir, Postgres preload flags and shm-size, role passwords after
+  migrate, data root outside the deployment (--force deletes it), relative paths that ignore
+  ARCHI_DATA_ROOT, a separate chat Postgres on the container gateway, --ready-timeout 300,
+  a separate long-running MCP process. A team operator with no OKG background cannot get through
+  it. ADR 0002 §8.'
+affected_code:
+- python/archi/cli/
+- python/archi/stack/
+- docs/quickstart.md
+- .github/workflows/nightly-e2e.yml
+requirements:
+- id: req.r3-golden-path.init
+  statement: '`archi init <name> --bundle ...` creates the instance directory as a git repo
+    with a baseline commit, renders the composed profile, writes .env with generated secrets
+    (never committed), makes every data path absolute with the data root outside the deployment
+    dir, and runs okg install/migrate/catalog load/ingest/publish.
+
+
+    Acceptance:
+
+    - acc.r3-golden-path.fresh: init on an empty dir publishes cern-team defaults. [evidence:
+    executed_test]
+
+    - acc.r3-golden-path.secrets: .env is gitignored and no secret appears in the committed
+    tree. [evidence: pytest]'
+- id: req.r3-golden-path.up
+  statement: '`archi up` starts one compose project (podman or docker): AKMON Postgres with
+    the required preload libraries, chat Postgres, Open WebUI, and the instance MCP server,
+    on one network; `archi down` stops it without data loss.
+
+
+    Acceptance:
+
+    - acc.r3-golden-path.up: archi up then archi doctor green; Open WebUI answers with a graph
+    citation. [evidence: executed_test]'
+- id: req.r3-golden-path.doctor
+  statement: '`archi doctor [--json]` runs okg deployment lint and doctor plus archi''s checks
+    for each absorbed footgun, with one remediation line per failure.
+
+
+    Acceptance:
+
+    - acc.r3-golden-path.checks: each footgun check has a failing fixture. [evidence: pytest]'
+- id: req.r3-golden-path.footguns
+  statement: 'Every trap in the current quickstart is listed in this PACT''s evidence as absorbed
+    (archi handles it, with the test) or filed (AKMON issue link).
+
+
+    Acceptance:
+
+    - acc.r3-golden-path.ledger: footgun ledger attached, no entry unresolved. [evidence:
+    manual]'
+- id: req.r3-golden-path.nightly
+  statement: 'A nightly workflow goes from an empty runner to a cited answer over MCP with
+    the cern-team defaults in at most 5 user commands and 15 minutes.
+
+
+    Acceptance:
+
+    - acc.r3-golden-path.green: three consecutive green nightly runs. [evidence: executed_test]'
+tasks:
+- id: task.r3-golden-path.init
+  requirement: req.r3-golden-path.init
+  verification: 'Implement archi init on top of okg install.
+
+
+    Test plan:
+
+    - python/tests/cli/test_init.py [evidence: executed_test]'
+- id: task.r3-golden-path.up
+  requirement: req.r3-golden-path.up
+  verification: 'Compose file template and up/down.
+
+
+    Test plan:
+
+    - scratch run [evidence: executed_test]'
+- id: task.r3-golden-path.doctor
+  requirement: req.r3-golden-path.doctor
+  verification: 'Doctor with JSON output for agents.
+
+
+    Test plan:
+
+    - python/tests/cli/test_doctor.py [evidence: pytest]'
+- id: task.r3-golden-path.footguns
+  requirement: req.r3-golden-path.footguns
+  verification: 'Walk the quickstart; classify each trap.
+
+
+    Test plan:
+
+    - ledger [evidence: manual]'
+- id: task.r3-golden-path.nightly
+  requirement: req.r3-golden-path.nightly
+  verification: 'Nightly e2e workflow.
+
+
+    Test plan:
+
+    - .github/workflows/nightly-e2e.yml runs [evidence: executed_test]'
+- id: task.r3-golden-path.upstream
+  requirement: req.r3-golden-path.footguns
+  verification: 'File the AKMON asks from ADR 0002 §9 items 1, 4, 5, 6.
+
+
+    Test plan:
+
+    - links [evidence: manual]'
+evidence: []
+decisions: []

@@ -1,0 +1,116 @@
+pact_version: 5
+id: r3-ops-runtime
+title: 'Operations runtime: automation packs, action classes, autonomy levels, shadow mode,
+  halt'
+tier: 2
+why: Archi's focus is automating operations. The v2 bots each had their own loop, state in
+  local files, and execution mixed into the agent. 3.0 needs one loop (signal, context, proposal,
+  decision, action, outcome) on OKG's workflow, escalation and Nomos machinery, where agents
+  propose and mediators act. ADR 0002 §7.1-7.3, D10-D12; ADR 0001 §5.3.
+affected_code:
+- python/archi/ops/
+- bundles/packs/
+- python/archi/cli/
+requirements:
+- id: req.r3-ops-runtime.pack
+  statement: 'Automation packs declare trigger, context gate, playbook, action classes (payload
+    schema, mediator, reversible, max level), proposal schema and budget; archi bundles validate
+    enforces it.
+
+
+    Acceptance:
+
+    - acc.r3-ops-runtime.schema: manifest tests over valid and invalid automation packs. [evidence:
+    pytest]'
+- id: req.r3-ops-runtime.loop
+  statement: 'An automation runs as an OKG deployment workflow: context gate check, pinned
+    read, agent proposal with cited evidence, decision per autonomy level (L0 observe, L1
+    draft, L2 propose via request_escalation), mediator execution, outcome check, ops-record
+    writes. Timed-out or rejected proposals never execute.
+
+
+    Acceptance:
+
+    - acc.r3-ops-runtime.e2e: a fixture automation runs end to end at L0, L1 and L2 on a scratch
+    instance. [evidence: executed_test]
+
+    - acc.r3-ops-runtime.no-l3: an automation or action class configured above L2 is refused
+    at validate and at run start (ADR 0002 D13). [evidence: pytest]
+
+    - acc.r3-ops-runtime.timeout: a timed-out proposal provably does not execute. [evidence:
+    executed_test]'
+- id: req.r3-ops-runtime.shadow
+  statement: 'Every automation starts in shadow; shadow proposals are scored against later
+    human actions (agreement, time-to-first-response, false-proposal rate); promotion to live
+    needs recorded results and an operator approval recorded as a PACT decision in the instance
+    repo. A failing context gate drops a live automation back to shadow with the reason on
+    the proposal.
+
+
+    Acceptance:
+
+    - acc.r3-ops-runtime.score: shadow report produced from a fixture history. [evidence:
+    pytest]
+
+    - acc.r3-ops-runtime.demote: a stale source demotes a live automation. [evidence: executed_test]'
+- id: req.r3-ops-runtime.control
+  statement: '`archi ops status|halt|resume` shows levels, budgets and shadow scores and stops
+    every automation on an instance; budgets cap cost per run and per day.
+
+
+    Acceptance:
+
+    - acc.r3-ops-runtime.halt: halt stops an in-flight run before its mediator step. [evidence:
+    executed_test]'
+- id: req.r3-ops-runtime.upstream
+  statement: 'AKMON issues exist for envelope expiry, approve-with-edits, the proposal API,
+    per-actor cost attribution, a kill switch and a retraction-size guard, each linked from
+    an upstream-ask issue here.
+
+
+    Acceptance:
+
+    - acc.r3-ops-runtime.filed: issue links recorded. [evidence: manual]'
+tasks:
+- id: task.r3-ops-runtime.pack
+  requirement: req.r3-ops-runtime.pack
+  verification: 'Automation pack and action class manifests.
+
+
+    Test plan:
+
+    - python/tests/ops/test_manifest.py [evidence: pytest]'
+- id: task.r3-ops-runtime.loop
+  requirement: req.r3-ops-runtime.loop
+  verification: 'Workflow template for the loop on DBOS + escalations.
+
+
+    Test plan:
+
+    - scratch run [evidence: executed_test]'
+- id: task.r3-ops-runtime.shadow
+  requirement: req.r3-ops-runtime.shadow
+  verification: 'Shadow mode, scoring, promotion and demotion.
+
+
+    Test plan:
+
+    - python/tests/ops/test_shadow.py; scratch run [evidence: executed_test]'
+- id: task.r3-ops-runtime.control
+  requirement: req.r3-ops-runtime.control
+  verification: 'archi ops status/halt/resume and budgets.
+
+
+    Test plan:
+
+    - scratch run [evidence: executed_test]'
+- id: task.r3-ops-runtime.upstream
+  requirement: req.r3-ops-runtime.upstream
+  verification: 'File the operations-layer AKMON asks.
+
+
+    Test plan:
+
+    - links [evidence: manual]'
+evidence: []
+decisions: []

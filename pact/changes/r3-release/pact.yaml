@@ -1,0 +1,59 @@
+pact_version: 5
+id: r3-release
+title: Release archi-kb 3.0.0 and cut over
+tier: 2
+why: 'ADR 0001 §14 cutover conditions still apply: R1 (which v2 deployments are live, and
+  who runs each) has never been answered and gates the deprecation date. w10-v2-teardown stays
+  open until this PACT closes.'
+affected_code:
+- README.md
+- .github/workflows/
+requirements:
+- id: req.r3-release.cutover
+  statement: 'Every live v2 deployment is listed with an owner and is migrated or pinned to
+    a tagged v2.x; the v3 line becomes main, v2 is kept as branch v2; w10-v2-teardown''s cutover
+    clause is evidenced; the ticket-triage four-week shadow report is published with the release
+    (ADR 0002 §7.4).
+
+
+    Acceptance:
+
+    - acc.r3-release.r1: deployment inventory attached. [evidence: manual]
+
+    - acc.r3-release.main: default branch is the v3 line; v2 branch exists. [evidence: manual]'
+- id: req.r3-release.tag
+  statement: 'archi-kb 3.0.0 is tagged, published to PyPI, and announced with the supported
+    AKMON range.
+
+
+    Acceptance:
+
+    - acc.r3-release.pypi: pip install archi-kb==3.0.0 in a clean venv; archi init passes.
+    [evidence: executed_test]'
+tasks:
+- id: task.r3-release.r1
+  requirement: req.r3-release.cutover
+  verification: 'Inventory live v2 deployments and owners.
+
+
+    Test plan:
+
+    - inventory [evidence: manual]'
+- id: task.r3-release.cutover
+  requirement: req.r3-release.cutover
+  verification: 'Swap default branch.
+
+
+    Test plan:
+
+    - repo settings [evidence: manual]'
+- id: task.r3-release.tag
+  requirement: req.r3-release.tag
+  verification: 'Tag, publish, announce.
+
+
+    Test plan:
+
+    - clean-venv install [evidence: executed_test]'
+evidence: []
+decisions: []

@@ -1,0 +1,40 @@
+pact_version: 5
+id: r3-ops-self-monitoring
+title: 'Agents operating Archi: instance health automation'
+tier: 2
+why: 'The workshop''s operations paradigm: algorithmic first, and agents that monitor and
+  help develop the system. Each instance should watch its own health (doctor, freshness, eval
+  regressions, failed ingests, automation errors) and raise it where the instance''s owners
+  work. ADR 0002 §7.5.'
+affected_code:
+- bundles/packs/instance-health/
+requirements:
+- id: req.r3-ops-self-monitoring.health
+  statement: 'An instance-health automation pack (L0/L1) runs on a schedule, reads archi doctor
+    --json, freshness, eval trends and automation error rates, and opens or updates one issue
+    per problem (or a draft PR for a mechanical fix) in the instance repo, without duplicates.
+
+
+    Acceptance:
+
+    - acc.r3-ops-self-monitoring.issue: a stale fixture source yields exactly one issue across
+    two runs. [evidence: executed_test]'
+tasks:
+- id: task.r3-ops-self-monitoring.health
+  requirement: req.r3-ops-self-monitoring.health
+  verification: 'Write the instance-health pack.
+
+
+    Test plan:
+
+    - scratch run [evidence: executed_test]'
+- id: task.r3-ops-self-monitoring.rollout
+  requirement: req.r3-ops-self-monitoring.health
+  verification: 'Enable it on the cms-compops and SubMIT instances.
+
+
+    Test plan:
+
+    - instance runs [evidence: executed_test]'
+evidence: []
+decisions: []

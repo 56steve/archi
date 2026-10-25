@@ -1,0 +1,49 @@
+pact_version: 5
+id: r3-bundle-cern-team
+title: cern-team bundle on packs, with a credential-free default
+tier: 2
+why: cern-team is the generic bundle every other CERN bundle extends. Its only default source
+  is cmssw_releases, chosen because it needs no credential, which makes the generic CERN bundle
+  CMS-specific. ADR 0002 §5.
+affected_code:
+- bundles/cern-team/
+requirements:
+- id: req.r3-bundle-cern-team.bundle
+  statement: 'bundles/cern-team/bundle.yaml defaults to docsite and public indico, offers
+    twiki, cds, jira, git-code, code-text and code-symbols as optional, and no longer includes
+    cmssw-releases; a bare install publishes with no credential.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cern-team.bare: archi init --bundle cern-team with no answers publishes.
+    [evidence: executed_test]
+
+    - acc.r3-bundle-cern-team.smoke: its smoke eval passes. [evidence: executed_test]'
+- id: req.r3-bundle-cern-team.migrate
+  statement: 'Existing cern-team instances have a written route to the new layout (what changes
+    in the registry, how to keep cmssw-releases).
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cern-team.doc: migration note reviewed. [evidence: manual]'
+tasks:
+- id: task.r3-bundle-cern-team.rebuild
+  requirement: req.r3-bundle-cern-team.bundle
+  verification: 'Write bundle.yaml; retire the old profile.yaml.
+
+
+    Test plan:
+
+    - bundle CI job [evidence: executed_test]'
+- id: task.r3-bundle-cern-team.migrate
+  requirement: req.r3-bundle-cern-team.migrate
+  verification: 'Write the migration note.
+
+
+    Test plan:
+
+    - review [evidence: manual]'
+evidence: []
+decisions: []

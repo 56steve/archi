@@ -1,0 +1,62 @@
+pact_version: 5
+id: r3-mcp-clients
+title: 'Bring your own agent: archi connect, external MCP servers, external packs'
+tier: 2
+why: 'The workshop''s position: every layer replaceable, Archi the glue. Open WebUI is one
+  built-in client; Claude Code, codex, openclaw and custom harnesses must work as well, and
+  the new ingestion and MCP working groups need a way to plug their packages in without landing
+  them in this repo. ADR 0002 D5, §4.'
+affected_code:
+- python/archi/cli/connect.py
+- python/archi/bundles/
+- docs/
+requirements:
+- id: req.r3-mcp-clients.connect
+  statement: '`archi connect open-webui|claude-code|codex|openclaw|mcp` writes the client
+    config for the instance MCP endpoint and token; each recipe is exercised by a scripted
+    call of the instance''s search tool.
+
+
+    Acceptance:
+
+    - acc.r3-mcp-clients.recipes: one recorded run per client. [evidence: executed_test]'
+- id: req.r3-mcp-clients.external
+  statement: 'An instance''s archi.yaml can declare external MCP servers (mcp_servers:) that
+    archi connect registers alongside the instance server; an external package can ship a
+    pack via the archi.packs entry point, following a documented contribution contract.
+
+
+    Acceptance:
+
+    - acc.r3-mcp-clients.mcp: an external MCP server fixture is reachable from a connected
+    client. [evidence: executed_test]
+
+    - acc.r3-mcp-clients.pack: an external pack package installs and publishes. [evidence:
+    executed_test]'
+tasks:
+- id: task.r3-mcp-clients.connect
+  requirement: req.r3-mcp-clients.connect
+  verification: 'Implement the five recipes.
+
+
+    Test plan:
+
+    - per-client runs [evidence: executed_test]'
+- id: task.r3-mcp-clients.external-mcp
+  requirement: req.r3-mcp-clients.external
+  verification: 'mcp_servers block.
+
+
+    Test plan:
+
+    - fixture run [evidence: executed_test]'
+- id: task.r3-mcp-clients.external-pack
+  requirement: req.r3-mcp-clients.external
+  verification: 'Contribution contract doc and fixture package.
+
+
+    Test plan:
+
+    - fixture run [evidence: executed_test]'
+evidence: []
+decisions: []

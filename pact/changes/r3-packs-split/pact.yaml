@@ -1,0 +1,68 @@
+pact_version: 5
+id: r3-packs-split
+title: Split the connectors, schemas, invariants and playbooks into packs
+tier: 2
+why: The four bundles share sources (docsite, indico, twiki, jira, git-code) and differ in
+  the CMS and cluster ones. Each source family becomes one pack carrying its own source templates,
+  schema slice, invariant, playbooks and init questions, so a bundle is a list and not a copy.
+  ADR 0002 §3.1, §5.
+affected_code:
+- bundles/packs/
+- bundles/cern-team/
+- python/archi/schemas/
+- skills/
+requirements:
+- id: req.r3-packs-split.packs
+  statement: 'Packs exist for docsite, indico, twiki, cds, jira, git-code, code-text, code-symbols,
+    cms-catalogs, cmssst, cmssw-releases, dqm, hypernews and monit-live, each declaring needs_credentials
+    honestly and owning one coverage invariant for the subtypes it emits.
+
+
+    Acceptance:
+
+    - acc.r3-packs-split.validate: archi bundles validate passes on every pack. [evidence:
+    pytest]'
+- id: req.r3-packs-split.isolation
+  statement: 'Each pack, installed alone on the base with fixture inputs, reaches a published
+    generation with lint showing zero blockers; each schema path is owned by exactly one pack
+    or byte-identical across packs.
+
+
+    Acceptance:
+
+    - acc.r3-packs-split.matrix: parametrised install test over every pack. [evidence: executed_test]'
+tasks:
+- id: task.r3-packs-split.doc-packs
+  requirement: req.r3-packs-split.packs
+  verification: 'Move document-source templates and slices.
+
+
+    Test plan:
+
+    - python/tests/packs/ [evidence: pytest]'
+- id: task.r3-packs-split.code-packs
+  requirement: req.r3-packs-split.packs
+  verification: 'Move repository/code-source templates and extractors.yaml.
+
+
+    Test plan:
+
+    - python/tests/packs/ [evidence: pytest]'
+- id: task.r3-packs-split.cms-packs
+  requirement: req.r3-packs-split.packs
+  verification: 'Move CMS catalog, monitoring and live-tool sources.
+
+
+    Test plan:
+
+    - python/tests/packs/ [evidence: pytest]'
+- id: task.r3-packs-split.isolation
+  requirement: req.r3-packs-split.isolation
+  verification: 'One install per pack against fixture caches.
+
+
+    Test plan:
+
+    - python/tests/packs/test_pack_isolation.py [evidence: executed_test]'
+evidence: []
+decisions: []

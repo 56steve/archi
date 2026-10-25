@@ -1,0 +1,60 @@
+pact_version: 5
+id: r3-bundle-cms-comp-ops
+title: cms-comp-ops bundle; rebuild the comp-ops instance from it
+tier: 2
+why: ADR 0001 kept comp-ops an instance until a second ops team appeared. CRAB and WisDQM
+  now reuse the same CMS catalogs and monitoring, so the shape recurs. The comp-ops instance
+  (gitlab.cern.ch/archi/cms-compops) stays the standing validation target (ADR 0001 D10).
+affected_code:
+- bundles/cms-comp-ops/
+- skills/
+requirements:
+- id: req.r3-bundle-cms-comp-ops.bundle
+  statement: 'bundles/cms-comp-ops extends cern-team, defaults to cms-catalogs, cmssst and
+    cmssw-releases, offers monit-live, dqm, hypernews and jira, and carries the comp-ops playbooks
+    (rucio_*, site_profile, incident_root_cause, monitoring_condor_snapshot) in its packs,
+    plus ops-record by default and the ticket-triage automation pack as optional.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cms-comp-ops.install: bundle installs green with fixture caches. [evidence:
+    executed_test]
+
+    - acc.r3-bundle-cms-comp-ops.smoke: smoke eval passes. [evidence: executed_test]'
+- id: req.r3-bundle-cms-comp-ops.instance
+  statement: 'The cms-compops instance is regenerated from `archi init --bundle cms-comp-ops`
+    plus instance-local config, with the parity auditor green.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cms-comp-ops.parity: audit_a2rchi_source_parity.py --fail-on-non-parity
+    green. [evidence: executed_test]'
+tasks:
+- id: task.r3-bundle-cms-comp-ops.bundle
+  requirement: req.r3-bundle-cms-comp-ops.bundle
+  verification: 'Write the bundle.
+
+
+    Test plan:
+
+    - bundle CI job [evidence: executed_test]'
+- id: task.r3-bundle-cms-comp-ops.playbooks
+  requirement: req.r3-bundle-cms-comp-ops.bundle
+  verification: 'Assign playbooks and triggers to packs.
+
+
+    Test plan:
+
+    - python/tests/test_skills.py [evidence: pytest]'
+- id: task.r3-bundle-cms-comp-ops.instance
+  requirement: req.r3-bundle-cms-comp-ops.instance
+  verification: 'Rebuild the instance; run parity.
+
+
+    Test plan:
+
+    - parity run on the instance [evidence: executed_test]'
+evidence: []
+decisions: []
