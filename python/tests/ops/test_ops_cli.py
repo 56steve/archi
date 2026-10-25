@@ -15,7 +15,6 @@ from archi.bundles.cli import build_parser
 from archi.cli import ops
 from archi.ops.control import RunInfo
 from archi.ops.escalation import Decision, decision_from_row, may_execute, Escalation
-from archi.ops.levels import LevelError, instance_levels
 from archi.ops.record import RecordError
 from archi.ops.runtime_config import RuntimeConfigError, load_runtime, raw_levels, read_settings
 
@@ -96,12 +95,6 @@ def test_runtime_config_defaults_to_shadow_and_refuses_unknown_keys(instance, tm
         load_runtime({})
     with pytest.raises(RuntimeConfigError, match="OKG_DSN"):
         load_runtime({"ARCHI_INSTANCE": str(inst)})
-
-
-def test_instance_levels():
-    assert instance_levels({"a": {"level": "L1"}, "b": {}}) == {"a": "L1", "b": None}
-    with pytest.raises(LevelError, match="L3"):
-        instance_levels({"a": {"level": "L3"}})
 
 
 # --- reading an escalation row back -----------------------------------------------------

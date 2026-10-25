@@ -31,7 +31,7 @@ from typing import Any, Mapping, Optional
 
 import yaml
 
-from archi.bundles.manifest import BASE_DIR, TEMPLATE_REF, Pack, base_questions
+from archi.bundles.manifest import BASE_DIR, TEMPLATE_REF, Pack, base_questions, load_unique_yaml
 from archi.bundles.resolve import CompositionError, Resolution
 from archi.enrichment.link_coverage import link_coverage_invariants
 
@@ -212,7 +212,7 @@ def compose(resolution: Resolution) -> Composition:
             _merge_value(comp, question_defs, "question", q["id"], q, pack)
 
         if pack.path("invariants") is not None:
-            body = yaml.safe_load(pack.path("invariants").read_text(encoding="utf-8"))
+            body = load_unique_yaml(pack.path("invariants").read_text(encoding="utf-8"))
             invariants: dict[str, Any] = {i["name"]: i for i in comp.invariants}
             for inv in body.get("invariants", []):
                 _merge_value(comp, invariants, "invariant", inv["name"], inv, pack)
@@ -257,7 +257,7 @@ def compose(resolution: Resolution) -> Composition:
                 _merge_bytes(comp, comp.playbooks, "playbook", rel, data, pack)
 
         if triggers_path is not None:
-            body = yaml.safe_load(triggers_path.read_text(encoding="utf-8"))
+            body = load_unique_yaml(triggers_path.read_text(encoding="utf-8"))
             version = body.get("version")
             if trigger_version is not None and version != trigger_version:
                 raise CompositionError(
@@ -271,7 +271,7 @@ def compose(resolution: Resolution) -> Composition:
                 _merge_value(comp, intents, "trigger", intent, value, pack)
 
         if pack.path("action_classes") is not None:
-            body = yaml.safe_load(pack.path("action_classes").read_text(encoding="utf-8"))
+            body = load_unique_yaml(pack.path("action_classes").read_text(encoding="utf-8"))
             for aid, value in body["action_classes"].items():
                 _merge_value(comp, comp.action_classes, "action_class", aid, value, pack)
 
