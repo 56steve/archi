@@ -111,4 +111,13 @@ evidence:
     git log --no-merges archi-okg/main..archi_v3-pre-merge is now empty; the 011f5d64 commit
     message records what was carried over (the 3.0 plan and approvals) and what was superseded
     (the deploy-key CI, 54219413 and 41863a7e).'
+- kind: manual
+  requirement: req.r3-release-home.rules
+  status: pass
+  head: dc7e0fb99f698f0734a3b3bf267fb8dedcae5d19
+  at: '2026-10-25T02:04:07+00:00'
+  note: 'acc.r3-release-home.rules. The PR base is archi_v3 in all three places: AGENTS.md
+    "Where work lands" ("PRs target archi_v3"), pact/project.yaml pr_policy.base, and CLAUDE.md,
+    which is a single @AGENTS.md import and so carries the same rule. AGENTS.md also documents
+    okg pact check --base origin/archi_v3, because origin/HEAD here is v2 main.'
 decisions: []
