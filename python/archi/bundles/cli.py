@@ -4,7 +4,9 @@
     archi bundles show NAME             one pack or bundle in full
     archi bundles validate [PATH ...]   check pack.yaml / bundle.yaml
     archi render --bundle B [--with P] [--without P] [--instance DIR]
-                                        compose packs into an okg profile
+                                        compose packs into an okg profile + archi.lock
+    archi add PACK [--answer ID=VALUE]  add a pack to an installed instance
+    archi diff [--json]                 drift from archi.lock
 """
 from __future__ import annotations
 
@@ -132,8 +134,7 @@ def _packs_arg(values: list[str]) -> list[str]:
 
 
 def cmd_render(args: argparse.Namespace) -> int:
-    from archi.bundles.render import render
-    from archi.bundles.resolve import CompositionError, resolve
+    from archi.bundles.resolve import CompositionError
 
     catalog = _catalog(args)
     for problem in catalog.problems:
@@ -151,11 +152,14 @@ def cmd_render(args: argparse.Namespace) -> int:
         print(f"run okg from {args.instance}:")
         print(f"  okg install --profile {legacy[0]} --deployment-name <slug> --postgres-dsn ...")
         return 0
+    from archi.bundles.lock import render_and_lock
+
     try:
-        resolution = resolve(
-            catalog, args.bundle, _packs_arg(args.with_packs), _packs_arg(args.without_packs)
+        resolution, rendered, _ = render_and_lock(
+            catalog, args.instance, args.bundle,
+            _packs_arg(args.with_packs), _packs_arg(args.without_packs),
+            name=args.name, deployment=args.deployment.resolve() if args.deployment else None,
         )
-        rendered = render(resolution, args.instance, name=args.name)
     except CompositionError as exc:
         print(f"error ({exc.code}): {exc}", file=sys.stderr)
         return 1
@@ -163,9 +167,52 @@ def cmd_render(args: argparse.Namespace) -> int:
         print(f"note: {note}", file=sys.stderr)
     print(f"rendered profile {rendered.name!r} with packs {', '.join(resolution.pack_names)}")
     print(f"  {rendered.profile_dir}")
+    print(f"  {Path(args.instance) / 'archi.lock'}")
     print(f"run okg from {args.instance} so it finds profiles/{rendered.name}/:")
     print(f"  okg install --profile {rendered.name} --deployment-name <slug> --postgres-dsn ...")
     return 0
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    from archi.bundles.lock import LockError, add
+    from archi.bundles.resolve import CompositionError
+
+    answers = {}
+    for item in args.answer:
+        key, sep, value = item.partition("=")
+        if not sep:
+            print(f"error: --answer {item!r} is not ID=VALUE", file=sys.stderr)
+            return 1
+        answers[key.replace("-", "_")] = value
+    try:
+        result = add(
+            args.instance, _catalog(args), args.pack, answers,
+            deployment_dir=args.deployment, run_okg=not args.no_okg,
+        )
+    except (LockError, CompositionError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"added pack {result.pack!r}: sources {', '.join(result.added_sources) or 'none'}")
+    return 0
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    from archi.bundles.lock import LockError, diff
+
+    try:
+        drift = diff(args.instance, _catalog(args), args.deployment)
+    except LockError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(drift.as_dict(), indent=2))
+    else:
+        for area, items in drift.as_dict().items():
+            for item in items:
+                print(f"{area}: {item}")
+        if drift.clean:
+            print("no drift from archi.lock")
+    return 0 if drift.clean else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -214,8 +261,30 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--instance", type=Path, default=Path("."),
                         help="instance directory; the profile goes to <instance>/profiles/<name>/")
     render.add_argument("--name", help="profile name (default: the bundle names joined by -)")
+    render.add_argument("--deployment", type=Path,
+                        help="installed okg deployment directory to record in archi.lock")
     roots(render)
     render.set_defaults(func=cmd_render)
+
+    add = sub.add_parser("add", help="add a pack to an installed instance and publish again")
+    add.add_argument("pack")
+    add.add_argument("--instance", type=Path, default=Path("."), help="instance directory")
+    add.add_argument("--deployment", type=Path,
+                     help="okg deployment directory (default: the one archi.lock records)")
+    add.add_argument("--answer", action="append", default=[], metavar="ID=VALUE",
+                     help="answer one of the new pack's questions, by rendered id (repeatable)")
+    add.add_argument("--no-okg", action="store_true",
+                     help="edit and commit the deployment, but run no okg command")
+    roots(add)
+    add.set_defaults(func=cmd_add)
+
+    drift = sub.add_parser("diff", help="report drift from archi.lock")
+    drift.add_argument("--instance", type=Path, default=Path("."), help="instance directory")
+    drift.add_argument("--deployment", type=Path,
+                       help="okg deployment directory (default: the one archi.lock records)")
+    drift.add_argument("--json", action="store_true")
+    roots(drift)
+    drift.set_defaults(func=cmd_diff)
     return parser
 
 

@@ -162,3 +162,44 @@ legacy profile. `archi render --bundle cern-team --instance DIR` copies it,
 symlinks followed, to `DIR/profiles/cern-team/`. Either way the profile lands
 in `<instance>/profiles/`, and okg run from the instance directory finds it,
 so no step sets `OKG_PROFILES_DIR`.
+
+## archi.lock, archi add, archi diff
+
+`archi render` also writes `<instance>/archi.lock`. Commit it with the
+instance. It records the selection (bundles, `--with`, `--without`), the okg
+range and the okg version it was rendered with, each bundle's and pack's
+version, provider and content digest, a sha256 of every rendered profile
+file, and what the renderer composed that okg does not read: freshness SLOs,
+live tools, action classes, and the pack that owns each source.
+`archi render --deployment DIR` also records the installed okg deployment.
+
+```bash
+archi add indico --deployment deployments/myteam --answer indico_base_url=https://indico.cern.ch
+archi diff            # exit 0: no drift; 1: drift; 2: no usable lock
+```
+
+`archi add <pack>` re-renders the instance with one more pack (and whatever
+it requires), then adds to the installed deployment only what is new: the
+pack's registry entries with this deployment's answers filled in, schema
+slices, files, playbooks, invariants, skill triggers, modules and search
+subtypes. A file the deployment already holds with different content stops
+the add; archi does not overwrite what the instance changed. If the
+deployment is in a git repository the change is committed. Then archi runs
+the okg steps the quickstart used to list as manual ones:
+
+```
+okg catalog ownership claim --deployment DIR --json
+okg catalog load --deployment DIR --apply --json
+okg ingest --deployment NAME --include <the new source ids>
+okg run --once --deployment NAME --apply
+```
+
+`--no-okg` stops after the edit and the commit. New questions are answered
+with `--answer <rendered id>=<value>`; any not answered take their defaults.
+
+`archi diff` reports three kinds of drift: rendered profile files edited,
+added or missing since the render; packs and bundles whose installed version
+or content no longer matches the lock; and, for the recorded deployment,
+registry entries that differ from what the rendered profile produces with
+the deployment's own install answers (an entry edited by hand, removed, or
+added outside archi).
