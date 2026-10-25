@@ -210,14 +210,14 @@ automation pack.
 ## O12. Bootstrap the DBOS schema before install's ingest when the runtime is enabled
 
 **Problem (proven, submit76, okg 0.2.0, 2026-10-25).** With `runtime.enabled: true` in
-`deployment.yaml` from the start, `okg install` and `okg provision` stop at their last stage
+`deployment.yaml` from the start, `okg install` (without `--no-publish`) stops at its last stage
 (`ingest_failed`): the ingest enqueues a DBOS workflow, and `dbos.workflow_status` does not exist
-until `okg runtime bootstrap` has run. Every earlier stage has finished. After the bootstrap the
-ingest still waits for a running worker (`runtime.enabled` makes ingest default to DBOS-enqueue),
-which `archi init` does not have, so it has to pass `--inline`.
+until `okg runtime bootstrap` has run. Every earlier stage has finished. `okg install --no-publish`
+followed by `okg provision` does finish. Even then ingest defaults to DBOS-enqueue when the runtime is
+enabled, so an `okg ingest` with no worker up waits for one; `--inline` avoids it.
 
-**Ask.** `install` and `provision` bootstrap the runtime schema before the ingest stage, and run the
-ingest in-process when no worker is up.
+**Ask.** `install` bootstraps the runtime schema before the ingest stage, and every ingest runs in-process
+when no worker is up.
 
 **Acceptance.** `okg install` on a profile whose deployment defaults enable the runtime finishes
 without a hand step and without a worker.

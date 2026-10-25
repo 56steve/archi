@@ -110,8 +110,8 @@ ls instance/automations
 
 echo "== 2. archi init's install and publish, through archi.cli.init.install_and_publish (no hand bootstrap)"
 $T init-instance 2>&1 | tee "$RUN/install-flow.log" | grep -v "^\s*$" | tail -25
-check "provision stopped before the DBOS schema and the flow bootstrapped the runtime by itself" \
-  "'bootstrapping the runtime' in open('$RUN/install-flow.log').read()" < /dev/null
+check "the flow ran provision and then the runtime bootstrap by itself (no hand step)" \
+  "'okg provision --deployment' in open('$RUN/install-flow.log').read() and 'okg runtime bootstrap --deployment' in open('$RUN/install-flow.log').read()" < /dev/null
 grep -n "^runtime" -A4 "$OKG_DEPLOYMENTS_DIR/$D/deployment.yaml" | tee "$RUN/runtime-line.txt"
 check "deployment.yaml has runtime.enabled and archi.ops.workflow (written before okg install)" \
   "'enabled: true' in open('$RUN/runtime-line.txt').read() and 'archi.ops.workflow' in open('$RUN/runtime-line.txt').read()" < /dev/null
@@ -135,7 +135,7 @@ node ops_incident inc-seed-1 > "$RUN/seed-node.jsonl"
 check "the seed incident is published" "len(rows) == 1 and rows[0]['attrs']['entity'] == 'T2_US_MIT'" < "$RUN/seed-node.jsonl"
 "$V/okg" doctor --check sources --deployment $D --json > "$RUN/doctor-sources.json" 2>&1 || true
 check "okg doctor lists the jira source with a watermark" \
-  "any(r.get('name') == '$D.jira' and ((r.get('coverage') or {}).get('watermark') or {}).get('last_reconcile_at') for r in d['sources'])" < "$RUN/doctor-sources.json"
+  "any(r.get('name') == 'jira.jira' and ((r.get('coverage') or {}).get('watermark') or {}).get('last_reconcile_at') for r in d['sources'])" < "$RUN/doctor-sources.json"
 
 echo "== 5. L0 (acc e2e): observed, nothing escalated, no marker"
 configure --level L0

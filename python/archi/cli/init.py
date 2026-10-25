@@ -257,6 +257,10 @@ def provision(okg: Okg, name: str, *, runtime: bool, echo: Callable[[str], None]
         okg.run("runtime", "bootstrap", "--deployment", name)
         okg.run("ingest", "--deployment", name, "--inline")
         result = okg.run("run", "--once", "--deployment", name, "--apply", ok_codes=(0, 8))
+    elif runtime:
+        # provision got through (okg 0.2.0 does not stop on the missing schema the way `okg install` does);
+        # the worker still needs the bootstrap, and it is idempotent.
+        okg.run("runtime", "bootstrap", "--deployment", name)
     return result
 
 

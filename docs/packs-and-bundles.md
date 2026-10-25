@@ -425,13 +425,18 @@ workflows: [archi.ops.workflow]}` into the deployment defaults, so it is in
 `deployment.yaml` when `okg install` starts. (Editing `runtime:` after install
 makes publish refuse until `okg catalog load --apply`.)
 
-Because the runtime is on from the start, `okg provision` stops at its ingest
-stage: the DBOS schema does not exist yet, and no worker runs during `archi
-init`. `archi init` handles it (`okg runtime bootstrap`, then `okg ingest
---inline` and `okg run --once --apply`), and `archi up` repeats the bootstrap,
-which is idempotent. The stack has no runtime worker yet: start `okg runtime
-worker --deployment <name>` yourself, with `ARCHI_INSTANCE`, `OKG_DSN` and
-`ARCHI_OPS_DEPLOYMENT` set.
+Because the runtime is on from the start, `okg install` without `--no-publish`
+stops at its last stage (the DBOS schema does not exist yet). `archi init` uses
+`okg install --no-publish` and `okg provision`, which finish on okg 0.2.0, and then
+runs `okg runtime bootstrap`; if a later okg stops provision on the missing schema,
+`archi init` bootstraps and ingests in-process (`okg ingest --inline`, `okg run
+--once --apply`). `archi up` repeats the bootstrap, which is idempotent. The stack
+has no runtime worker yet: start `okg runtime worker --deployment <name>` yourself,
+with `ARCHI_INSTANCE`, `OKG_DSN` and `ARCHI_OPS_DEPLOYMENT` set.
+
+okg publishes only from a committed instance repository. `archi.yaml` and
+`ops.yaml` are in it, so commit an edit to either before the next publish (`archi
+ops promote` commits its own).
 
 Settings that belong to the instance, not the pack:
 

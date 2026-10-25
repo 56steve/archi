@@ -122,6 +122,10 @@ def cmd_configure(a: argparse.Namespace) -> None:
     if a.estimate is not None:
         entry["estimate_cost"] = a.estimate
     (inst / "ops.yaml").write_text(yaml.safe_dump(ops, sort_keys=False), encoding="utf-8")
+    # okg publishes only from a committed instance repository, so commit as an operator would
+    from archi.cli.init import commit_all
+
+    commit_all(inst, f"configure: {' '.join(sys.argv[2:])}")
 
 
 def cmd_signal(a: argparse.Namespace) -> None:

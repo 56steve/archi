@@ -57,10 +57,10 @@ def test_a_provision_failure_that_is_not_the_dbos_schema_is_raised_not_bootstrap
     assert [c[0] for c in okg.calls] == ["provision"]
 
 
-def test_provision_does_not_bootstrap_when_it_already_works():
+def test_provision_that_works_is_followed_by_the_idempotent_bootstrap_when_the_runtime_is_on():
     okg = Okg(bootstrapped=True)
     init_mod.provision(okg, "dep", runtime=True, echo=lambda _: None)
-    assert okg.calls == [("provision", "--deployment", "dep")]
+    assert okg.calls == [("provision", "--deployment", "dep"), ("runtime", "bootstrap", "--deployment", "dep")]
 
 
 def test_has_automations_reads_the_lock(tmp_path, monkeypatch):
