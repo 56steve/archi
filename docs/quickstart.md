@@ -55,9 +55,10 @@ start), points it at a local ollama if one answers on port 11434
 graph tools and the preset and proves both. In the chat, pick the preset
 named after the site: the graph tools are bound to it, not to the raw model.
 
-**`archi doctor [--json]`** runs `okg deployment lint`, `okg doctor`, and
-one check for each quickstart trap archi absorbs, and prints a fix line for
-each failure. `--json` prints one object for agents. Exit code 0 means no
+**`archi doctor [--json]`** runs `okg deployment lint`, `okg doctor`, a
+`source-freshness` check (each source's age from okg's watermarks against the
+`max_staleness` its pack declares), and one check for each quickstart trap
+archi absorbs, and prints a fix line for each failure. `--json` prints one object for agents. Exit code 0 means no
 check failed.
 
 **`archi down`** stops the project and keeps every volume. `archi down

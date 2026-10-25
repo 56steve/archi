@@ -5,5 +5,7 @@ description: Fixture ticket pack; cannot publish without its token.
 requires:
   packs: [alpha]
 sources: sources/
+freshness:
+  beta.issues: {max_staleness: 24h}
 credentials: [BETA_TOKEN]
 needs_credentials: true

@@ -9,6 +9,10 @@ sources: sources/
 init_questions: questions.yaml
 invariants: invariants.yaml
 playbooks: playbooks/
+# Read live from the Indico API. Events are scheduled days ahead but their
+# agendas and minutes change on the day: 24h (ADR 0002 section 3.1 example).
+freshness:
+  indico.indico_live: {max_staleness: 24h}
 search_subtypes: [meeting_minutes, document, document_chunk]
 prompt_fragment: prompt.md
 # Public events need no credential. Protected ones read a cookie file whose

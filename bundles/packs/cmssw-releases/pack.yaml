@@ -8,6 +8,9 @@ schemas: schemas/
 sources: sources/
 init_questions: questions.yaml
 invariants: invariants.yaml
+# New releases arrive over days to weeks; a week bounds how long a new one goes unseen.
+freshness:
+  cmssw-releases.cmssw_releases: {max_staleness: 7d}
 search_subtypes: [cmssw_release]
 prompt_fragment: prompt.md
 # The release map is public.

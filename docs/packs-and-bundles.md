@@ -36,7 +36,8 @@ not leave that directory (`..`, absolute paths and `~` are refused).
 | `schemas` | | Directory of LinkML schema slices. |
 | `init_questions` | | File holding an `init_questions:` list, in okg's profile question format. |
 | `invariants` | | File holding an `invariants:` list. The pack owns them. |
-| `freshness` | | `{<pack>.<source>: {max_staleness: 24h}}`. Units: `s m h d w`. |
+| `freshness` | context packs with sources | `{<pack>.<source>: {max_staleness: 24h}}`, one entry for every source. A positive integer and one unit of `s m h d w` (no ISO-8601). `archi doctor` compares each source's age to it. |
+| `link_coverage` | | List of link-coverage targets, see [Context quality](#context-quality). |
 | `playbooks` | | Directory of playbooks. |
 | `skill_triggers` | | File with `version:` and an `intents:` mapping. |
 | `search_subtypes` | | Subtypes added to the `content` search profile. |
@@ -88,7 +89,10 @@ Besides the schema, `validate` refuses:
 - a template reference to a question that neither the base nor the pack
   declares, unless it names a required pack's question (`${<pack>_<id>}`,
   checked when the packs are composed);
-- a `freshness` key that is not one of the pack's own sources;
+- a `freshness` key that is not one of the pack's own sources, a value that is
+  not a duration, or a context pack source with no `freshness` entry;
+- a `link_coverage` target whose edge (`from -[edge]-> to`, or the reverse for
+  `direction: in`) no source of the pack declares in its `output_signature`;
 - a bundle that names an unknown pack or bundle, extends itself in a cycle,
   or has no credential-free default context pack with sources (taking
   inherited defaults into account), because a bundle with nothing configured
@@ -128,6 +132,7 @@ directory finds it with no `OKG_PROFILES_DIR`.
 | init questions | base questions, then each pack's as `<pack>_<id>` (flag `--<pack>-<id>`) | same id, different definition: stops |
 | invariants | union; each stays with its pack | same name, different body: stops |
 | freshness | union; each stays with its pack | — |
+| link coverage | each target becomes an invariant `<pack>_link_<name>`, owned by its pack | same invariant name, different body: stops |
 | search `content` subtypes | union | — |
 | other search profiles | union by name | same name, different body: stops |
 | playbooks, skill triggers | union by file name / intent id | different content: stops |
@@ -211,3 +216,59 @@ or content no longer matches the lock; and, for the recorded deployment,
 registry entries that differ from what the rendered profile produces with
 the deployment's own install answers (an entry edited by hand, removed, or
 added outside archi).
+
+## Context quality
+
+ADR 0002 section 6.1 asks that the context layer be measured, not assumed.
+Packs carry three of the measures; the fourth, the context eval, is a separate
+change.
+
+**Freshness.** Every source of a context pack declares `max_staleness` in
+`freshness:`. No source template sets a schedule (their triggers are `manual`
+and `reconcile`), so each value is a judgment: how old the source may get
+before an answer from it is likely wrong, written in a comment above the
+`freshness:` block. `archi render` copies the values into `archi.lock`
+(`composed.freshness`).
+
+`archi doctor` has a `source-freshness` check. It runs `okg doctor --check
+sources --deployment <name> --json` and reads each source's
+`coverage.watermark.last_reconcile_at`, the time of its last completed
+reconcile in okg's `source_watermarks`. A source is late when that age passes its
+`max_staleness`, and also when okg lists no run for it. `archi doctor --json`
+lists every source in the check's `data.sources`:
+
+```json
+{"source": "monit-live.monit_sam", "age": "40h", "max_staleness": "36h", "ok": false,
+ "age_seconds": 144000, "max_staleness_seconds": 129600,
+ "last_reconcile_at": "2026-10-23T20:00:00+00:00", "reason": "last run 40h ago, over the 36h limit"}
+```
+
+The check is skipped, and says so, for an instance with no `archi.lock`.
+
+**Link coverage.** A pack that carries identifiers other sources refer to (sites,
+datasets, runs, releases, tickets) declares how well they must link:
+
+```yaml
+link_coverage:
+  - name: storage_endpoint_site   # invariant: cms_catalogs_link_storage_endpoint_site
+    from: storage_endpoint        # nodes that carry the identifier
+    edge: contains
+    to: site
+    direction: in                 # `in`: site -[contains]-> storage_endpoint; default `out`
+    min_fraction: 0.9             # share of `from` nodes that need such an edge
+    severity: warn                # default; `error` blocks the publish
+```
+
+Composition turns each target into an okg invariant in the `invariants.yaml`
+format. It returns one row, with the counts, when the share of linked nodes
+falls short, and no row when the subtype is empty (the pack's coverage
+invariant reports that). Targets are `warn` so that thin data cannot block a
+publish; set `error` where a miss should. Declare a target only for an edge the
+pack already emits.
+
+**Context gate.** `archi.ops.context_gate` evaluates a gate (sources, maximum
+staleness, minimum context-eval score, required invariants) against the
+current generation's facts and returns pass, or fail with each failing check
+named (`freshness:<source>`, `context_eval`, `invariant:<name>`). Facts come
+from `archi doctor --json` (`facts_from_doctor`), plus invariant results and the
+context-eval score from the caller. A missing score or result is a failure.

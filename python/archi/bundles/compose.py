@@ -9,6 +9,7 @@ Each rule is ADR 0002 section 3.3's table, applied in resolution order:
 | sources | ids become `<pack>.<source>` |
 | init questions | union; a pack's own ids become `<pack>_<id>` (flag `--<pack>-<id>`); one id, two definitions: refused |
 | invariants, freshness | union; each stays with its pack; one name, two bodies: refused |
+| link coverage | each target becomes an invariant `<pack>_link_<name>`, owned by its pack |
 | search `content` | subtype union |
 | other search profiles | union by name; same name, different body: stop |
 | playbooks, triggers | union; one file name (or intent id), two contents: refused |
@@ -32,6 +33,7 @@ import yaml
 
 from archi.bundles.manifest import BASE_DIR, TEMPLATE_REF, Pack, base_questions
 from archi.bundles.resolve import CompositionError, Resolution
+from archi.enrichment.link_coverage import link_coverage_invariants
 
 #: Rendered skills/ entries the renderer writes itself.
 PROMPT_FILE = "chat-system-prompt.md"
@@ -186,6 +188,12 @@ def compose(resolution: Resolution) -> Composition:
             body = yaml.safe_load(pack.path("invariants").read_text(encoding="utf-8"))
             invariants: dict[str, Any] = {i["name"]: i for i in comp.invariants}
             for inv in body.get("invariants", []):
+                _merge_value(comp, invariants, "invariant", inv["name"], inv, pack)
+            comp.invariants = list(invariants.values())
+
+        if pack.link_coverage:
+            invariants = {i["name"]: i for i in comp.invariants}
+            for inv in link_coverage_invariants(pack.name, pack.link_coverage):
                 _merge_value(comp, invariants, "invariant", inv["name"], inv, pack)
             comp.invariants = list(invariants.values())
 

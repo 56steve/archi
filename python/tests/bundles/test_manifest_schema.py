@@ -172,6 +172,28 @@ INVALID_PACKS = {
         ),
         "is not one of this pack's sources",
     ),
+    "source without max_staleness": (
+        lambda root: edit_yaml(_pack(root) / "pack.yaml", lambda d: d.pop("freshness")),
+        "declares no max_staleness",
+    ),
+    "link target for an edge no source declares": (
+        lambda root: edit_yaml(
+            _pack(root) / "pack.yaml",
+            lambda d: d.update(link_coverage=[
+                {"name": "x", "from": "page", "edge": "cites", "to": "page", "min_fraction": 0.5}
+            ]),
+        ),
+        "no source of this pack declares the edge",
+    ),
+    "link target above 100 percent": (
+        lambda root: edit_yaml(
+            _pack(root) / "pack.yaml",
+            lambda d: d.update(link_coverage=[
+                {"name": "x", "from": "page", "edge": "cites", "to": "page", "min_fraction": 1.5}
+            ]),
+        ),
+        "greater than the maximum",
+    ),
     "bad staleness": (
         lambda root: edit_yaml(
             _pack(root) / "pack.yaml",
