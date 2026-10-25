@@ -198,4 +198,18 @@ evidence:
     The run uses the cern-team bundle with cmssw-releases selected in place of docsite and indico, which
     need input a bare runner lacks; a cern-team default that publishes bare is PACT r3-bundle-cern-team
     (Jason, d268 A).'
+- kind: manual
+  requirement: req.r3-golden-path.footguns
+  status: pass
+  command: docs/golden-path-footguns.md; gh issue view 3..13 --repo mitdbg/akmon; gh issue view 798..808
+    --repo archi-physics/archi
+  head: 338f391e5f81fe1908699b26087b3e1a3e96b821
+  at: '2026-10-25T17:02:28+00:00'
+  note: 'acc.r3-golden-path.ledger: the ledger lists 50 traps, from the old quickstart and found while building init, up and doctor; each is absorbed
+    (archi handles it, with the test or doctor check that fails if it returns) or filed, and none is unresolved.
+    The 11 golden-path asks were filed on mitdbg/akmon on 2026-10-25 as #3-#13 (ask 1 #3, 4 #4, 5 #5, 6 #6,
+    A #7, B #8, C #9, D #10, F #11, G #12, H #13) and are tracked here by upstream-ask issues #798-#808;
+    the two bundle-format asks are mitdbg/akmon#1 and #2 (#792, #793). Ask E was withdrawn: FG-39 is fixed
+    in okg v0.2.0 (remove-source proven on a scratch instance). Task upstream (ADR 0002 section 9 items 1,
+    4, 5, 6) is covered by asks 1, 4, 5 and 6.'
 decisions: []

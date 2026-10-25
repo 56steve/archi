@@ -1,10 +1,7 @@
-# AKMON asks from the golden path (drafts)
+# AKMON asks from the golden path
 
-Status: **drafts, not filed.** Jason files them on `mitdbg/akmon`. After
-filing, open one `upstream-ask` issue on `archi-physics/archi` per ask that
-links it (ADR 0002 §9), put the link in
-[golden-path-footguns.md](golden-path-footguns.md), and record it as
-`manual` evidence on `req.r3-golden-path.footguns` in PACT `r3-golden-path`.
+Status: **filed 2026-10-25** on `mitdbg/akmon`, each tracked by an `upstream-ask`
+issue here: ask 1 [mitdbg/akmon#3](https://github.com/mitdbg/akmon/issues/3), #798; ask 4 [mitdbg/akmon#4](https://github.com/mitdbg/akmon/issues/4), #799; ask 5 [mitdbg/akmon#5](https://github.com/mitdbg/akmon/issues/5), #800; ask 6 [mitdbg/akmon#6](https://github.com/mitdbg/akmon/issues/6), #801; ask A [mitdbg/akmon#7](https://github.com/mitdbg/akmon/issues/7), #802; ask B [mitdbg/akmon#8](https://github.com/mitdbg/akmon/issues/8), #803; ask C [mitdbg/akmon#9](https://github.com/mitdbg/akmon/issues/9), #804; ask D [mitdbg/akmon#10](https://github.com/mitdbg/akmon/issues/10), #805; ask F [mitdbg/akmon#11](https://github.com/mitdbg/akmon/issues/11), #806; ask G [mitdbg/akmon#12](https://github.com/mitdbg/akmon/issues/12), #807; ask H [mitdbg/akmon#13](https://github.com/mitdbg/akmon/issues/13), #808. Ask E was withdrawn (no change needed).
 
 Asks 1, 4, 5 and 6 are the ones ADR 0002 §9 names. A–H are traps found or
 confirmed while building `archi init` / `up` / `doctor` on okg v0.2.0.
