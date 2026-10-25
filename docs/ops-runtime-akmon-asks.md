@@ -5,7 +5,7 @@ filing, open one `upstream-ask` issue on `archi-physics/archi` per ask that
 links it (ADR 0002 §9), and record the links as `manual` evidence on
 `req.r3-ops-runtime.upstream` in PACT `r3-ops-runtime`.
 
-Asks O1–O6 are the six ADR 0002 §9 item 7 names. O7–O11 were found while
+Asks O1–O6 are the six ADR 0002 §9 item 7 names. O7–O13 were found while
 building the loop on okg v0.2.0. Each says whether it was **proven** by
 running code on a scratch instance (submit76, okg 0.2.0, 2026-10-25) or
 **read** from okg's source only. Each names the archi code that goes away
@@ -206,3 +206,38 @@ works without a separate catalog load.
 **archi deletes.** The rule that archi's renderer writes `runtime:` before
 `okg install`, and the claim step `archi add` runs when it adds an
 automation pack.
+
+## O12. Install fails at ingest when the runtime is enabled
+
+**Problem (proven).** `okg install` with `runtime: {enabled: true}` in the
+profile finishes every stage but the last, then stops with `ingest_failed`
+(`relation dbos.workflow_status does not exist`). The DBOS schema is not
+created until `okg runtime bootstrap`, which install does not run.
+
+**Ask.** When the runtime is enabled, have install bootstrap the DBOS schema
+before its ingest stage.
+
+**Acceptance.** `okg install` of a profile with the runtime enabled reaches
+a published generation with no manual step.
+
+**archi deletes.** The `okg runtime bootstrap` and resume steps that
+`archi init` and the scratch run add after a failed install ingest.
+
+## O13. A queued admission with no application version blocks the worker
+
+**Problem (proven).** An `okg admission submit` made while no worker runs
+leaves an ENQUEUED `okg_admission_submit` workflow with
+`application_version` NULL. The next `okg runtime worker` then refuses to
+start (`RuntimeCutoverBlocked: DBOS application-version cutover is blocked by
+active workflow history that is not safely replaceable`). Seen when
+`archi ops halt` wrote its records with the worker down.
+
+**Ask.** Treat a queued admission with no application version as safely
+replaceable at cutover (or stamp the version at submit time).
+
+**Acceptance.** Submit with no worker running, then start the worker: it
+starts and runs the admission.
+
+**archi deletes.** In `archi ops halt`, the 20 s wait for its records and
+the cancellation of its own queued admission when they are not confirmed,
+which today means halt records are lost when the worker is down.
