@@ -9,6 +9,23 @@ Escalations are read from `okg.escalation_live` (current version:
 `valid_to_gen IS NULL`). Operators answer through okg's own
 `respond_to_escalation`; the `okg runtime escalation respond` command is
 broken in okg 0.2.0 (ImportError in cli/runtime.py:1154).
+
+Everything here that reaches into okg beyond its public CLI and `okg.deployment`,
+with the upstream ask (docs/ops-runtime-akmon-asks.md) that removes it:
+
+| What | Where | Ask |
+|---|---|---|
+| raw SQL on `okg.escalation_live` (list, read one, decision and status) | `escalation`, `escalations` | O3: an API to list, show and answer escalations |
+| `okg.substrate.runtime.escalation_response.respond_to_escalation` | `respond` | O7: the CLI command that wraps it is broken; O3 |
+| `okg.substrate.db.connection.connect` | `respond` | O3 |
+| `okg.substrate.generation_resolver.resolve_okg_generation` | `pin_generation` | O3: a public "latest published generation" |
+| raw SQL on `okg.deployment_cost_caps` and `okg.deployment_cost_ledger` | `day_spend` | O4: cost attribution per actor |
+| `dbos.DBOSClient` (schedules, workflow lists, cancel) | `schedules`, `pause`, `resume`, `runs`, `run_input`, `cancel`, `cancel_unconfirmed_admission`, `requeue_cancelled_signals` | O5: a first-class kill switch |
+| the `okg_admission_submit` workflow name and its input | `cancel_unconfirmed_admission` | O13: a queued admission blocks the next worker start |
+| `okg doctor --check sources` JSON (`sources[].coverage.watermark`) | `doctor_sources` | none: documented CLI output, but its shape is not versioned |
+
+The tables archi creates itself are in the `archi_ops` schema of the deployment
+database: `signals`, `halts`, `mediations`.
 """
 from __future__ import annotations
 
@@ -36,6 +53,16 @@ CREATE TABLE IF NOT EXISTS archi_ops.signals (
     attempt    integer NOT NULL DEFAULT 1,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (automation, signal_id)
+);
+-- one row per mediator call, written before the call: a replay can tell "never started" from
+-- "started, outcome unknown", so a mediator runs at most once per idempotency key
+CREATE TABLE IF NOT EXISTS archi_ops.mediations (
+    idempotency_key text PRIMARY KEY,
+    proposal_id     text NOT NULL,
+    status          text NOT NULL DEFAULT 'attempted',
+    result          text,
+    started_at      timestamptz NOT NULL DEFAULT now(),
+    finished_at     timestamptz
 );
 -- schedules `archi ops halt` paused, so `resume` leaves alone any an operator paused earlier
 CREATE TABLE IF NOT EXISTS archi_ops.halts (
@@ -255,10 +282,63 @@ class OpsIO:
                 "WHERE automation = %s AND status = 'new' ORDER BY created_at, signal_id", (automation,)).fetchall()
         return [dict(zip(("id", "entity", "title", "source", "summary", "attempt"), r)) for r in rows]
 
-    def mark_signal_started(self, automation: str, signal_id: str) -> None:
+    def requeue_cancelled_signals(self) -> list[tuple[str, str, int]]:
+        """Give each signal whose run was cancelled a new attempt, so it can run again.
+
+        Returns (automation, signal id, new attempt). The attempt is part of the run id, and DBOS
+        does not rerun a workflow id that is already CANCELLED.
+        """
+        from archi.ops.loop import make_run_id
+
         with self.connect() as conn:
-            conn.execute("UPDATE archi_ops.signals SET status = 'started' WHERE automation = %s AND signal_id = %s",
-                         (automation, signal_id))
+            rows = conn.execute("SELECT automation, signal_id, attempt FROM archi_ops.signals "
+                                "WHERE status = 'started'").fetchall()
+        if not rows:
+            return []
+        ids = {make_run_id(a, sid, att): (a, sid, att) for a, sid, att in rows}
+        requeued = []
+        for wf in self._client().list_workflows(workflow_ids=list(ids), load_input=False):
+            if str(_val(wf, "status")).upper() == "CANCELLED":
+                automation, signal_id, attempt = ids[_val(wf, "workflow_id")]
+                with self.connect() as conn:
+                    conn.execute("UPDATE archi_ops.signals SET status = 'new', attempt = %s "
+                                 "WHERE automation = %s AND signal_id = %s AND attempt = %s",
+                                 (attempt + 1, automation, signal_id, attempt))
+                requeued.append((automation, signal_id, attempt + 1))
+        return requeued
+
+    # --- mediator attempts ---------------------------------------------------
+
+    def begin_mediation(self, key: str, proposal_id: str) -> Optional[dict]:
+        """Record that the mediator is about to be called for `key`.
+
+        Returns None when this call made the record (go ahead), or the earlier record
+        `{status, result}`: `attempted` means a call began and its end was never recorded.
+        """
+        with self.connect() as conn:
+            made = conn.execute(
+                "INSERT INTO archi_ops.mediations (idempotency_key, proposal_id) VALUES (%s, %s) "
+                "ON CONFLICT (idempotency_key) DO NOTHING RETURNING 1", (key, proposal_id)).fetchone()
+        return None if made else self.mediation(key)
+
+    def mediation(self, key: str) -> Optional[dict]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT status, result FROM archi_ops.mediations WHERE idempotency_key = %s",
+                               (key,)).fetchone()
+        return {"status": row[0], "result": row[1]} if row else None
+
+    def finish_mediation(self, key: str, status: str, result: str) -> None:
+        with self.connect() as conn:
+            conn.execute("UPDATE archi_ops.mediations SET status = %s, result = %s, finished_at = now() "
+                         "WHERE idempotency_key = %s", (status, result, key))
+
+    def mark_signal(self, automation: str, signal_id: str, status: str) -> None:
+        with self.connect() as conn:
+            conn.execute("UPDATE archi_ops.signals SET status = %s WHERE automation = %s AND signal_id = %s",
+                         (status, automation, signal_id))
+
+    def mark_signal_started(self, automation: str, signal_id: str) -> None:
+        self.mark_signal(automation, signal_id, "started")
 
 
 def day_scope(automation: str, day: str) -> str:

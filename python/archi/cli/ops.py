@@ -1,12 +1,21 @@
 """`archi ops status | halt | resume | pending | approve | reject` (PACT r3-ops-runtime req.control).
 
     archi ops status [--json]      levels, schedules, pending escalations, budgets, shadow summary
-    archi ops halt                 stop every automation: pause the scanner, close open
-                                   escalations, cancel runs that have not finished, record them
-    archi ops resume               un-pause what halt paused (cancelled runs are not resumed)
+    archi ops halt [--no-cancel]   stop every automation: pause the scanner, close open
+                                   escalations, cancel runs that have not finished, record them.
+                                   --no-cancel leaves runs in flight; their mediator step refuses
+    archi ops resume               un-pause what halt paused; a cancelled run's signal runs again
+                                   as a new attempt (the cancelled run itself is not resumed)
     archi ops pending              escalations waiting for a person
-    archi ops approve ESC [--note] answer an escalation (decided_by: --as, else the OS user)
+    archi ops approve ESC [--note] answer an escalation about an ops proposal of this instance
     archi ops reject  ESC [--note]
+    archi ops promote AUTOMATION   set a shadow automation live: needs a passing shadow report, records
+                                   the operator's approval as a PACT decision in the instance repo
+                                   and commits ops.yaml (see archi.ops.promotion)
+
+decided_by is the OS user. `--as X` is recorded as "<os user> for X": nothing authenticates the
+caller until okg offers an authenticated proposal API (docs/ops-runtime-akmon-asks.md, O3), so a
+claimed name must not read as a verified one.
 
 The logic is in functions over an `OpsIO` (archi.ops.okg_io), so tests pass a
 fake. The DSN comes from --dsn, else OKG_DSN, else the instance's own secrets.
@@ -25,12 +34,13 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Collection, Mapping, Optional
 
 import yaml
 
 from archi.ops.control import BudgetUsage, build_status, halt_plan, resume_plan
-from archi.ops.loop import AutomationConfig, load_automation
+from archi.ops.escalation import OPEN_STATES, SUBJECT_PREFIX
+from archi.ops.loop import AutomationConfig, load_automation, parse_run_id
 from archi.ops.record import OpsRecords, RecordError, submit
 from archi.ops.runtime_config import OPS_FILE, SCANNER, raw_levels, read_settings
 
@@ -118,24 +128,49 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def do_halt(io, *, who: str = HALT_ACTOR, submit_records: Callable[..., Any] = submit,
+def close_escalations(io, workflow_id: str, log: Callable[[str], None]) -> tuple[list[str], list[dict[str, str]]]:
+    """Answer each open escalation of a run with `reject`. Returns (closed, stayed_open).
+
+    An escalation that cannot be answered because it was decided or timed out meanwhile is not open any
+    more and counts as closed; one that is still open after a failed answer is reported with the error.
+    """
+    closed, stayed_open = [], []
+    for esc in io.escalations(open_only=True, workflow_ids=[workflow_id]):
+        esc_id = esc["escalation_id"]
+        try:
+            io.respond(esc_id, "reject", note="closed by archi ops halt", decided_by=HALT_ACTOR)
+            closed.append(esc_id)
+            log(f"closed escalation {esc_id} (reject)")
+        except Exception as exc:
+            found = io.escalation(esc_id)
+            if found is not None and (found[1].get("status") not in OPEN_STATES):
+                closed.append(esc_id)
+                log(f"escalation {esc_id} was already {found[1].get('status')}")
+            else:
+                stayed_open.append({"escalation_id": esc_id, "error": f"{type(exc).__name__}: {exc}"})
+                log(f"escalation {esc_id} STAYED OPEN: {type(exc).__name__}: {exc}")
+    return closed, stayed_open
+
+
+def do_halt(io, *, who: str = HALT_ACTOR, cancel: bool = True, submit_records: Callable[..., Any] = submit,
             log: Callable[[str], None] = lambda m: print(m, file=sys.stderr)) -> dict[str, Any]:
-    """Stop every automation; return what was paused, closed, cancelled and recorded."""
+    """Stop every automation; return what was paused, closed, cancelled and recorded.
+
+    With `cancel=False` (`--no-cancel`) runs in flight are left alone: they keep their escalations, and
+    their mediator step refuses to act because the scanner schedule is paused. They finish and record
+    `halted`. The default cancels them, which stops each at its next step boundary.
+    """
     io.ensure_tables()
     plan = halt_plan(io.schedules(), io.runs())
     for name in plan.pause:
         io.pause(name)
         log(f"paused schedule {name}")
     io.record_halt(plan.pause, who)
-    closed, cancelled, recorded, unrecorded = [], [], [], []
-    for run in plan.cancel:
-        for esc in io.escalations(open_only=True, workflow_ids=[run.workflow_id]):
-            try:
-                io.respond(esc["escalation_id"], "reject", note="closed by archi ops halt", decided_by=HALT_ACTOR)
-                closed.append(esc["escalation_id"])
-                log(f"closed escalation {esc['escalation_id']} (reject)")
-            except Exception as exc:  # already answered or timed out: nothing left to close
-                log(f"escalation {esc['escalation_id']} not closed: {type(exc).__name__}: {exc}")
+    closed, stayed_open, cancelled, recorded, unrecorded = [], [], [], [], []
+    for run in plan.cancel if cancel else ():
+        run_closed, run_open = close_escalations(io, run.workflow_id, log)
+        closed += run_closed
+        stayed_open += run_open
         signal = io.run_input(run.workflow_id)
         io.cancel(run.workflow_id)
         cancelled.append(run.workflow_id)
@@ -153,21 +188,69 @@ def do_halt(io, *, who: str = HALT_ACTOR, submit_records: Callable[..., Any] = s
                 f"({type(exc).__name__}: {exc})")
             unrecorded.append(run.workflow_id)
     return {"paused": list(plan.pause), "already_paused": list(plan.already_paused), "closed": closed,
-            "cancelled": cancelled, "recorded": recorded, "unrecorded": unrecorded, "left_final": [r.workflow_id for r in plan.final]}
+            "stayed_open": stayed_open, "cancelled": cancelled, "recorded": recorded, "unrecorded": unrecorded,
+            "left_running": [] if cancel else [r.workflow_id for r in plan.cancel],
+            "left_final": [r.workflow_id for r in plan.final]}
 
 
 def do_resume(io, log: Callable[[str], None] = lambda m: print(m, file=sys.stderr)) -> dict[str, Any]:
-    """Un-pause the schedules halt paused. Cancelled runs stay cancelled."""
+    """Un-pause the schedules halt paused, and give each signal whose run halt cancelled a new attempt.
+
+    A cancelled run itself is not resumed (DBOS does not rerun a cancelled workflow id); its signal gets
+    attempt + 1, so the scanner starts a new run with a new id.
+    """
     io.ensure_tables()
     names = resume_plan(io.schedules(), io.paused_by_halt())
     for name in names:
         io.resume(name)
         io.clear_halt(name)
         log(f"resumed schedule {name}")
-    return {"resumed": list(names), "note": "cancelled runs are not resumed; a new signal starts a new run"}
+    requeued = io.requeue_cancelled_signals()
+    for automation, signal_id, attempt in requeued:
+        log(f"signal {signal_id} of {automation} will run again as attempt {attempt}")
+    return {"resumed": list(names), "requeued": [list(r) for r in requeued],
+            "note": "cancelled runs are not resumed; their signals run again as a new attempt"}
 
 
-def do_respond(io, escalation_id: str, verdict: str, note: Optional[str], decided_by: str) -> dict[str, Any]:
+def os_user() -> str:
+    return getpass.getuser()
+
+
+def decider_name(as_user: Optional[str]) -> str:
+    """`decided_by` for an operator answer: always the OS user, and `--as X` is recorded as
+    "<os user> for X". Nothing authenticates the caller yet (O3), so a claimed name must not
+    read as a verified one."""
+    user = os_user()
+    return f"{user} for {as_user}" if as_user and as_user != user else user
+
+
+def do_respond(io, escalation_id: str, verdict: str, note: Optional[str], as_user: Optional[str],
+               automations: Optional[Collection[str]] = None) -> dict[str, Any]:
+    """Approve or reject an escalation about an ops proposal of this deployment.
+
+    Refuses (OpsCliError, exit 2) an escalation that does not exist, is not about an `ops_proposal:`, was
+    not opened by one of this instance's automation runs, or is no longer open.
+    """
+    found = io.escalation(escalation_id)
+    if found is None:
+        raise OpsCliError(f"no escalation {escalation_id!r} in this deployment")
+    subject, attrs = found
+    if not subject.startswith(SUBJECT_PREFIX):
+        raise OpsCliError(f"escalation {escalation_id} is about {subject!r}, not an ops proposal; "
+                          "archi ops answers only ops proposals")
+    try:
+        automation = parse_run_id(attrs.get("requested_by_workflow") or "")[0]
+    except ValueError:
+        raise OpsCliError(f"escalation {escalation_id} was not opened by an archi ops run "
+                          f"({attrs.get('requested_by_workflow')!r})") from None
+    if automations is not None and automation not in automations:
+        raise OpsCliError(f"escalation {escalation_id} belongs to automation {automation!r}, "
+                          "which this instance does not have")
+    status = attrs.get("status")
+    if status not in OPEN_STATES:
+        by = f", by {attrs['decided_by']}" if attrs.get("decided_by") else ""
+        raise OpsCliError(f"escalation {escalation_id} is {status}{by}; it can no longer be answered")
+    decided_by = decider_name(as_user)
     io.respond(escalation_id, verdict, note=note, decided_by=decided_by)
     return {"escalation_id": escalation_id, "verdict": verdict, "decided_by": decided_by}
 
@@ -241,10 +324,14 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_halt(args: argparse.Namespace) -> int:
-    result = do_halt(make_io(args), who=args.who or getpass.getuser())
+    result = do_halt(make_io(args), who=args.who or getpass.getuser(), cancel=not args.no_cancel)
     print(json.dumps(result, indent=2) if args.json else
           f"halted: paused {len(result['paused'])}, closed {len(result['closed'])} escalation(s), "
-          f"cancelled {len(result['cancelled'])} run(s)")
+          f"cancelled {len(result['cancelled'])} run(s), left running {len(result['left_running'])}")
+    if result["stayed_open"]:
+        ids = ", ".join(e["escalation_id"] for e in result["stayed_open"])
+        print(f"error: escalation(s) stayed open: {ids}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -269,9 +356,31 @@ def cmd_pending(args: argparse.Namespace) -> int:
 
 def cmd_respond(args: argparse.Namespace) -> int:
     verdict = "approve" if args.command_name == "approve" else "reject"
-    result = do_respond(make_io(args), args.escalation_id, verdict, args.note, args.as_user or getpass.getuser())
+    io = make_io(args)
+    result = do_respond(io, args.escalation_id, verdict, args.note, args.as_user,
+                        automations=[c.name for c in automations(Path(args.instance))])
     past = {"approve": "approved", "reject": "rejected"}[verdict]
     print(json.dumps(result) if args.json else f"{past} {result['escalation_id']} as {result['decided_by']}")
+    return 0
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    from archi.ops import shadow as shadow_mod
+    from archi.ops.promotion import PromotionRefused, promote
+
+    io = make_io(args)
+    source = shadow_mod.okg_source(io.deployment, dsn=io.dsn)
+    report = shadow_mod.score_automation(source, args.automation)
+    readiness = shadow_mod.promotion_readiness(
+        report, min_proposals=args.min_proposals, min_answered=args.min_answered,
+        min_response_coverage=args.min_coverage, min_agreement=args.min_agreement, max_false_rate=args.max_false_rate)
+    try:
+        result = promote(Path(args.instance), args.automation, report=report, readiness=readiness,
+                         principal=decider_name(args.as_user), note=args.note or "", dsn=io.dsn)
+    except PromotionRefused as exc:
+        raise OpsCliError(str(exc)) from exc
+    print(json.dumps(result, indent=2) if args.json else
+          f"promoted {args.automation} to live (PACT {result['change']}, committed in the instance repo)")
     return 0
 
 
@@ -305,8 +414,25 @@ def add_parser(sub, roots=None) -> None:
         return p
 
     command("status", "levels, schedules, pending escalations, budgets and shadow scores", cmd_status)
-    command("halt", "stop every automation on this instance", cmd_halt,
-            extra=lambda p: p.add_argument("--as", dest="who", help="who is halting (default: the OS user)"))
+    def halt_args(p):
+        p.add_argument("--as", dest="who", help="who is halting (default: the OS user)")
+        p.add_argument("--no-cancel", action="store_true",
+                       help="pause the scanner but leave runs in flight; their mediator step refuses to act")
+
+    command("halt", "stop every automation on this instance", cmd_halt, extra=halt_args)
+
+    def promote_args(p):
+        p.add_argument("automation")
+        p.add_argument("--note", help="a note for the PACT decision")
+        p.add_argument("--as", dest="as_user", help="who is deciding (recorded as \"<os user> for X\")")
+        p.add_argument("--min-proposals", type=int, default=30)
+        p.add_argument("--min-answered", type=int, default=20)
+        p.add_argument("--min-coverage", type=float, default=0.5)
+        p.add_argument("--min-agreement", type=float, default=0.8)
+        p.add_argument("--max-false-rate", type=float, default=0.1)
+
+    command("promote", "set an automation live after a passing shadow report, as a PACT decision", cmd_promote,
+            extra=promote_args)
     command("resume", "resume the schedules halt paused", cmd_resume)
     command("pending", "escalations waiting for a person", cmd_pending)
     for verb in ("approve", "reject"):

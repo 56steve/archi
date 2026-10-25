@@ -3,6 +3,7 @@ the instance configuration, reading an escalation row back, and the halt, resume
 status and answer logic over a fake OpsIO."""
 import json
 import shutil
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -166,6 +167,8 @@ class FakeIO:
         self.calls.append(("respond", escalation_id, verdict, note, decided_by))
 
     def day_spend(self, automation): return (3.0, 10.0)
+    def escalation(self, esc_id): return None
+    def requeue_cancelled_signals(self): return []
 
 
 def test_halt_pauses_then_closes_escalations_then_cancels_and_records():
@@ -179,7 +182,8 @@ def test_halt_pauses_then_closes_escalations_then_cancels_and_records():
     assert [c[0] for c in io.calls] == ["ensure", "pause", "record_halt", "respond", "cancel"]
     assert io.calls[3] == ("respond", "esc-1", "reject", "closed by archi ops halt", "archi ops halt")
     assert out == {"paused": ["archi_ops_scan"], "already_paused": [], "closed": ["esc-1"],
-                   "cancelled": ["r1"], "recorded": ["r1"], "unrecorded": [], "left_final": ["r2"]}
+                   "stayed_open": [], "cancelled": ["r1"], "recorded": ["r1"], "unrecorded": [],
+                   "left_running": [], "left_final": ["r2"]}
     records, kw = submitted[0]
     verdicts = {n["attrs"]["record_id"]: n["attrs"].get("verdict") for n in records.nodes.values()}
     assert verdicts["dec-r1-halt"] == "halted"
@@ -221,10 +225,109 @@ def test_resume_only_resumes_what_halt_paused():
     assert ops.do_resume(operator_paused, log=lambda _: None)["resumed"] == []
 
 
-def test_respond_passes_the_verdict_and_the_decider():
-    io = FakeIO()
-    assert ops.do_respond(io, "esc-1", "approve", "ok", "alice")["verdict"] == "approve"
-    assert io.calls == [("respond", "esc-1", "approve", "ok", "alice")]
+def test_halt_reports_an_escalation_it_could_not_close_and_does_not_hide_it():
+    class Stuck(FakeIO):
+        def respond(self, *a, **k):
+            raise RuntimeError("db write refused")
+
+        def escalation(self, esc_id):  # still open after the failed answer
+            return ("ops_proposal:p", {"status": "pending"})
+
+    io = Stuck(runs=[RunInfo("r1", "a", "PENDING")], escalations=[
+        {"escalation_id": "esc-1", "proposal_id": "p", "requested_by_workflow": "r1", "timeout_at": "x", "reason": ""}])
+    messages = []
+    out = ops.do_halt(io, log=messages.append, submit_records=lambda *a, **k: None)
+    assert out["closed"] == []
+    assert out["stayed_open"] == [{"escalation_id": "esc-1", "error": "RuntimeError: db write refused"}]
+    assert out["cancelled"] == ["r1"] and any("STAYED OPEN" in m for m in messages)
+
+
+def test_halt_counts_an_escalation_decided_meanwhile_as_closed():
+    class Raced(FakeIO):
+        def respond(self, *a, **k):
+            raise RuntimeError("is in status 'decided'")
+
+        def escalation(self, esc_id):
+            return ("ops_proposal:p", {"status": "decided"})
+
+    io = Raced(runs=[RunInfo("r1", "a", "PENDING")], escalations=[
+        {"escalation_id": "esc-1", "proposal_id": "p", "requested_by_workflow": "r1", "timeout_at": "x", "reason": ""}])
+    out = ops.do_halt(io, log=lambda _: None, submit_records=lambda *a, **k: None)
+    assert out["closed"] == ["esc-1"] and out["stayed_open"] == []
+
+
+def test_halt_with_no_cancel_pauses_and_leaves_runs_and_escalations_alone():
+    io = FakeIO(runs=[RunInfo("r1", "a", "PENDING")], escalations=[
+        {"escalation_id": "esc-1", "proposal_id": "p", "requested_by_workflow": "r1", "timeout_at": "x", "reason": ""}])
+    out = ops.do_halt(io, cancel=False, log=lambda _: None, submit_records=lambda *a, **k: pytest.fail("no records"))
+    assert out["paused"] == ["archi_ops_scan"] and out["cancelled"] == [] and out["left_running"] == ["r1"]
+    assert [c[0] for c in io.calls] == ["ensure", "pause", "record_halt"]
+
+
+def test_halt_exits_nonzero_when_an_escalation_stayed_open(monkeypatch, capsys):
+    monkeypatch.setattr(ops, "make_io", lambda args: object())
+    monkeypatch.setattr(ops, "do_halt", lambda io, **kw: {"stayed_open": [{"escalation_id": "esc-1", "error": "x"}],
+                                                          "paused": [], "closed": [], "cancelled": [], "left_running": []})
+    args = build_parser().parse_args(["ops", "halt"])
+    assert args.func(args) == 1
+    assert "stayed open: esc-1" in capsys.readouterr().err
+
+
+def test_resume_gives_a_halted_signal_a_new_attempt():
+    class Requeue(FakeIO):
+        def requeue_cancelled_signals(self):
+            return [("fixture-triage", "sig-1", 2)]
+
+    out = ops.do_resume(Requeue(schedules={"archi_ops_scan": True}, halts=["archi_ops_scan"]), log=lambda _: None)
+    assert out["requeued"] == [["fixture-triage", "sig-1", 2]]
+
+
+def escalation_io(subject="ops_proposal:prop-1", status="pending", workflow="fixture-triage~sig-1~1", by=None):
+    class Io(FakeIO):
+        def escalation(self, esc_id):
+            if esc_id != "esc-1":
+                return None
+            return (subject, {"status": status, "requested_by_workflow": workflow, "decided_by": by})
+
+    return Io()
+
+
+def test_approve_records_the_os_user_and_a_claimed_name_is_marked_as_claimed(monkeypatch):
+    monkeypatch.setattr(ops, "os_user", lambda: "mohoney")
+    io = escalation_io()
+    out = ops.do_respond(io, "esc-1", "approve", "ok", None, automations=["fixture-triage"])
+    assert out["decided_by"] == "mohoney"
+    out = ops.do_respond(io, "esc-1", "reject", None, "alice", automations=["fixture-triage"])
+    assert out["decided_by"] == "mohoney for alice"
+    assert [c[4] for c in io.calls if c[0] == "respond"] == ["mohoney", "mohoney for alice"]
+    assert ops.decider_name("mohoney") == "mohoney"
+
+
+@pytest.mark.parametrize("io, fragment", [
+    (escalation_io(subject="jira:X-1"), "not an ops proposal"),
+    (escalation_io(workflow="somebody-elses-workflow"), "not opened by an archi ops run"),
+    (escalation_io(workflow="other-automation~sig-1~1"), "which this instance does not have"),
+    (escalation_io(status="timed_out"), "is timed_out; it can no longer be answered"),
+    (escalation_io(status="decided", by="alice"), "is decided, by alice; it can no longer be answered"),
+    (escalation_io(status="applied"), "can no longer be answered"),
+])
+def test_approve_refuses_what_is_not_an_open_ops_proposal_of_this_instance(io, fragment):
+    with pytest.raises(ops.OpsCliError, match=fragment):
+        ops.do_respond(io, "esc-1", "approve", None, None, automations=["fixture-triage"])
+    assert not any(c[0] == "respond" for c in io.calls)
+
+
+def test_approve_of_an_unknown_escalation_is_refused():
+    with pytest.raises(ops.OpsCliError, match="no escalation 'esc-9'"):
+        ops.do_respond(escalation_io(), "esc-9", "approve", None, None)
+
+
+def test_a_refused_approval_exits_nonzero_with_the_message(monkeypatch, capsys):
+    monkeypatch.setattr(ops, "make_io", lambda args: escalation_io(status="timed_out"))
+    monkeypatch.setattr(ops, "automations", lambda d: [SimpleNamespace(name="fixture-triage")])
+    args = build_parser().parse_args(["ops", "approve", "esc-1"])
+    assert args.func(args) == 2
+    assert "is timed_out; it can no longer be answered" in capsys.readouterr().err
 
 
 def test_status_reports_levels_schedules_budgets_and_pending(instance):

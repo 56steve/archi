@@ -27,16 +27,38 @@ Proven on a real okg 0.2.0 worker (spike-results.md, 2026-10-25):
 - Cancel stops a run only at a step boundary and does not wake a recv; halt
   closes each open escalation first (archi.cli.ops).
 - Record steps carry the idempotency key "<workflow id>|record-<n>".
+
+A mediator runs at most once per idempotency key. The mediator step first looks for an earlier
+attempt (`archi_ops.mediations`), then re-checks halt and the escalation, then records the attempt,
+then calls the tool with the key. A replay that finds an attempt with no recorded end does not call
+again: the action is recorded with status `unknown` ("possible duplicate prevented; check the
+external system"). A live tool used at L2 must also declare `idempotent_tools:` in its pack and honour
+the key itself, because the step cannot tell whether a tool that crashed mid-call finished.
+
+Everything here that reaches into okg beyond the public `okg.deployment` surface, with the upstream
+ask (docs/ops-runtime-akmon-asks.md) that removes it. `archi.ops.okg_io` lists its own.
+
+| What | Where | Ask |
+|---|---|---|
+| `okg.deployment._internal.context.bind_sdk_context` | `_private_okg` | O9: a public way to bind a workflow's deployment context |
+| `okg.deployment._internal.escalation.EscalationTimeoutError` | `_private_okg` | O9 |
+| `okg.deployment._internal.cost_budget.BudgetExhaustedError` | `_private_okg` | O9 |
+| the escalation id rule `"esc-" + sha1("<workflow id>|_create_escalation")[:24]` | `expected_escalation_id` | O3: `request_escalation` should return the id before it waits |
+| raw SQL on `okg.escalation_live` (through `OpsIO`) | `_decision_step`, `run_mediation` | O3 |
+| `okg.deployment_cost_caps` (cap lookup before a charge) | `_cap_of` | O4 |
+| `dbos.DBOS.retrieve_workflow` and `OpsIO.schedules` (the halt check) | `halt_reason` | O5: a first-class kill switch |
+| `DBOS.recv` on `archi_ops_test_gate` (test only) | `_Mediator.execute` | none: a test hook, off unless ops.yaml sets `test_gate_seconds` |
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import sys
 import urllib.parse
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Optional
+from datetime import datetime, timezone
+from typing import Any, Callable, Mapping, Optional
 
 from dbos import DBOS, SetWorkflowID
 
@@ -49,9 +71,19 @@ from okg.deployment import (
 )
 
 from archi.ops.context_gate import GateCheck, GateFacts, GateResult, GateSpec, evaluate_gate
-from archi.ops.escalation import DECISION_SCHEMA, Decision, Escalation, may_execute, subject_for
+from archi.ops.escalation import (
+    DECISION_SCHEMA,
+    Decision,
+    Escalation,
+    decision_from_row,
+    may_execute,
+    subject_for,
+)
 from archi.ops.loop import (
+    DEMOTED_PREFIX,
     BudgetCheck,
+    BudgetExceeded,
+    Demotion,
     Deps,
     MediationRefused,
     MediatorResult,
@@ -69,23 +101,26 @@ from archi.ops.stubs import marker_outcome, resolve_mediator
 
 log = logging.getLogger(__name__)
 DECISION_SCHEMA_REF = "schema:literal:" + urllib.parse.quote(json.dumps(DECISION_SCHEMA))
+#: The DBOS topic a test sends to, to release a run held by `test_gate_seconds`.
+TEST_GATE_TOPIC = "archi_ops_test_gate"
 
 
-# --- the two private okg imports, in one place ---------------------------------------
+# --- the private okg imports, in one place -------------------------------------------
 
 
 def _private_okg():
     """okg 0.2.0 has no public way to bind the SDK context outside the SDK's own
-    publish cycle, nor to name its escalation timeout error.
+    publish cycle, nor to name its escalation timeout or budget errors.
 
-    UPSTREAM ASK (pact/changes/r3-ops-runtime, spike-results.md finding 3): a public
-    workflow-context binding. Until then archi pins okg 0.2.0 and imports these two
-    names from `okg.deployment._internal`, here only.
+    UPSTREAM ASK O9 (docs/ops-runtime-akmon-asks.md): a public workflow-context binding and public
+    error types. Until then archi pins okg 0.2.0 and imports these names from
+    `okg.deployment._internal`, here only.
     """
     from okg.deployment._internal.context import bind_sdk_context
+    from okg.deployment._internal.cost_budget import BudgetExhaustedError
     from okg.deployment._internal.escalation import EscalationTimeoutError
 
-    return bind_sdk_context, EscalationTimeoutError
+    return bind_sdk_context, EscalationTimeoutError, BudgetExhaustedError
 
 
 def _bind(conn, deployment: str):
@@ -210,13 +245,18 @@ def _budget_check_step(scope: str, estimate: float, cap: float) -> dict:
 
 
 @deployment_step(name="archi_ops_budget_record")
-def _budget_record_step(scope: str, cost: float, consumption_id: str) -> None:
+def _budget_record_step(scope: str, cost: float, consumption_id: str) -> bool:
+    """Charge `cost` with the cap enforced. Returns False when the charge would pass the cap
+    (okg then writes nothing to the ledger)."""
     rt = _runtime()
+    exhausted_error = _private_okg()[2]
     with _io(rt).connect() as conn, _bind(conn, rt.deployment):
         with cost_budget(usd=_cap_of(conn, scope), scope=scope) as budget:
-            # The money is already spent: record it even if it passes the cap, so the ledger
-            # tells the truth and the next check sees the overrun.
-            budget.consume(cost, consumption_id=consumption_id, enforce_cap=False)
+            try:
+                budget.consume(cost, consumption_id=consumption_id)
+            except exhausted_error:
+                return False
+    return True
 
 
 def _cap_of(conn, scope: str) -> float:
@@ -234,28 +274,112 @@ def _record_step(payload: dict, key: str) -> str:
     return str((reply.get("output") or reply).get("status"))
 
 
+DUPLICATE_PREVENTED = "possible duplicate prevented; check the external system"
+
+
+def log_refusal(verdict: str, reason: str) -> None:
+    """Say, in the worker log, that the mediator step itself refused to act."""
+    message = f"archi_ops_mediate refused ({verdict}): {reason}"
+    log.warning(message)
+    print(message, file=sys.stderr, flush=True)
+
+
+def run_mediation(
+    io: Any,
+    *,
+    mediator_entry: Callable[[], str],
+    action_class: str,
+    payload: Mapping[str, Any],
+    proposal_id: str,
+    idempotency_key: str,
+    esc: Optional[Mapping[str, Any]],
+    workflow_id: str,
+    dsn: str,
+    halt: Callable[[Any], Optional[str]] = halt_reason,
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    resolve: Callable[[str], Callable[..., Mapping[str, Any]]] = resolve_mediator,
+    refused: Callable[[str, str], None] = log_refusal,
+) -> dict:
+    """The body of the mediator step: the only place an action happens.
+
+    Order: (1) an earlier attempt for this idempotency key decides everything (a replay never
+    asks again); (2) halt; (3) the escalation row, read again, must pass `may_execute`; (4) the
+    attempt is recorded durably; (5) the mediator is called with the key. Any exception in
+    1 to 3 is a refusal with verdict `error`, never a failed action. Returns `{"refused":
+    [verdict, reason]}` or `{"status", "result"}` (`unknown` when an earlier attempt has no recorded end).
+    """
+    try:
+        earlier = io.mediation(idempotency_key)
+        if earlier is not None:
+            return _earlier_attempt(earlier)
+        reason = halt(io)
+        if reason:
+            refused("halted", reason)
+            return {"refused": ["halted", reason]}
+        if esc is None:
+            refused("error", "no escalation was opened for this proposal")
+            return {"refused": ["error", "no escalation was opened for this proposal"]}
+        escalation = Escalation(esc["escalation_id"], esc["proposal_id"], _moment(esc["opened_at"]),
+                                _moment(esc["timeout_at"]))
+        allowed = may_execute(io.decision_for(escalation.escalation_id), escalation, now())
+        if not allowed:
+            verdict = "timed_out" if allowed.late else "error"
+            refused(verdict, allowed.reason)
+            return {"refused": [verdict, allowed.reason]}
+        entry = mediator_entry()
+    except Exception as exc:
+        reason = f"the mediator step could not verify it may act ({type(exc).__name__}: {exc})"
+        refused("error", reason)
+        return {"refused": ["error", reason]}
+    earlier = io.begin_mediation(idempotency_key, proposal_id)
+    if earlier is not None:  # another attempt got in between
+        return _earlier_attempt(earlier)
+    try:
+        out = resolve(entry)(payload=dict(payload), context={
+            "dsn": dsn, "proposal_id": proposal_id, "idempotency_key": idempotency_key,
+            "workflow_id": workflow_id})
+        status, result = out["status"], str(out.get("result", ""))
+    except Exception as exc:
+        status, result = "failed", f"{type(exc).__name__}: {exc}"
+    io.finish_mediation(idempotency_key, status, result)
+    return {"status": status, "result": result}
+
+
+def _earlier_attempt(earlier: Mapping[str, Any]) -> dict:
+    if earlier["status"] == "attempted":  # a call began; whether it ended is not recorded
+        return {"status": "unknown", "result": DUPLICATE_PREVENTED}
+    return {"status": earlier["status"], "result": earlier["result"] or ""}
+
+
 @deployment_step(name="archi_ops_mediate")
 def _mediate_step(automation: str, action_class: str, payload: dict, proposal_id: str,
                   idempotency_key: str, esc: Optional[dict]) -> dict:
-    """The only place an action happens. Its first statements re-check halt and the escalation."""
+    """The mediator step. The loop has already decided; this re-checks everything (see run_mediation)."""
     rt = _runtime()
-    io = _io(rt)
-    reason = halt_reason(io)  # 1. halted?
-    if reason:
-        return {"refused": ["halted", reason]}
-    if esc is None:  # 2. the escalation row, read again from okg.escalation_live
-        return {"refused": ["error", "no escalation was opened for this proposal"]}
-    escalation = Escalation(esc["escalation_id"], esc["proposal_id"], _moment(esc["opened_at"]),
-                            _moment(esc["timeout_at"]))
-    decision = io.decision_for(escalation.escalation_id)
-    allowed = may_execute(decision, escalation, datetime.now(timezone.utc))
-    if not allowed:
-        return {"refused": ["timed_out" if allowed.late else "error", allowed.reason]}
-    mediator = rt.automation(automation).action_classes[action_class].mediator  # 3. act
-    out = resolve_mediator(mediator)(payload=payload, context={
-        "dsn": rt.dsn, "proposal_id": proposal_id, "idempotency_key": idempotency_key,
-        "workflow_id": DBOS.workflow_id})
-    return {"status": out["status"], "result": out.get("result", "")}
+    return run_mediation(
+        _io(rt), mediator_entry=lambda: rt.automation(automation).action_classes[action_class].mediator,
+        action_class=action_class, payload=payload, proposal_id=proposal_id, idempotency_key=idempotency_key,
+        esc=esc, workflow_id=DBOS.workflow_id, dsn=rt.dsn)
+
+
+@deployment_step(name="archi_ops_decision")
+def _decision_step(escalation_id: str) -> dict:
+    """The escalation row as okg holds it now (a step, so a replay sees the same answer)."""
+    found = _io(_runtime()).escalation(escalation_id)
+    return {"found": found is not None, "subject": found[0] if found else None, "attrs": found[1] if found else None}
+
+
+@deployment_step(name="archi_ops_demotions")
+def _demotion_step(automation: str, generation: str) -> Optional[dict]:
+    """The latest recorded demotion of the automation to shadow, from the pinned ops records."""
+    rows = _io(_runtime()).read_nodes("ops_proposal", generation, {"automation": automation, "mode": "shadow"})
+    best = None
+    for row in rows:
+        attrs = row.get("attrs") or {}
+        reason, at = attrs.get("mode_reason") or "", attrs.get("proposed_at")
+        if reason.startswith(DEMOTED_PREFIX) and at and (best is None or _moment(at) > _moment(best["at"])):
+            best = {"at": at, "reason": reason}
+    return best
 
 
 @deployment_step(name="archi_ops_outcome")
@@ -320,7 +444,14 @@ class _Budget:
         return BudgetCheck(d["ok"], d["detail"])
 
     def record(self, scope: str, cost: float) -> None:
-        _budget_record_step(scope, cost, f"{DBOS.workflow_id}|{scope}")
+        if not _budget_record_step(scope, cost, f"{DBOS.workflow_id}|{scope}"):
+            raise BudgetExceeded(scope)
+
+
+class _Demotions:
+    def latest(self, automation: str, generation: str) -> Optional[Demotion]:
+        d = _demotion_step(automation, generation)
+        return None if d is None else Demotion(_moment(d["at"]), d["reason"])
 
 
 class _Recorder:
@@ -374,7 +505,8 @@ class _Decider:
                                decision_schema=DECISION_SCHEMA_REF, timeout_seconds=remaining)
         except timeout_error:
             pass  # okg marked the row timed_out; the row below says so
-        return _io(self.rt).decision_for(escalation.escalation_id)
+        row = _decision_step(escalation.escalation_id)  # a step: a replay sees the row it saw before
+        return decision_from_row(escalation.escalation_id, row["subject"], row["attrs"])
 
 
 class _Mediator:
@@ -385,6 +517,14 @@ class _Mediator:
         esc = None if escalation is None else {
             "escalation_id": escalation.escalation_id, "proposal_id": escalation.proposal_id,
             "opened_at": escalation.opened_at.isoformat(), "timeout_at": escalation.timeout_at.isoformat()}
+        gate_seconds = _runtime().settings[self.automation].test_gate_seconds
+        if gate_seconds > 0:
+            # TEST ONLY (ops.yaml test_gate_seconds): hold here, after the loop's decision and before the
+            # mediator step, until a message arrives on the topic, so a test can halt the instance or
+            # change the escalation in this window.
+            print(f"archi_ops test gate: waiting up to {gate_seconds:g}s on {TEST_GATE_TOPIC!r}",
+                  file=sys.stderr, flush=True)
+            DBOS.recv(topic=TEST_GATE_TOPIC, timeout_seconds=gate_seconds)
         d = _mediate_step(self.automation, action_class, dict(payload), proposal_id, idempotency_key, esc)
         if "refused" in d:
             raise MediationRefused(*d["refused"])
@@ -404,7 +544,8 @@ def real_deps(rt: RuntimeConfig, automation: str) -> Deps:
     reader = _Reader()
     return Deps(gate=_Gate(automation), reader=reader, proposer=_Proposer(automation),
                 decider=_Decider(rt), mediator=_Mediator(automation), outcome=_Outcome(automation),
-                recorder=_Recorder(reader), halt=_Halt(), clock=_Clock(), budget=_Budget())
+                recorder=_Recorder(reader), halt=_Halt(), clock=_Clock(), budget=_Budget(),
+                demotions=_Demotions())
 
 
 # --- the workflows ---------------------------------------------------------------------
@@ -422,18 +563,46 @@ def archi_ops_run(automation: str, signal: dict) -> dict:
     return {**asdict(result), "records": list(result.records)}
 
 
+def start_run(run_id: str, automation: str, signal: dict) -> None:
+    """Start one run as its own workflow. Never on the okg-<deployment> queue: an admission
+    submit made by a run queued there waits behind that run and deadlocks (spike-results.md g)."""
+    with SetWorkflowID(run_id):
+        DBOS.start_workflow(archi_ops_run, automation, signal)
+
+
+def scan_once(rt: RuntimeConfig, io: Any, start: Callable[[str, str, dict], None] = start_run,
+              say: Callable[[str], None] = log.info) -> list[str]:
+    """Start at most one run per automation, and only when that automation has none in flight.
+
+    One at a time keeps an L2 automation's budget and escalations simple: a run waiting hours for a
+    person holds the next signal in the table (status `new`) until it finishes. Nothing starts while
+    the scanner schedule is paused (a manual trigger of a paused schedule still runs this function).
+    """
+    started: list[str] = []
+    if any(io.schedules().values()):
+        say("archi_ops_scan: halted (schedule paused); starting nothing")
+        return started
+    in_flight = {run.automation for run in io.runs()}
+    for name in sorted(rt.settings):
+        if name in in_flight:
+            say(f"archi_ops_scan: {name} has a run in progress; its next signal waits")
+            continue
+        for s in io.new_signals(name)[:1]:
+            try:
+                run_id = make_run_id(name, s["id"], s["attempt"])
+            except ValueError as exc:
+                io.mark_signal(name, s["id"], "invalid")
+                say(f"archi_ops_scan: signal {s['id']!r} refused: {exc}")
+                continue
+            start(run_id, name, {k: s[k] for k in ("id", "entity", "title", "source", "summary")})
+            io.mark_signal_started(name, s["id"])
+            started.append(run_id)
+            say(f"archi_ops_scan: started {run_id}")
+    return started
+
+
 @deployment_scheduled(SCANNER, default_cron="*/1 * * * *", automatic_backfill=False, guard_body=False)
 def archi_ops_scan(scheduled_time, context):
-    """Start one run per new signal. Short: the runs are separate workflows (queue None)."""
+    """Start the next run of each idle automation. Short: the runs are separate workflows (queue None)."""
     rt = _runtime()
-    io = _io(rt)
-    if any(io.schedules().values()):
-        log.warning("archi_ops_scan: halted (schedule paused); starting nothing")
-        return
-    for name in sorted(rt.settings):
-        for s in io.new_signals(name):
-            run_id = make_run_id(name, s["id"], s["attempt"])
-            with SetWorkflowID(run_id):
-                DBOS.start_workflow(archi_ops_run, name, {k: s[k] for k in ("id", "entity", "title", "source", "summary")})
-            io.mark_signal_started(name, s["id"])
-            log.info("archi_ops_scan: started %s", run_id)
+    scan_once(rt, _io(rt))
