@@ -188,3 +188,16 @@ def test_cli_prints_json_and_markdown(monkeypatch, capsys):
     assert shadow.main(["--deployment", "d", "--automation", "ticket-triage", "--until", UNTIL,
                         "--format", "markdown"]) == 0
     assert capsys.readouterr().out.startswith("# Shadow report")
+
+
+def test_the_vocabulary_the_scorer_reads_is_documented_and_accepted():
+    from archi.ops.record import OpsRecords, vocabulary
+    from archi.ops.shadow import NO_ACTION_RESULT, NO_ACTION_STATUSES
+    vocab = vocabulary()
+    assert "false_alarm" in NO_ACTION_STATUSES and NO_ACTION_RESULT == "no_action_needed"
+    schema = (Path(__file__).resolve().parents[3] / "bundles/packs/ops-record/schemas/ops_record.yaml").read_text()
+    assert "open | mitigated | resolved | false_alarm" in schema
+    assert "unknown | no_action_needed" in schema
+    records = OpsRecords(vocab=vocab)
+    records.add("incident", record_id="i1", title="t", entity="E", status="false_alarm")
+    records.add("outcome", record_id="o1", incident_id="i1", result="no_action_needed")
