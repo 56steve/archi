@@ -1,31 +1,43 @@
 """req.r3-ops-runtime.loop: the operations loop at L0, L1 and L2 with fakes for
-every dependency (acc.r3-ops-runtime.timeout, acc.r3-ops-runtime.no-l3, the
-run-start half). Each test asserts the exact ops records written and whether
-the mediator was called."""
-from datetime import datetime, timedelta, timezone
+every dependency (acc.r3-ops-runtime.timeout, acc.r3-ops-runtime.no-l3 at run
+start). Each test asserts the exact ops records written and whether the
+mediator was called."""
+from datetime import datetime, timedelta
 
 import pytest
 
-from archi.ops.context_gate import GateCheck, GateResult, GateSpec
 from archi.ops.escalation import Decision
 from archi.ops.loop import (
     DEMOTED_PREFIX,
-    ActionClassConfig,
     AutomationConfig,
-    BudgetCheck,
     Deps,
     MediatorResult,
-    OutcomeResult,
     Signal,
+    make_run_id,
     run_once,
+    validate_proposal,
 )
 from archi.ops.proposers import StubProposer
-from archi.ops.record import OpsRecords
+from loop_fakes import (
+    FAIL,
+    GEN,
+    PASS,
+    T0,
+    Budget,
+    Clock,
+    Decider,
+    Gate,
+    Halt,
+    Mediator,
+    Outcome,
+    Reader,
+    Recorder,
+    at,
+    iso,
+)
 
-T0 = datetime(2026, 10, 25, 12, 0, 0, tzinfo=timezone.utc)
 TIMEOUT = 600
-RUN = f"triage-sig-1-{int(T0.timestamp())}"
-GEN = "gen-7"
+RUN = make_run_id("triage", "sig-1", 1)
 SIGNAL = Signal(id="sig-1", entity="T2_US_MIT", title="Site down", source="ticket")
 PROPOSAL = {
     "summary": "restart the agent",
@@ -35,134 +47,66 @@ PROPOSAL = {
     "confidence": 0.9,
     "rollback": "start it again",
 }
-
-
-def iso(seconds=0):
-    return (T0 + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-# --- fakes ---------------------------------------------------------------------------
-
-
-class Clock:
-    def __init__(self):
-        self.t = T0
-
-    def now(self):
-        return self.t
-
-
-class Gate:
-    def __init__(self, result):
-        self.result, self.calls = result, 0
-
-    def check(self, spec):
-        self.calls += 1
-        return self.result
-
-
-class Reader:
-    def __init__(self):
-        self.pins, self.reads = 0, []
-
-    def pin(self):
-        self.pins += 1
-        return GEN
-
-    def read(self, signal, generation):
-        self.reads.append((signal.id, generation))
-        return {"rows": 3}
-
-
-class Decider:
-    """Answers after `after` seconds, moving the shared clock to that moment."""
-
-    def __init__(self, clock, decision, after):
-        self.clock, self.decision, self.after, self.calls = clock, decision, after, []
-
-    def decide(self, **kw):
-        self.calls.append(kw)
-        self.clock.t = T0 + timedelta(seconds=self.after)
-        return self.decision
-
-
-class Mediator:
-    def __init__(self, result=None):
-        self.calls, self.result = [], result or MediatorResult("succeeded", "restarted")
-
-    def execute(self, **kw):
-        self.calls.append(kw)
-        return self.result
-
-
-class Outcome:
-    def __init__(self):
-        self.calls = []
-
-    def check(self, **kw):
-        self.calls.append(kw)
-        return OutcomeResult("resolved", "service up")
-
-
-class Recorder:
-    """Records through the real OpsRecords, so the schema vets every record."""
-
-    def __init__(self):
-        self.records, self.calls = OpsRecords(), []
-
-    def add(self, kind, *, evidence=(), **attrs):
-        evidence = list(evidence)
-        self.calls.append((kind, evidence, {k: v for k, v in attrs.items() if v is not None}))
-        return self.records.add(kind, evidence=evidence, **attrs)
-
-
-class Halt:
-    def __init__(self, *answers):
-        self.answers, self.calls = list(answers), 0
-
-    def halted(self):
-        self.calls += 1
-        return self.answers[min(self.calls, len(self.answers)) - 1]
-
-
-class Budget:
-    def __init__(self, check=BudgetCheck(True)):
-        self.result, self.calls = check, []
-
-    def check(self, automation):
-        self.calls.append(automation)
-        return self.result
-
-
-PASS = GateResult(GEN, (GateCheck("freshness:s", True, "fresh"),))
-FAIL = GateResult(GEN, (GateCheck("freshness:s", False, "last run 3d ago, over the 1d limit"),))
+DRAFT_PROPOSAL = {
+    "summary": "reply to the site", "evidence_ids": ["jira:A-1"], "action_class": "draft_reply",
+    "payload": {"ticket_key": "A-1", "body": "We restarted it."}, "draft": "We restarted it.",
+}
+# The shape of a rendered automation block (compare the fixture-triage render).
+BLOCK = {
+    "pack": "triage",
+    "default_level": "L1",
+    "pack_max_level": "L2",
+    "bundle_max_level": None,
+    "context_gate": {"sources": ["s"]},
+    "proposal_schema": {
+        "type": "object",
+        "required": ["summary", "evidence_ids"],
+        "additionalProperties": False,
+        "properties": {
+            "summary": {"type": "string", "minLength": 1},
+            "evidence_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+            "action_class": {"type": "string"},
+            "payload": {"type": "object"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "rollback": {"type": "string"},
+            "draft": {"type": "string"},
+        },
+    },
+    "budget": {"cost_per_run": 0.5, "cost_per_day": 10},
+    "action_class_definitions": {
+        "restart_service": {
+            "max_level": "L2", "mediator": "slurm.restart",
+            "payload_schema": {"type": "object", "required": ["service"], "additionalProperties": False,
+                               "properties": {"service": {"type": "string"}}},
+        },
+        "draft_reply": {
+            "max_level": "L1", "mediator": "draft_reply",
+            "payload_schema": {"type": "object", "required": ["ticket_key", "body"],
+                               "properties": {"ticket_key": {"type": "string"}, "body": {"type": "string"}}},
+        },
+    },
+}
 
 
 def config(level="L2", mode="live", **over):
-    base = dict(
-        name="triage", instance_level=level, bundle_level="L2", pack_max_level="L2", mode=mode,
-        gate=GateSpec(sources=("s",)),
-        action_classes={"restart_service": ActionClassConfig("L2", "slurm.restart", ("service",))},
-        timeout_seconds=TIMEOUT,
-    )
-    base.update(over)
-    return AutomationConfig(**base)
+    return AutomationConfig.from_block(BLOCK, instance_level=level, mode=mode, timeout_seconds=TIMEOUT, **over)
 
 
 class World:
-    def __init__(self, proposal=PROPOSAL, gate=PASS, decision=None, after=60, halt=(False,), budget=None):
-        self.clock = Clock()
-        self.gate, self.reader = Gate(gate), Reader()
-        self.proposer = StubProposer({"default": proposal})
-        self.decider = Decider(self.clock, decision, after)
+    def __init__(self, proposal=PROPOSAL, gate=PASS, decision=None, after=60, halt=(False,), budget=None,
+                 cost=0.1, clock=None, gate_raises=None, pin_raises=None, nodes=None, **decider):
+        self.clock = clock or Clock()
+        self.gate, self.reader = Gate(gate, gate_raises), Reader(pin_raises, **({"nodes": nodes} if nodes else {}))
+        self.proposer = StubProposer({"default": proposal, "cost": cost})
+        self.decider = Decider(self.clock, decision, after, **decider)
         self.mediator, self.outcome = Mediator(), Outcome()
         self.recorder, self.halt = Recorder(), Halt(*halt)
         self.budget = budget or Budget()
 
-    def run(self, automation):
+    def run(self, automation, run_id=RUN):
         deps = Deps(self.gate, self.reader, self.proposer, self.decider, self.mediator, self.outcome,
                     self.recorder, self.halt, self.clock, self.budget)
-        return run_once(automation, SIGNAL, deps)
+        return run_once(automation, SIGNAL, deps, run_id=run_id)
 
     @property
     def kinds(self):
@@ -178,39 +122,57 @@ def rec(kind, *, evidence=(), **attrs):
     return (kind, list(evidence), {**COMMON, **attrs})
 
 
-def incident():
-    return rec("incident", record_id=f"inc-{RUN}", title="Site down", entity="T2_US_MIT", status="open",
-               detected_at=iso(), signal="ticket:sig-1")
+def incident(**over):
+    return rec("incident", **{**dict(record_id=f"inc-{RUN}", title="Site down", entity="T2_US_MIT",
+                                     status="open", detected_at=iso(), signal="ticket:sig-1"), **over})
 
 
-def proposal(level="L2", mode="live", at=0, **over):
+def run_level_incident(reason):
+    kind, ev, attrs = incident(summary=f"run not started: {reason}")
+    del attrs["generation_read"]
+    return kind, ev, attrs
+
+
+def proposal(level="L2", mode="live", at_=0, **over):
     attrs = dict(record_id=f"prop-{RUN}", incident_id=f"inc-{RUN}", summary="restart the agent",
                  action_class="restart_service", payload='{"service": "xrootd"}', confidence=0.9,
-                 rollback="start it again", autonomy_level=level, mode=mode, proposed_at=iso(at))
+                 rollback="start it again", autonomy_level=level, mode=mode, proposed_at=iso(at_))
     attrs.update(over)
     return rec("proposal", evidence=["jira:A-1"], **attrs)
 
 
-def decision(verdict, reason, at=0, **over):
+def placeholder(reason, level="L2", mode="live", note_extra=""):
+    return rec("proposal", evidence=[f"ops_incident:inc-{RUN}"], record_id=f"prop-{RUN}",
+               incident_id=f"inc-{RUN}", summary=f"no proposal: {reason}", autonomy_level=level,
+               mode="placeholder", proposed_at=iso(),
+               mode_reason=f"placeholder: no proposal was made ({reason}); run mode {mode}{note_extra}")
+
+
+def decision(verdict, reason, at_=0, **over):
     attrs = dict(record_id=f"dec-{RUN}", proposal_id=f"prop-{RUN}", verdict=verdict, reason=reason,
-                 decided_at=iso(at))
+                 decided_at=iso(at_))
     attrs.update(over)
     return rec("decision", **attrs)
 
 
-APPROVED = Decision("approved", escalation_id="esc-1", decided_by="alice", decided_at=T0 + timedelta(seconds=60))
+def approved(**over):
+    base = dict(status="approved", proposal_id=f"prop-{RUN}", escalation_id="esc-1", decided_by="alice",
+                decided_at=at(60))
+    return Decision(**{**base, **over})
+
+
 ALICE = {"actor_kind": "person", "actor": "alice", "escalation_id": "esc-1"}
 
 
-def action(at):
+def action(at_):
     return rec("action", record_id=f"act-{RUN}", proposal_id=f"prop-{RUN}", decision_id=f"dec-{RUN}",
                action_class="restart_service", mediator="slurm.restart", payload='{"service": "xrootd"}',
-               status="succeeded", result="restarted", executed_at=iso(at))
+               status="succeeded", result="restarted", executed_at=iso(at_))
 
 
-def outcome(at):
+def outcome(at_):
     return rec("outcome", record_id=f"out-{RUN}", incident_id=f"inc-{RUN}", action_id=f"act-{RUN}",
-               result="resolved", resolution="service up", check_method="outcome_check", checked_at=iso(at))
+               result="resolved", resolution="service up", check_method="outcome_check", checked_at=iso(at_))
 
 
 # --- L0, L1 --------------------------------------------------------------------------
@@ -231,25 +193,24 @@ def test_l0_records_observed_and_never_acts():
 
 
 def test_l1_records_the_draft_and_never_sends():
-    draft = {"summary": "reply to the site", "evidence_ids": ["jira:A-1"], "draft": "Hello, we restarted it."}
-    w = World(proposal=draft)
+    w = World(proposal=DRAFT_PROPOSAL)
     result = w.run(config("L1"))
     assert result.status == "drafted" and not result.mediated
     assert w.recorder.calls == [
         incident(),
         rec("proposal", evidence=["jira:A-1"], record_id=f"prop-{RUN}", incident_id=f"inc-{RUN}",
-            summary="reply to the site", payload='{"draft": "Hello, we restarted it."}',
+            summary="reply to the site", action_class="draft_reply",
+            payload='{"body": "We restarted it.", "ticket_key": "A-1"}', draft="We restarted it.",
             autonomy_level="L1", mode="live", proposed_at=iso()),
         decision("drafted", "L1: draft recorded for a person to send; nothing was sent"),
     ]
     assert w.decider.calls == [] and w.mediator.calls == []
 
 
-def test_l1_proposal_without_a_draft_is_refused():
-    w = World(proposal=PROPOSAL)
+def test_l1_proposal_with_neither_draft_nor_payload_is_refused():
+    w = World(proposal={"summary": "s", "evidence_ids": ["jira:A-1"]})
     result = w.run(config("L1"))
-    assert result.status == "invalid_proposal"
-    assert "draft is required at L1" in result.reason
+    assert result.status == "invalid_proposal" and "required at L1" in result.reason
     assert w.mediator.calls == []
 
 
@@ -257,13 +218,13 @@ def test_l1_proposal_without_a_draft_is_refused():
 
 
 def test_l2_approved_runs_the_mediator_then_checks_the_outcome():
-    w = World(decision=APPROVED)
+    w = World(decision=approved())
     result = w.run(config())
     assert (result.status, result.mediated, result.outcome) == ("executed", True, "resolved")
     assert w.recorder.calls == [
         incident(),
         proposal(),
-        decision("approved", "approved by escalation", at=60, **ALICE),
+        decision("approved", "approved by escalation", at_=60, **ALICE),
         action(60),
         outcome(60),
     ]
@@ -271,88 +232,124 @@ def test_l2_approved_runs_the_mediator_then_checks_the_outcome():
         "action_class": "restart_service", "payload": {"service": "xrootd"}, "proposal_id": f"prop-{RUN}",
         "idempotency_key": RUN, "generation": GEN,
     }]
-    assert w.decider.calls[0]["timeout_at"] == T0 + timedelta(seconds=TIMEOUT)
-    assert w.halt.calls == 2  # at the start, and as the statement before the mediator
+    assert w.decider.opened[0]["timeout_at"] == at(TIMEOUT)
+    assert w.halt.calls == 2  # at the start, and as the first statement of the mediator step
     assert len(result.records) == 5 and w.recorder.records.dangling() == []
 
 
 def test_l2_rejected_never_reaches_the_mediator():
-    w = World(decision=Decision("rejected", escalation_id="esc-1", decided_by="alice",
-                                decided_at=T0 + timedelta(seconds=60), note="wrong site"))
+    w = World(decision=approved(status="rejected", note="wrong site"))
     result = w.run(config())
     assert result.status == "rejected" and not result.mediated
     assert w.recorder.calls == [
         incident(), proposal(),
-        decision("rejected", "rejected by escalation; note: wrong site", at=60, **ALICE),
+        decision("rejected", "rejected by escalation; note: wrong site", at_=60, **ALICE),
     ]
     assert w.mediator.calls == [] and w.outcome.calls == []
 
 
 def test_l2_timeout_provably_does_not_execute():
-    w = World(decision=Decision("timed_out", escalation_id="esc-1"), after=TIMEOUT)
+    w = World(decision=Decision("timed_out", proposal_id=f"prop-{RUN}", escalation_id="esc-1"), after=TIMEOUT)
     result = w.run(config())
     assert result.status == "timed_out" and not result.mediated
     assert w.recorder.calls == [
         incident(), proposal(),
-        decision("timed_out", "no decision before the deadline", at=TIMEOUT, escalation_id="esc-1"),
+        decision("timed_out", "no decision before the deadline", at_=TIMEOUT, escalation_id="esc-1"),
     ]
-    assert w.mediator.calls == [] and w.outcome.calls == []
-    assert "action" not in w.kinds
+    assert w.mediator.calls == [] and w.outcome.calls == [] and "action" not in w.kinds
+    assert w.halt.calls == 1
 
 
 def test_l2_late_approval_does_not_execute():
-    late = Decision("approved", escalation_id="esc-1", decided_by="alice",
-                    decided_at=T0 + timedelta(seconds=TIMEOUT + 1))
-    w = World(decision=late, after=TIMEOUT + 100)
+    w = World(decision=approved(decided_at=at(TIMEOUT + 1)), after=TIMEOUT + 100)
     result = w.run(config())
     assert result.status == "timed_out" and not result.mediated
-    expected_reason = (f"not executed: approved at {iso(TIMEOUT + 1).replace('Z', '+00:00')}, "
-                       f"after the deadline {iso(TIMEOUT).replace('Z', '+00:00')}")
+    reason = (f"not executed: approved at {iso(TIMEOUT + 1).replace('Z', '+00:00')}, "
+              f"after the deadline {iso(TIMEOUT).replace('Z', '+00:00')}")
     assert w.recorder.calls == [
         incident(), proposal(),
-        decision("timed_out", expected_reason, at=TIMEOUT + 1, **ALICE),
+        decision("timed_out", reason, at_=TIMEOUT + 1, **ALICE),
     ]
     assert w.mediator.calls == [] and w.halt.calls == 1
 
 
-def test_loop_uses_its_own_deadline_not_the_deciders():
-    # The decider claims a far-off deadline; the approval is still late by ours.
-    late = Decision("approved", decided_by="alice", decided_at=T0 + timedelta(seconds=TIMEOUT + 1),
-                    timeout_at=T0 + timedelta(days=9))
-    w = World(decision=late, after=TIMEOUT + 2)
-    assert w.run(config()).status == "timed_out"
+@pytest.mark.parametrize("decision_over, fragment, extra_args", [
+    ({"proposal_id": "prop-other"}, "decision is for proposal 'prop-other'", {}),
+    ({"proposal_id": None}, "decision is for proposal None", {}),
+    ({"escalation_id": "esc-9"}, "decision is for escalation 'esc-9', not 'esc-1'", {}),
+    ({"escalation_id": None}, "decision is for escalation None", {}),
+    ({"decided_by": None}, "names no person", {}),
+    ({"decided_by": ""}, "names no person", {}),
+    ({"decided_at": None}, "no decision time", {}),
+    ({"decided_at": at(-5)}, "before the escalation opened", {}),
+    ({"decided_at": datetime(2026, 10, 25, 12, 1)}, "naive", {}),
+])
+def test_an_approval_not_bound_to_this_escalation_does_not_execute(decision_over, fragment, extra_args):
+    w = World(decision=approved(**decision_over))
+    result = w.run(config())
+    assert result.status == "error" and not result.mediated
+    kind, _, attrs = w.recorder.calls[-1]
+    assert (kind, attrs["verdict"]) == ("decision", "error")
+    assert attrs["reason"].startswith("not executed: ") and fragment in attrs["reason"]
+    assert w.mediator.calls == [] and "action" not in w.kinds and w.halt.calls == 1
+
+
+def test_a_decision_for_an_escalation_opened_for_another_proposal_is_an_error():
+    w = World(decision=approved(), open_proposal_id="prop-other")
+    result = w.run(config())
+    assert result.status == "error" and w.mediator.calls == []
+    assert "opened for 'prop-other'" in w.recorder.calls[-1][2]["reason"]
+
+
+def test_escalation_that_cannot_be_opened_does_not_execute():
+    w = World(decision=approved(), open_raises=RuntimeError("db down"))
+    result = w.run(config())
+    assert result.status == "error"
+    assert w.recorder.calls[-1] == decision("error", "escalation failed: RuntimeError: db down")
     assert w.mediator.calls == []
-
-
-def test_halt_before_the_mediator_stops_an_approved_run():
-    w = World(decision=APPROVED, halt=(False, True))
-    result = w.run(config())
-    assert result.status == "halted" and not result.mediated
-    assert w.recorder.calls == [
-        incident(), proposal(),
-        decision("approved", "approved by escalation", at=60, **ALICE),
-        decision("halted", "halted after approval, before the mediator ran", at=60,
-                 record_id=f"dec-{RUN}-halted"),
-    ]
-    assert w.mediator.calls == [] and "action" not in w.kinds
-
-
-def test_halt_at_the_start_does_nothing():
-    w = World(decision=APPROVED, halt=(True,))
-    result = w.run(config())
-    assert result.status == "halted" and result.records == ()
-    assert w.recorder.calls == [] and w.gate.calls == 0 and w.reader.pins == 0
 
 
 def test_escalation_error_does_not_execute():
     w = World(decision=Decision("error", error="boom"))
     result = w.run(config())
     assert result.status == "error" and w.mediator.calls == []
-    assert w.recorder.calls[-1] == decision("error", "escalation failed: boom", at=60)
+    assert w.recorder.calls[-1] == decision("error", "escalation failed: boom", at_=60, escalation_id="esc-1")
+
+
+def test_halt_before_the_mediator_writes_one_halted_decision_that_supersedes_the_approval():
+    w = World(decision=approved(), halt=(False, True))
+    result = w.run(config())
+    reason = ("halted after approval, before the mediator ran; "
+              "supersedes the approval by alice (esc-1)")
+    assert result.status == "halted" and not result.mediated
+    assert w.recorder.calls == [
+        incident(), proposal(),
+        decision("approved", "approved by escalation", at_=60, **ALICE),
+        decision("halted", reason, at_=60, **ALICE),  # same record id: replaces the approval
+    ]
+    assert w.mediator.calls == [] and "action" not in w.kinds
+    # in the written batch only the halted decision is left
+    nodes = w.recorder.records.nodes
+    assert nodes[f"ops_decision:dec-{RUN}"]["attrs"]["verdict"] == "halted"
+
+
+def test_halt_check_raising_before_the_mediator_fails_closed():
+    w = World(decision=approved(), halt=(False, RuntimeError("no db")))
+    result = w.run(config())
+    assert result.status == "halted" and "failing closed" in result.reason and "no db" in result.reason
+    assert w.mediator.calls == []
+    assert w.recorder.calls[-1][2]["verdict"] == "halted"
+
+
+def test_halt_at_the_start_writes_nothing_and_returns_a_structured_halt():
+    w = World(decision=approved(), halt=(True,))
+    result = w.run(config())
+    assert (result.status, result.records, result.reason) == ("halted", (), "halted before the run started")
+    assert w.recorder.calls == [] and w.gate.calls == 0 and w.reader.pins == 0
 
 
 def test_mediator_failure_is_recorded_and_the_outcome_still_checked():
-    w = World(decision=APPROVED)
+    w = World(decision=approved())
     w.mediator = Mediator(MediatorResult("failed", "exit 1"))
     result = w.run(config())
     assert result.status == "executed"
@@ -360,44 +357,79 @@ def test_mediator_failure_is_recorded_and_the_outcome_still_checked():
     assert (kind, attrs["status"], attrs["result"]) == ("action", "failed", "exit 1")
 
 
-# --- L3, unknown levels --------------------------------------------------------------
+# --- levels (acc.r3-ops-runtime.no-l3, run-start half) -------------------------------
 
 
 @pytest.mark.parametrize("over", [
     {"instance_level": "L3"},
-    {"bundle_level": "L3"},
+    {"bundle_max_level": "L3"},
     {"pack_max_level": "L3"},
+    {"default_level": "L3", "instance_level": None},
     {"instance_level": "L9"},
     {"instance_level": "act"},
-    {"instance_level": None},
-    {"action_classes": {"restart_service": ActionClassConfig("L3")}},
+    {"instance_level": "l2"},        # lowercase is not accepted
+    {"instance_level": "L²"},   # superscript two
+    {"instance_level": "L٢"},   # Arabic-indic two
+    {"instance_level": "L２"},   # fullwidth two
+    {"instance_level": 2},
 ])
 def test_level_above_l2_or_unknown_is_refused_at_run_start(over):
-    w = World(decision=APPROVED)
-    result = w.run(config(**over))
-    assert result.status == "refused"
-    assert "ADR 0002 D13" in result.reason or "3.0 stops at L2" in result.reason
-    assert w.recorder.calls == [] and w.gate.calls == 0 and w.reader.pins == 0
-    assert w.proposer.calls == [] and w.mediator.calls == []
+    from dataclasses import replace
+
+    w = World(decision=approved())
+    result = w.run(replace(config(), **over))
+    assert result.status == "refused" and "ADR 0002 D13" in result.reason
+    # one run-level incident, no generation, and nothing was read, proposed or run
+    assert w.recorder.calls == [run_level_incident(result.reason)]
+    assert w.gate.calls == 0 and w.reader.pins == 0 and w.proposer.calls == [] and w.mediator.calls == []
 
 
-def test_effective_level_is_the_minimum():
-    w = World(proposal={"summary": "s", "evidence_ids": ["jira:A-1"], "draft": "d"})
-    result = w.run(config("L2", bundle_level="L1"))
-    assert (result.level, result.status) == (1, "drafted")
+def test_an_action_class_above_l2_is_refused_at_run_start():
+    from dataclasses import replace
+    from archi.ops.loop import ActionClassConfig
+
+    bad = replace(config(), action_classes={"restart_service": ActionClassConfig("L3")})
+    w = World()
+    result = w.run(bad)
+    assert result.status == "refused" and "restart_service" in result.reason
+    assert w.mediator.calls == []
 
 
-# --- gate, shadow, budget, proposal checks -------------------------------------------
+def test_effective_level_is_the_minimum_of_instance_bundle_and_pack():
+    w = World(proposal=DRAFT_PROPOSAL)
+    bounded = AutomationConfig.from_block({**BLOCK, "bundle_max_level": "L1"}, instance_level="L2",
+                                          mode="live", timeout_seconds=TIMEOUT)
+    result = w.run(bounded)
+    assert (result.level, result.status) == ("L1", "drafted")
+
+
+def test_the_pack_default_stands_in_when_the_instance_sets_no_level():
+    w = World(proposal=DRAFT_PROPOSAL)
+    assert w.run(config(None)).level == "L1"
+
+
+def test_an_action_class_capped_below_the_run_level_never_executes():
+    # draft_reply allows L1; the run is L2 and the approval would otherwise run it.
+    w = World(proposal=DRAFT_PROPOSAL, decision=approved())
+    result = w.run(config("L2"))
+    reason = "action class 'draft_reply' allows at most L1, below the run's L2; it is never executed"
+    assert result.status == "action_class_capped" and not result.mediated
+    assert w.recorder.calls[-1] == decision("action_class_capped", reason)
+    assert "action" not in w.kinds
+    assert w.decider.calls == [] and w.mediator.calls == []
+
+
+# --- gate, shadow, fail closed -------------------------------------------------------
 
 
 def test_failing_gate_drops_a_live_run_to_shadow_with_the_reason_recorded():
-    w = World(decision=APPROVED, gate=FAIL)
+    w = World(decision=approved(), gate=FAIL)
     result = w.run(config())
     reason = DEMOTED_PREFIX + FAIL.message
     assert result.status == "observed" and result.mode == "shadow" and not result.mediated
     assert w.recorder.calls == [
         incident(),
-        proposal(mode="shadow", text=reason),
+        proposal(mode="shadow", mode_reason=reason),
         decision("observed", "shadow: recorded only; a live run at L2 would escalate for approval and then act"),
     ]
     assert "freshness:s" in reason
@@ -405,7 +437,7 @@ def test_failing_gate_drops_a_live_run_to_shadow_with_the_reason_recorded():
 
 
 def test_shadow_never_mediates_even_with_a_passing_gate():
-    w = World(decision=APPROVED)
+    w = World(decision=approved())
     result = w.run(config(mode="shadow"))
     assert result.status == "observed" and result.mode == "shadow"
     assert w.recorder.calls == [
@@ -418,40 +450,123 @@ def test_shadow_never_mediates_even_with_a_passing_gate():
 
 def test_shadow_with_a_failing_gate_keeps_the_reason_without_claiming_a_demotion():
     w = World(gate=FAIL)
-    w.run(config(mode="shadow", instance_level="L0"))
-    assert w.recorder.calls[1][2]["text"] == "context gate failed: " + FAIL.message
+    w.run(config("L0", mode="shadow"))
+    assert w.recorder.calls[1][2]["mode_reason"] == "context gate failed: " + FAIL.message
 
 
 def test_gate_and_pin_on_different_generations_demote_to_shadow():
-    w = World(gate=GateResult("gen-6", PASS.checks), decision=APPROVED)
+    from archi.ops.context_gate import GateResult
+
+    w = World(gate=GateResult("gen-6", PASS.checks), decision=approved())
     result = w.run(config())
     assert result.mode == "shadow" and w.mediator.calls == []
-    assert "gen-6" in w.recorder.calls[1][2]["text"] and GEN in w.recorder.calls[1][2]["text"]
+    reason = w.recorder.calls[1][2]["mode_reason"]
+    assert "gen-6" in reason and GEN in reason
 
 
-def test_budget_exhausted_records_a_decision_and_stops_before_proposing():
-    w = World(decision=APPROVED, budget=Budget(BudgetCheck(False, "day", "spent 5 of 5")))
+@pytest.mark.parametrize("kwargs", [{"gate_raises": RuntimeError("gate down")},
+                                    {"pin_raises": RuntimeError("no generation")},
+                                    {"halt": (RuntimeError("halt table gone"),)}])
+def test_exceptions_before_anything_is_read_fail_closed_with_a_run_level_record(kwargs):
+    w = World(decision=approved(), **kwargs)
     result = w.run(config())
-    reason = "day budget exhausted: spent 5 of 5"
+    assert result.status == "error"
+    assert w.recorder.calls == [run_level_incident(result.reason)]
+    assert w.proposer.calls == [] and w.mediator.calls == []
+
+
+def test_a_budget_exception_fails_closed_with_an_error_decision():
+    w = World(decision=approved(), budget=Budget(raises=RuntimeError("ledger down")))
+    result = w.run(config())
+    reason = "RuntimeError: ledger down"
+    assert result.status == "error"
+    assert w.recorder.calls == [incident(), placeholder(reason), decision("error", reason)]
+    assert w.proposer.calls == [] and w.mediator.calls == []
+
+
+def test_a_naive_clock_is_refused_not_compared():
+    w = World(decision=approved(), clock=Clock(datetime(2026, 10, 25, 12, 0)))
+    result = w.run(config())
+    assert result.status == "error" and "naive" in result.reason
+    assert w.mediator.calls == [] and w.kinds == ["incident"]
+    assert w.recorder.calls[0][2]["detected_at"] == "2026-10-25T12:00:00"  # visibly without a Z
+
+
+def test_proposer_failure_is_recorded_as_an_error():
+    w = World()
+    w.proposer = StubProposer({"fail": {"sig-1": "model timeout"}})
+    result = w.run(config())
+    reason = "proposer failed: ProposerError: model timeout"
+    assert result.status == "error"
+    assert w.recorder.calls[-2:] == [placeholder(reason), decision("error", reason)]
+    assert w.mediator.calls == []
+
+
+# --- the run id ----------------------------------------------------------------------
+
+
+def test_run_id_is_deterministic_and_comes_from_the_caller():
+    assert make_run_id("triage", "sig-1", 3) == "triage-sig-1-3"
+    first, second = World(), World(clock=Clock(at(5000)))
+    first.run(config("L0"), run_id="triage-sig-1-1")
+    second.run(config("L0"), run_id="triage-sig-1-1")
+    ids = lambda w: [c[2]["record_id"] for c in w.recorder.calls]  # noqa: E731
+    assert ids(first) == ids(second) == ["inc-triage-sig-1-1", "prop-triage-sig-1-1", "dec-triage-sig-1-1"]
+    other = World()
+    other.run(config("L0"), run_id="triage-sig-1-2")
+    assert ids(other)[0] == "inc-triage-sig-1-2"
+
+
+# --- budget --------------------------------------------------------------------------
+
+RUN_SCOPE, DAY_SCOPE = f"run:{RUN}", "day:triage:2026-10-25"
+
+
+def test_budget_is_checked_per_run_and_per_day_before_proposing_and_charged_after():
+    w = World(decision=approved(), cost=0.1)
+    w.run(config())
+    assert w.budget.checks[:2] == [(RUN_SCOPE, 0.0, 0.5), (DAY_SCOPE, 0.0, 10.0)]
+    assert w.budget.recorded == [(RUN_SCOPE, 0.1), (DAY_SCOPE, 0.1)]
+
+
+def test_exhausted_day_budget_records_a_decision_and_stops_before_proposing():
+    reason = "day budget exhausted: 9.8 of 10 spent"
+    w = World(decision=approved(), budget=Budget({DAY_SCOPE: 9.8}))
+    result = w.run(config(estimate_cost=0.4))
     assert result.status == "budget_exhausted"
-    assert w.recorder.calls == [
-        incident(),
-        rec("proposal", evidence=[f"ops_incident:inc-{RUN}"], record_id=f"prop-{RUN}", incident_id=f"inc-{RUN}",
-            summary=f"no proposal: {reason}", autonomy_level="L2", mode="live", proposed_at=iso()),
-        decision("budget_exhausted", reason),
-    ]
-    assert w.budget.calls == ["triage"]
+    assert w.recorder.calls == [incident(), placeholder(reason), decision("budget_exhausted", reason)]
     assert w.proposer.calls == [] and w.decider.calls == [] and w.mediator.calls == []
+
+
+def test_per_run_cap_used_up_by_the_proposal_stops_before_escalation_and_mediator():
+    w = World(decision=approved(), cost=0.8)  # the run cap is 0.5
+    result = w.run(config())
+    reason = "run budget exhausted: 0.8 of 0.5 spent"
+    assert result.status == "budget_exhausted"
+    assert w.recorder.calls == [incident(), proposal(), decision("budget_exhausted", reason)]
+    assert w.decider.calls == [] and w.mediator.calls == []
+
+
+# --- the proposal --------------------------------------------------------------------
 
 
 def test_proposal_without_evidence_ids_is_refused():
     bare = {k: v for k, v in PROPOSAL.items() if k != "evidence_ids"}
-    w = World(proposal=bare, decision=APPROVED)
+    w = World(proposal=bare, decision=approved())
     result = w.run(config())
-    reason = "proposal refused: evidence_ids must list at least one cited okg node id"
-    assert result.status == "invalid_proposal" and result.reason == reason
-    assert w.recorder.calls[-1] == decision("invalid_proposal", reason)
+    assert result.status == "invalid_proposal"
+    assert "evidence_ids" in result.reason
+    assert w.recorder.calls[-1][2]["verdict"] == "invalid_proposal"
     assert w.decider.calls == [] and w.mediator.calls == []
+
+
+def test_a_cited_id_the_pinned_read_did_not_return_is_refused():
+    w = World(proposal={**PROPOSAL, "evidence_ids": ["jira:A-1", "jira:Z-9"]}, decision=approved())
+    result = w.run(config())
+    reason = "proposal refused: evidence_ids not in the pinned read: ['jira:Z-9']"
+    assert result.status == "invalid_proposal" and result.reason == reason
+    assert w.recorder.calls[-2:] == [placeholder(reason), decision("invalid_proposal", reason)]
+    assert w.mediator.calls == []
 
 
 @pytest.mark.parametrize("bad, fragment", [
@@ -459,21 +574,30 @@ def test_proposal_without_evidence_ids_is_refused():
     ({"evidence_ids": [""]}, "evidence_ids"),
     ({"action_class": "drop_database"}, "not declared"),
     ({"action_class": None}, "required at L2"),
-    ({"payload": {}}, "missing ['service']"),
-    ({"confidence": 3}, "confidence"),
-    ({"surprise": 1}, "unknown keys"),
+    ({"payload": {}}, "payload for 'restart_service': "),
+    ({"payload": {"service": "x", "rm": "-rf"}}, "Additional properties"),
+    ({"confidence": 3}, "proposal/confidence"),
+    ({"surprise": 1}, "Additional properties"),
+    ({"summary": ""}, "summary"),
 ])
 def test_proposal_schema_violations_are_refused(bad, fragment):
-    w = World(proposal={**PROPOSAL, **bad}, decision=APPROVED)
+    w = World(proposal={**PROPOSAL, **bad}, decision=approved())
     result = w.run(config())
     assert result.status == "invalid_proposal" and fragment in result.reason
     assert w.mediator.calls == []
 
 
-def test_proposer_failure_is_recorded_as_an_error():
-    w = World()
-    w.proposer = StubProposer({"fail": {"sig-1": "model timeout"}})
-    result = w.run(config())
-    assert result.status == "error"
-    assert w.recorder.calls[-1] == decision("error", "proposer failed: ProposerError: model timeout")
-    assert w.mediator.calls == []
+def test_validate_proposal_uses_the_automations_json_schema():
+    automation = config()
+    ok = validate_proposal(PROPOSAL, automation, "L2", {"jira:A-1"})
+    assert ok.action_class == "restart_service" and ok.evidence_ids == ("jira:A-1",)
+    with pytest.raises(Exception, match="proposal/confidence"):
+        validate_proposal({**PROPOSAL, "confidence": "high"}, automation, "L2")
+
+
+def test_placeholder_proposals_are_marked_so_shadow_scoring_skips_them():
+    w = World(budget=Budget({DAY_SCOPE: 9.8}))
+    w.run(config("L0", mode="shadow", estimate_cost=0.4))
+    _, _, attrs = w.recorder.calls[1]
+    assert attrs["mode"] == "placeholder"  # shadow scoring reads only mode == "shadow"
+    assert attrs["mode_reason"].startswith("placeholder: no proposal was made")

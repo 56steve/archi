@@ -1,119 +1,176 @@
 """The operations loop (ADR 0002 section 7.1, PACT r3-ops-runtime req.loop).
 
 One run takes a signal through: halt check, effective level, context gate,
-pinned generation, proposal, decision by level, mediator, outcome check, and
-the ops records of each step. This module is plain Python with no okg imports;
-everything it touches outside itself comes in through the small Protocols in
-`Deps`, so tests can fake each one. The workflow module wraps each Protocol
-call in a durable step.
+pinned generation, budget, proposal, decision by level, mediator, outcome
+check, and the ops records of each step. This module is plain Python with no
+okg imports; everything it touches outside itself comes in through the small
+Protocols in `Deps`, so tests can fake each one. The workflow module wraps
+each Protocol call (and `_mediate`) in a durable step.
 
-Levels (ADR 0002 7.3, D13). The effective level is the minimum of the
-instance's setting, the bundle's bound and the pack's `max_level`. L3 and any
-level the runtime does not know are refused at run start.
+Levels come from `archi.ops.levels` (ADR 0002 D13: L3 and unknown levels are
+refused). The effective level is the lowest of the instance's setting, the
+bundle bound and the pack maximum. Each action class also caps the level it
+may run at: a proposal whose class allows less than the effective level is
+recorded as `action_class_capped` and never executes.
 
     L0  record the incident, the proposal and an `observed` decision.
     L1  as L0, with the draft on the proposal and a `drafted` decision.
         Nothing is sent.
-    L2  the Decider opens an escalation. Only an approval made at or before
-        the deadline reaches the mediator; HaltCheck runs once more as the
-        statement before the mediator call.
+    L2  the Decider opens an escalation and later reports a decision. Only an
+        approval bound to that escalation and proposal, by a named person,
+        made between the escalation opening and its deadline, reaches the
+        mediator. The first statement of `_mediate` is the HaltCheck.
 
 Shadow mode (a live automation whose context gate fails drops to shadow for
 the run; a shadow automation stays there) never opens an escalation and never
 mediates. It records what it would have done, with an `observed` decision.
 
-Records use the verdicts `approved`, `rejected` and `timed_out` that the
-ops-record schema documents, plus `observed`, `drafted`, `budget_exhausted`,
-`invalid_proposal`, `halted` and `error`. A decision needs a proposal to link
-to, so a run that stops after the incident is recorded (budget, a refused
-proposal, a proposer error) records a placeholder proposal that cites the
-incident and says why there is no real one.
+Failing closed. An exception from the halt check, gate, pin, budget, proposer,
+decider or a record write never executes anything. The run records what it
+can: after the incident exists, an `error` decision; before that, a run-level
+record (below).
 
-`AutomationConfig` is what the loop needs from an automation. It will be fed
-from the rendered automation block (instance level, bundle bound, pack
-max_level, gate, action classes, budget, timeout).
+Run-level records. A decision needs a proposal, and a proposal needs a pinned
+generation, so a run that stops before reading anything has neither. When such
+a run is refused (L3 or unknown level) or fails (the gate, the pin or the
+halt check raised), it writes one `ops_incident` for the signal whose summary
+says "run not started: <reason>" and carries no `generation_read`: that record
+exists so the operator sees the signal and why nothing ran. A run that stops
+because the system is halted writes nothing and returns status `halted`:
+halt means stop, and the caller logs the structured result.
+
+A run that stops after the incident (budget, a refused proposal, a proposer
+error) records a placeholder proposal with `mode: placeholder` and a decision.
+Shadow scoring reads only `mode: shadow`, so placeholders are skipped.
+
+`AutomationConfig.from_block` builds the configuration from the rendered
+automation block, `<instance>/automations/<name>.yaml`; the instance's own
+level (archi.yaml) and the mode are passed alongside.
 """
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Optional, Protocol
+
+import yaml
 
 from archi.ops.context_gate import GateResult, GateSpec
-from archi.ops.escalation import APPROVED, ERROR, REJECTED, TIMED_OUT, Decision, may_execute
-from archi.ops.proposers import ProposeRequest, Proposer
+from archi.ops.escalation import (
+    APPROVED,
+    ERROR,
+    REJECTED,
+    TIMED_OUT,
+    Decision,
+    Escalation,
+    may_execute,
+)
+from archi.ops.levels import LevelError, level_problem, rank, resolve_level
+from archi.ops.proposers import Proposed, ProposeRequest, Proposer
 
-ADR = "ADR 0002 D13"
-#: The highest level 3.0 runs.
-MAX_LEVEL = 2
 MODES = ("shadow", "live")
-#: Proposal text prefix when a live automation was dropped to shadow.
+#: Proposal `mode_reason` prefix when a live automation was dropped to shadow.
 DEMOTED_PREFIX = "demoted to shadow: "
+#: Proposal `mode` of a placeholder written when no real proposal exists.
+PLACEHOLDER_MODE = "placeholder"
 ACTOR_KIND = "automation"
-
-PROPOSAL_KEYS = frozenset({"summary", "evidence_ids", "action_class", "payload", "confidence", "rollback", "draft"})
 
 
 # --- configuration -----------------------------------------------------------------
 
 
-class LevelRefused(ValueError):
-    """A level the 3.0 runtime will not run."""
-
-
-def parse_level(value: Any, *, what: str = "level") -> int:
-    """`L0`/`L1`/`L2` (or 0, 1, 2) as an int. L3 and anything unknown are refused."""
-    n: Optional[int] = None
-    if isinstance(value, bool):
-        n = None
-    elif isinstance(value, int):
-        n = value
-    elif isinstance(value, str) and len(value) == 2 and value[0] in "Ll" and value[1].isdigit():
-        n = int(value[1])
-    if n is None or n < 0:
-        raise LevelRefused(f"{what} {value!r} is not a known autonomy level (L0, L1, L2); {ADR}")
-    if n > MAX_LEVEL:
-        raise LevelRefused(f"{what} L{n} is above L2; 3.0 stops at L2 ({ADR})")
-    return n
-
-
 @dataclass(frozen=True)
 class ActionClassConfig:
-    max_level: Any
+    #: the highest level the class may run at
+    max_level: str
     mediator: str = ""
-    #: payload keys the class requires
-    payload_required: tuple[str, ...] = ()
+    #: JSON Schema the proposal's payload must satisfy
+    payload_schema: Optional[Mapping[str, Any]] = None
 
 
 @dataclass(frozen=True)
 class AutomationConfig:
     name: str
-    #: the instance's setting, the bundle's upper bound and the pack's max_level
-    instance_level: Any
-    bundle_level: Any
-    pack_max_level: Any
+    default_level: str
+    pack_max_level: str
+    instance_level: Optional[str] = None
+    bundle_max_level: Optional[str] = None
     #: every automation starts in shadow
     mode: str = "shadow"
     gate: Optional[GateSpec] = None
     action_classes: Mapping[str, ActionClassConfig] = field(default_factory=dict)
-    #: extra proposal keys the pack's proposal schema requires
-    proposal_required: tuple[str, ...] = ()
+    #: JSON Schema the raw proposal must satisfy
+    proposal_schema: Mapping[str, Any] = field(default_factory=dict)
+    cost_per_run: Optional[float] = None
+    cost_per_day: Optional[float] = None
+    #: what one proposal is expected to cost, checked against the caps first
+    estimate_cost: float = 0.0
     #: how long an L2 escalation waits for a person
     timeout_seconds: int = 4 * 3600
 
+    @classmethod
+    def from_block(
+        cls,
+        block: Mapping[str, Any],
+        *,
+        instance_level: Optional[str] = None,
+        mode: str = "shadow",
+        timeout_seconds: int = 4 * 3600,
+        estimate_cost: float = 0.0,
+    ) -> "AutomationConfig":
+        """From a rendered automation block (`<instance>/automations/<name>.yaml`)."""
+        defs = block.get("action_class_definitions") or {}
+        classes = {
+            name: ActionClassConfig(d.get("max_level"), d.get("mediator", ""), d.get("payload_schema"))
+            for name, d in defs.items()
+        }
+        budget = block.get("budget") or {}
+        gate = block.get("context_gate")
+        return cls(
+            name=block["pack"],
+            default_level=block["default_level"],
+            pack_max_level=block["pack_max_level"],
+            instance_level=instance_level,
+            bundle_max_level=block.get("bundle_max_level"),
+            mode=mode,
+            gate=GateSpec.from_mapping(gate) if gate else None,
+            action_classes=classes,
+            proposal_schema=dict(block.get("proposal_schema") or {}),
+            cost_per_run=budget.get("cost_per_run"),
+            cost_per_day=budget.get("cost_per_day"),
+            estimate_cost=estimate_cost,
+            timeout_seconds=timeout_seconds,
+        )
 
-def effective_level(automation: AutomationConfig) -> int:
-    """The minimum of the three levels; LevelRefused if any is L3 or unknown,
-    or if any action class allows more than L2."""
-    levels = [
-        parse_level(automation.instance_level, what="instance level"),
-        parse_level(automation.bundle_level, what="bundle bound"),
-        parse_level(automation.pack_max_level, what="pack max_level"),
-    ]
+
+def load_automation(instance_dir: Path | str, name: str, **kwargs: Any) -> AutomationConfig:
+    """Read `<instance>/automations/<name>.yaml` as the runtime configuration."""
+    path = Path(instance_dir) / "automations" / f"{name}.yaml"
+    return AutomationConfig.from_block(yaml.safe_load(path.read_text(encoding="utf-8")), **kwargs)
+
+
+def resolved_level(automation: AutomationConfig) -> str:
+    """The effective level ("L0".."L2"). Raises LevelError on L3 or an unknown level,
+    including an action class that allows one."""
+    effective = resolve_level(
+        instance_level=automation.instance_level,
+        default_level=automation.default_level,
+        bundle_max=automation.bundle_max_level,
+        pack_max=automation.pack_max_level,
+    ).level
     for name, cls in automation.action_classes.items():
-        parse_level(cls.max_level, what=f"action class {name!r} max_level")
-    return min(levels)
+        message = level_problem(cls.max_level, f"action class {name!r} max_level")
+        if message:
+            raise LevelError(message)
+    return effective
+
+
+def make_run_id(automation: str, signal_id: str, attempt: int | str) -> str:
+    """The run id for (automation, signal, attempt). Deterministic: a replay of the
+    same workflow gets the same id, so its records overwrite rather than duplicate."""
+    return f"{automation}-{signal_id}-{attempt}"
 
 
 # --- the signal and the proposal ---------------------------------------------------
@@ -157,67 +214,78 @@ class Proposal:
     draft: Optional[str] = None
 
 
-def validate_proposal(raw: Any, automation: AutomationConfig, level: int) -> Proposal:
+def _schema_errors(schema: Mapping[str, Any], instance: Any, where: str) -> list[str]:
+    from jsonschema import Draft202012Validator
+
+    validator = Draft202012Validator(dict(schema))
+    return [
+        f"{where}{'/' + '/'.join(map(str, e.absolute_path)) if e.absolute_path else ''}: {e.message}"
+        for e in sorted(validator.iter_errors(instance), key=lambda e: list(map(str, e.absolute_path)))
+    ]
+
+
+def validate_proposal(
+    raw: Any,
+    automation: AutomationConfig,
+    level: str,
+    known_evidence: Optional[Iterable[str]] = None,
+) -> Proposal:
     """Check a raw proposal against the automation's proposal schema.
 
-    Cited evidence ids are always required. An action class is required at L2
-    and, when the automation declares classes, must be one of them.
+    The rendered `proposal_schema` (JSON Schema) is the check; on top of it the
+    loop requires at least one cited evidence id, an action class at L2 that the
+    automation declares and whose payload schema the payload meets, and a draft
+    or payload at L1. When `known_evidence` is given, every cited id must be in it
+    (the ids the pinned read returned).
     """
     if not isinstance(raw, Mapping):
         raise ProposalError("proposal must be an object")
-    errors: list[str] = []
-    unknown = sorted(set(raw) - PROPOSAL_KEYS)
-    if unknown:
-        errors.append(f"unknown keys {unknown}")
-    summary = raw.get("summary")
-    if not isinstance(summary, str) or not summary.strip():
-        errors.append("summary is required")
+    errors = _schema_errors(automation.proposal_schema, raw, "proposal") if automation.proposal_schema else []
     evidence = raw.get("evidence_ids")
     if (not isinstance(evidence, (list, tuple)) or not evidence
             or not all(isinstance(e, str) and e.strip() for e in evidence)):
-        errors.append("evidence_ids must list at least one cited okg node id")
-    for key in automation.proposal_required:
-        if raw.get(key) in (None, "", [], {}):
-            errors.append(f"{key} is required by the proposal schema")
+        if not any("evidence_ids" in e for e in errors):
+            errors.append("evidence_ids must list at least one cited okg node id")
+    elif known_evidence is not None:
+        known = set(known_evidence)
+        outside = [e for e in evidence if e not in known]
+        if outside:
+            errors.append(f"evidence_ids not in the pinned read: {outside}")
+    summary = raw.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        errors.append("summary is required")
 
     action_class = raw.get("action_class")
     payload = raw.get("payload", {})
-    if action_class is not None and not isinstance(action_class, str):
-        errors.append("action_class must be a string")
-    elif action_class is None and level >= 2:
-        errors.append("action_class is required at L2")
-    elif action_class is not None and automation.action_classes:
-        cls = automation.action_classes.get(action_class)
-        if cls is None:
-            errors.append(f"action_class {action_class!r} is not declared; known: {sorted(automation.action_classes)}")
-        elif isinstance(payload, Mapping):
-            absent = [k for k in cls.payload_required if k not in payload]
-            if absent:
-                errors.append(f"payload for {action_class!r} is missing {absent}")
     if not isinstance(payload, Mapping):
         errors.append("payload must be an object")
-    confidence = raw.get("confidence")
-    if confidence is not None and (
-        isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1
-    ):
-        errors.append("confidence must be a number from 0 to 1")
-    rollback = raw.get("rollback")
-    if rollback is not None and not isinstance(rollback, str):
-        errors.append("rollback must be a string")
+        payload = {}
+    if action_class is not None and not isinstance(action_class, str):
+        errors.append("action_class must be a string")
+    elif action_class is None:
+        if level == "L2":
+            errors.append("action_class is required at L2")
+    elif action_class not in automation.action_classes:
+        errors.append(f"action_class {action_class!r} is not declared; known: {sorted(automation.action_classes)}")
+    else:
+        schema = automation.action_classes[action_class].payload_schema
+        if schema:
+            errors += _schema_errors(schema, payload, f"payload for {action_class!r}")
     draft = raw.get("draft")
     if draft is not None and not isinstance(draft, str):
         errors.append("draft must be a string")
-    if level == 1 and not (isinstance(draft, str) and draft.strip()):
-        errors.append("draft is required at L1")
+    if level == "L1" and not (isinstance(draft, str) and draft.strip()) and not payload:
+        errors.append("a draft (draft, or a payload) is required at L1")
     if errors:
         raise ProposalError("; ".join(errors))
+    confidence = raw.get("confidence")
     return Proposal(
         summary=summary,
         evidence_ids=tuple(dict.fromkeys(evidence)),
         action_class=action_class,
         payload=dict(payload),
         confidence=None if confidence is None else float(confidence),
-        rollback=rollback,
+        rollback=raw.get("rollback"),
         draft=draft,
     )
 
@@ -228,31 +296,42 @@ def validate_proposal(raw: Any, automation: AutomationConfig, level: int) -> Pro
 @dataclass(frozen=True)
 class BudgetCheck:
     ok: bool
-    #: "run" or "day" when not ok
-    scope: Optional[str] = None
     detail: str = ""
 
 
 class BudgetGuard(Protocol):
-    def check(self, automation: str) -> BudgetCheck:
-        """Is there budget left for one more proposal, per run and per day?"""
+    def check(self, scope: str, estimate: float, cap: float) -> BudgetCheck:
+        """Would spending `estimate` more in `scope` stay within `cap`?"""
+
+    def record(self, scope: str, cost: float) -> None:
+        """Charge `cost` to `scope`."""
 
 
 class GateChecker(Protocol):
     def check(self, spec: GateSpec) -> GateResult: ...
 
 
+@dataclass(frozen=True)
+class ReadResult:
+    context: Mapping[str, Any]
+    #: the okg node ids the pinned read returned; a proposal may cite only these
+    node_ids: frozenset[str]
+
+
 class Reader(Protocol):
     def pin(self) -> str:
         """The generation this run reads. Called once."""
 
-    def read(self, signal: Signal, generation: str) -> Mapping[str, Any]:
+    def read(self, signal: "Signal", generation: str) -> ReadResult:
         """The context for the signal, read at `generation` only."""
 
 
 class Decider(Protocol):
-    def decide(self, *, automation: str, proposal_id: str, proposal: Proposal, timeout_at: datetime) -> Decision:
-        """Open an escalation and wait. Return approved, rejected, timed_out or error."""
+    def open(self, *, automation: str, proposal_id: str, proposal: Proposal, timeout_at: datetime) -> Escalation:
+        """Open an escalation for the proposal."""
+
+    def wait(self, escalation: Escalation) -> Decision:
+        """Wait for it. Return approved, rejected, timed_out or error."""
 
 
 @dataclass(frozen=True)
@@ -316,11 +395,11 @@ class SystemClock:
 @dataclass(frozen=True)
 class RunResult:
     run_id: str
-    #: executed | observed | drafted | rejected | timed_out | halted | refused |
-    #: budget_exhausted | invalid_proposal | error
+    #: executed | observed | drafted | rejected | timed_out | halted | refused | budget_exhausted |
+    #: invalid_proposal | action_class_capped | error
     status: str
     reason: str = ""
-    level: Optional[int] = None
+    level: Optional[str] = None
     mode: Optional[str] = None
     generation: Optional[str] = None
     #: node ids of the ops records written, in order
@@ -330,186 +409,268 @@ class RunResult:
 
 
 def _iso(moment: datetime) -> str:
+    """UTC with a Z. A naive time is written as given, without a Z, so it shows."""
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        return moment.isoformat()
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run_once(automation: AutomationConfig, signal: Signal, deps: Deps) -> RunResult:
-    """Run the loop once for one signal. See the module docstring."""
-    clock = deps.clock
-    started = clock.now()
-    run_id = f"{automation.name}-{signal.id}-{int(started.timestamp())}"
+def run_once(automation: AutomationConfig, signal: Signal, deps: Deps, *, run_id: str) -> RunResult:
+    """Run the loop once for one signal. `run_id` comes from the caller (see make_run_id)."""
+    return _Run(automation, signal, deps, run_id).run()
 
-    # 1. halt. Nothing has been read yet, so there is no generation to record against.
-    if deps.halt.halted():
-        return RunResult(run_id, "halted", "halted before the run started")
 
-    # 2. effective level and mode
-    try:
-        level = effective_level(automation)
-    except LevelRefused as exc:
-        return RunResult(run_id, "refused", str(exc))
-    if automation.mode not in MODES:
-        return RunResult(run_id, "refused", f"mode {automation.mode!r} is not one of {list(MODES)}")
-    mode = automation.mode
+class _Run:
+    def __init__(self, automation: AutomationConfig, signal: Signal, deps: Deps, run_id: str):
+        self.a, self.signal, self.deps, self.run_id = automation, signal, deps, run_id
+        self.nodes: list[str] = []
+        self.level: Optional[str] = None
+        self.mode: Optional[str] = None
+        self.mode_reason: Optional[str] = None
+        self.generation: Optional[str] = None
+        self.incident_written = False
+        self.proposal_written = False
+        self.incident_id = f"inc-{run_id}"
+        self.proposal_id = f"prop-{run_id}"
+        self.decision_id = f"dec-{run_id}"
+        self.incident_node = ""
 
-    # 3. context gate: a failing gate drops this run to shadow (req.shadow demote hook)
-    gate = deps.gate.check(automation.gate) if automation.gate is not None else None
-    # 4. pin the generation, once
-    generation = deps.reader.pin()
-    failure: Optional[str] = None
-    if gate is not None and not gate.ok:
-        failure = gate.message
-    elif gate is not None and gate.generation not in (None, generation):
-        failure = f"context gate read generation {gate.generation} but the run pinned {generation}"
-    mode_reason: Optional[str] = None
-    if failure is not None:
-        mode_reason = (DEMOTED_PREFIX if mode == "live" else "context gate failed: ") + failure
-        mode = "shadow"
+    # records
 
-    nodes: list[str] = []
-    common = {"automation": automation.name, "actor_kind": ACTOR_KIND, "actor": automation.name,
-              "generation_read": generation}
-
-    def write(kind: str, record_id: str, *, evidence: Iterable[Any] = (), **attrs: Any) -> str:
-        nid = deps.recorder.add(kind, evidence=evidence, record_id=record_id, **{**common, **attrs})
-        nodes.append(nid)
+    def write(self, kind: str, record_id: str, *, evidence: Iterable[Any] = (), **attrs: Any) -> str:
+        common = {"automation": self.a.name, "actor_kind": ACTOR_KIND, "actor": self.a.name,
+                  "generation_read": self.generation}
+        nid = self.deps.recorder.add(kind, evidence=evidence, record_id=record_id, **{**common, **attrs})
+        self.nodes.append(nid)
         return nid
 
-    def result(status: str, reason: str = "", **extra: Any) -> RunResult:
-        return RunResult(run_id, status, reason, level=level, mode=mode, generation=generation,
-                         records=tuple(nodes), **extra)
+    def result(self, status: str, reason: str = "", **extra: Any) -> RunResult:
+        return RunResult(self.run_id, status, reason, level=self.level, mode=self.mode,
+                         generation=self.generation, records=tuple(self.nodes), **extra)
 
-    incident_id = f"inc-{run_id}"
-    proposal_id = f"prop-{run_id}"
-    decision_id = f"dec-{run_id}"
-    incident_node = write(
-        "incident", incident_id, title=signal.title, summary=signal.summary, entity=signal.entity,
-        entity_kind=signal.entity_kind, error_signature=signal.error_signature, severity=signal.severity,
-        status="open", detected_at=_iso(signal.detected_at or started),
-        ticket_keys=list(signal.ticket_keys) or None, signal=f"{signal.source}:{signal.id}",
-    )
+    def now(self) -> str:
+        return _iso(self.deps.clock.now())
 
-    def stop(verdict: str, reason: str) -> RunResult:
-        """Record a placeholder proposal and a decision, then end the run."""
-        write("proposal", proposal_id, evidence=[incident_node], incident_id=incident_id,
-              summary=f"no proposal: {reason}", autonomy_level=f"L{level}", mode=mode,
-              proposed_at=_iso(clock.now()), text=mode_reason)
-        write("decision", decision_id, proposal_id=proposal_id, verdict=verdict, reason=reason,
-              decided_at=_iso(clock.now()))
-        return result(verdict, reason)
-
-    # 5. budget, before the model is asked
-    budget = deps.budget.check(automation.name)
-    if not budget.ok:
-        return stop("budget_exhausted", f"{budget.scope or 'budget'} budget exhausted: {budget.detail}".rstrip(": "))
-
-    # 6. propose, from the pinned generation only
-    try:
-        context = deps.reader.read(signal, generation)
-        raw = deps.proposer.propose(ProposeRequest(automation.name, signal.as_dict(), context, generation, level))
-    except Exception as exc:  # a failed run is recorded, not hidden
-        return stop(ERROR, f"proposer failed: {type(exc).__name__}: {exc}")
-    try:
-        proposal = validate_proposal(raw, automation, level)
-    except ProposalError as exc:
-        return stop("invalid_proposal", f"proposal refused: {exc}")
-
-    payload = dict(proposal.payload)
-    if proposal.draft is not None:
-        payload = {"draft": proposal.draft, **({"payload": payload} if payload else {})}
-    write(
-        "proposal", proposal_id, evidence=proposal.evidence_ids, incident_id=incident_id,
-        summary=proposal.summary, action_class=proposal.action_class,
-        payload=json.dumps(payload, sort_keys=True) if payload else None,
-        confidence=proposal.confidence, rollback=proposal.rollback, autonomy_level=f"L{level}",
-        mode=mode, proposed_at=_iso(clock.now()), text=mode_reason,
-    )
-
-    # 7. decide by level
-    if mode == "shadow":
-        would = {0: "observe", 1: "draft for a person to send", 2: "escalate for approval and then act"}[level]
-        write("decision", decision_id, proposal_id=proposal_id, verdict="observed",
-              reason=f"shadow: recorded only; a live run at L{level} would {would}", decided_at=_iso(clock.now()))
-        return result("observed", "shadow")
-    if level == 0:
-        write("decision", decision_id, proposal_id=proposal_id, verdict="observed",
-              reason="L0: observed only", decided_at=_iso(clock.now()))
-        return result("observed", "L0")
-    if level == 1:
-        write("decision", decision_id, proposal_id=proposal_id, verdict="drafted",
-              reason="L1: draft recorded for a person to send; nothing was sent", decided_at=_iso(clock.now()))
-        return result("drafted", "L1")
-
-    # L2: escalate. The deadline is ours; the Decider's copy is not trusted.
-    timeout_at = clock.now() + timedelta(seconds=automation.timeout_seconds)
-    try:
-        decision = deps.decider.decide(automation=automation.name, proposal_id=proposal_id,
-                                       proposal=proposal, timeout_at=timeout_at)
-    except Exception as exc:
-        decision = Decision(ERROR, error=f"{type(exc).__name__}: {exc}")
-    decision = replace(decision, timeout_at=timeout_at)
-    verdict_at = clock.now()
-    allowed = may_execute(decision, verdict_at)
-
-    person = decision.status in (APPROVED, REJECTED) and decision.decided_by is not None
-    recorded_status = decision.status
-    if decision.status == APPROVED and not allowed:
-        recorded_status = TIMED_OUT
-    reason = {
-        APPROVED: "approved by escalation",
-        REJECTED: "rejected by escalation",
-        TIMED_OUT: "no decision before the deadline",
-        ERROR: f"escalation failed: {decision.error or 'unknown error'}",
-    }.get(decision.status)
-    if reason is None:
-        recorded_status, reason = ERROR, f"unknown decision status {decision.status!r}"
-    if decision.status == APPROVED and not allowed:
-        reason = f"not executed: {allowed.reason}"
-    if decision.note:
-        reason = f"{reason}; note: {decision.note}"
-    write(
-        "decision", decision_id, proposal_id=proposal_id, verdict=recorded_status,
-        escalation_id=decision.escalation_id, reason=reason,
-        decided_at=_iso(decision.decided_at or verdict_at),
-        **({"actor_kind": "person", "actor": decision.decided_by} if person else {}),
-    )
-    if not allowed:
-        return result(recorded_status, reason)
-
-    # 8. halt, as the statement before the mediator call
-    if deps.halt.halted():
-        write("decision", f"{decision_id}-halted", proposal_id=proposal_id, verdict="halted",
-              reason="halted after approval, before the mediator ran", decided_at=_iso(clock.now()))
-        return result("halted", "halted before the mediator ran")
-    action = _mediate(deps, automation, proposal, proposal_id, generation, run_id)
-    action_id = f"act-{run_id}"
-    write(
-        "action", action_id, proposal_id=proposal_id, decision_id=decision_id,
-        action_class=proposal.action_class,
-        mediator=(automation.action_classes.get(proposal.action_class) or ActionClassConfig(0)).mediator or None,
-        payload=json.dumps(dict(proposal.payload), sort_keys=True) if proposal.payload else None,
-        status=action.status, result=action.result, executed_at=_iso(clock.now()),
-    )
-
-    # 9. outcome check
-    try:
-        outcome = deps.outcome.check(signal=signal, action=action, generation=generation)
-    except Exception as exc:
-        outcome = OutcomeResult("unknown", f"outcome check failed: {type(exc).__name__}: {exc}")
-    write(
-        "outcome", f"out-{run_id}", incident_id=incident_id, action_id=action_id, result=outcome.result,
-        resolution=outcome.resolution or None, check_method="outcome_check", checked_at=_iso(clock.now()),
-    )
-    return result("executed", f"mediator {action.status}", mediated=True, outcome=outcome.result)
-
-
-def _mediate(deps: Deps, automation: AutomationConfig, proposal: Proposal, proposal_id: str,
-             generation: str, run_id: str) -> MediatorResult:
-    # Nothing may sit between the HaltCheck in run_once and this call.
-    try:
-        return deps.mediator.execute(
-            action_class=proposal.action_class or "", payload=dict(proposal.payload),
-            proposal_id=proposal_id, idempotency_key=run_id, generation=generation,
+    def write_incident(self, summary: Optional[str] = None) -> None:
+        s = self.signal
+        self.incident_node = self.write(
+            "incident", self.incident_id, title=s.title, summary=summary or s.summary, entity=s.entity,
+            entity_kind=s.entity_kind, error_signature=s.error_signature, severity=s.severity,
+            status="open", detected_at=_iso(s.detected_at or self.deps.clock.now()),
+            ticket_keys=list(s.ticket_keys) or None, signal=f"{s.source}:{s.id}",
         )
-    except Exception as exc:
-        return MediatorResult("failed", f"{type(exc).__name__}: {exc}")
+        self.incident_written = True
+
+    def run_level(self, status: str, reason: str) -> RunResult:
+        """Stopped before reading anything: one incident, no generation (see module docstring)."""
+        self.write_incident(f"run not started: {reason}")
+        return self.result(status, reason)
+
+    def write_proposal(self, evidence: Iterable[Any], **attrs: Any) -> None:
+        self.write("proposal", self.proposal_id, evidence=evidence, incident_id=self.incident_id,
+                   autonomy_level=self.level, proposed_at=self.now(), **attrs)
+        self.proposal_written = True
+
+    def decide(self, verdict: str, reason: str, record_id: Optional[str] = None, **attrs: Any) -> None:
+        attrs.setdefault("decided_at", self.now())
+        self.write("decision", record_id or self.decision_id, proposal_id=self.proposal_id,
+                   verdict=verdict, reason=reason, **attrs)
+
+    def stop(self, verdict: str, reason: str) -> RunResult:
+        """No real proposal: a placeholder (skipped by shadow scoring) and a decision."""
+        note = f"placeholder: no proposal was made ({reason}); run mode {self.mode}"
+        if self.mode_reason:
+            note += f"; {self.mode_reason}"
+        self.write_proposal([self.incident_node], summary=f"no proposal: {reason}", mode=PLACEHOLDER_MODE,
+                            mode_reason=note)
+        self.decide(verdict, reason)
+        return self.result(verdict, reason)
+
+    # the run
+
+    def run(self) -> RunResult:
+        try:
+            return self._run()
+        except Exception as exc:  # fail closed, and say so
+            reason = f"{type(exc).__name__}: {exc}"
+            if not self.incident_written:
+                return self.run_level(ERROR, reason)
+            if not self.proposal_written:
+                return self.stop(ERROR, reason)
+            self.decide(ERROR, reason, f"{self.decision_id}-error")
+            return self.result(ERROR, reason)
+
+    def _run(self) -> RunResult:
+        a, deps = self.a, self.deps
+        started = deps.clock.now()
+        if started.tzinfo is None or started.utcoffset() is None:
+            raise ValueError("clock returned a naive datetime")
+        if deps.halt.halted():
+            return self.result("halted", "halted before the run started")
+
+        try:
+            self.level = resolved_level(a)
+        except LevelError as exc:
+            return self.run_level("refused", str(exc))
+        if a.mode not in MODES:
+            return self.run_level("refused", f"mode {a.mode!r} is not one of {list(MODES)}")
+        self.mode = a.mode
+        level = rank(self.level)
+
+        gate = deps.gate.check(a.gate) if a.gate is not None else None
+        self.generation = deps.reader.pin()
+        failure: Optional[str] = None
+        if gate is not None and not gate.ok:
+            failure = gate.message
+        elif gate is not None and gate.generation not in (None, self.generation):
+            failure = f"context gate read generation {gate.generation} but the run pinned {self.generation}"
+        if failure is not None:
+            self.mode_reason = (DEMOTED_PREFIX if self.mode == "live" else "context gate failed: ") + failure
+            self.mode = "shadow"
+
+        self.write_incident()
+
+        # budget, before the model is asked: per run and per day
+        scopes = self.budget_scopes(started)
+        for scope, cap in scopes:
+            check = deps.budget.check(scope, a.estimate_cost, cap)
+            if not check.ok:
+                return self.stop("budget_exhausted", f"{scope.split(':')[0]} budget exhausted: {check.detail}")
+
+        # propose, from the pinned generation only
+        try:
+            read = deps.reader.read(self.signal, self.generation)
+            proposed = deps.proposer.propose(
+                ProposeRequest(a.name, self.signal.as_dict(), read.context, self.generation, level))
+        except Exception as exc:
+            return self.stop(ERROR, f"proposer failed: {type(exc).__name__}: {exc}")
+        for scope, _ in scopes:
+            deps.budget.record(scope, proposed.cost)
+        try:
+            proposal = validate_proposal(proposed.proposal, a, self.level, read.node_ids)
+        except ProposalError as exc:
+            return self.stop("invalid_proposal", f"proposal refused: {exc}")
+
+        self.write_proposal(
+            proposal.evidence_ids, summary=proposal.summary, action_class=proposal.action_class,
+            payload=json.dumps(dict(proposal.payload), sort_keys=True) if proposal.payload else None,
+            confidence=proposal.confidence, rollback=proposal.rollback, draft=proposal.draft,
+            mode=self.mode, mode_reason=self.mode_reason,
+        )
+
+        # the model call may have used up a cap: stop before anything is escalated or run
+        for scope, cap in scopes:
+            check = deps.budget.check(scope, 0.0, cap)
+            if not check.ok:
+                reason = f"{scope.split(':')[0]} budget exhausted: {check.detail}"
+                self.decide("budget_exhausted", reason)
+                return self.result("budget_exhausted", reason)
+
+        # the class caps the level it may run at
+        cls = a.action_classes.get(proposal.action_class) if proposal.action_class else None
+        if cls is not None and rank(cls.max_level) < level:
+            reason = (f"action class {proposal.action_class!r} allows at most {cls.max_level}, "
+                      f"below the run's {self.level}; it is never executed")
+            self.decide("action_class_capped", reason)
+            return self.result("action_class_capped", reason)
+
+        if self.mode == "shadow":
+            would = {0: "observe", 1: "draft for a person to send", 2: "escalate for approval and then act"}[level]
+            self.decide("observed", f"shadow: recorded only; a live run at {self.level} would {would}")
+            return self.result("observed", "shadow")
+        if level == 0:
+            self.decide("observed", "L0: observed only")
+            return self.result("observed", "L0")
+        if level == 1:
+            self.decide("drafted", "L1: draft recorded for a person to send; nothing was sent")
+            return self.result("drafted", "L1")
+        return self.escalate(proposal)
+
+    def budget_scopes(self, started: datetime) -> list[tuple[str, float]]:
+        a = self.a
+        day = started.astimezone(timezone.utc).date().isoformat()
+        scopes = []
+        if a.cost_per_run is not None:
+            scopes.append((f"run:{self.run_id}", float(a.cost_per_run)))
+        if a.cost_per_day is not None:
+            scopes.append((f"day:{a.name}:{day}", float(a.cost_per_day)))
+        return scopes
+
+    def escalate(self, proposal: Proposal) -> RunResult:
+        a, deps = self.a, self.deps
+        timeout_at = deps.clock.now() + timedelta(seconds=a.timeout_seconds)
+        escalation: Optional[Escalation] = None
+        try:
+            opened = deps.decider.open(automation=a.name, proposal_id=self.proposal_id, proposal=proposal,
+                                       timeout_at=timeout_at)
+            if opened.proposal_id != self.proposal_id:
+                raise ValueError(f"escalation {opened.escalation_id!r} was opened for {opened.proposal_id!r}")
+            escalation = replace(opened, timeout_at=timeout_at)
+            decision = deps.decider.wait(escalation)
+        except Exception as exc:
+            decision = Decision(ERROR, error=f"{type(exc).__name__}: {exc}")
+        allowed = may_execute(decision, escalation, deps.clock.now())
+
+        verdict, attrs = decision.status, {}
+        reason = {
+            APPROVED: "approved by escalation",
+            REJECTED: "rejected by escalation",
+            TIMED_OUT: "no decision before the deadline",
+            ERROR: f"escalation failed: {decision.error or 'unknown error'}",
+        }.get(decision.status)
+        if reason is None:
+            verdict, reason = ERROR, f"unknown decision status {decision.status!r}"
+        if decision.status == APPROVED and not allowed:
+            verdict, reason = (TIMED_OUT if allowed.late else ERROR), f"not executed: {allowed.reason}"
+        if decision.note:
+            reason = f"{reason}; note: {decision.note}"
+        if decision.status in (APPROVED, REJECTED) and decision.decided_by:
+            attrs.update(actor_kind="person", actor=decision.decided_by)
+        escalation_id = escalation.escalation_id if escalation else decision.escalation_id
+        self.decide(verdict, reason, escalation_id=escalation_id,
+                    decided_at=_iso(decision.decided_at) if decision.decided_at else self.now(), **attrs)
+        if not allowed:
+            return self.result(verdict, reason)
+
+        mediated, why = self._mediate(proposal)
+        if mediated is None:
+            # one `halted` decision supersedes the approved one (same record id)
+            halted = f"{why}; supersedes the approval by {decision.decided_by} ({escalation_id})"
+            self.decide("halted", halted, escalation_id=escalation_id, **attrs)
+            return self.result("halted", halted)
+        action = mediated
+        action_id = f"act-{self.run_id}"
+        cls = a.action_classes.get(proposal.action_class or "")
+        self.write(
+            "action", action_id, proposal_id=self.proposal_id, decision_id=self.decision_id,
+            action_class=proposal.action_class, mediator=(cls.mediator or None) if cls else None,
+            payload=json.dumps(dict(proposal.payload), sort_keys=True) if proposal.payload else None,
+            status=action.status, result=action.result, executed_at=self.now(),
+        )
+        try:
+            outcome = deps.outcome.check(signal=self.signal, action=action, generation=self.generation)
+        except Exception as exc:
+            outcome = OutcomeResult("unknown", f"outcome check failed: {type(exc).__name__}: {exc}")
+        self.write(
+            "outcome", f"out-{self.run_id}", incident_id=self.incident_id, action_id=action_id,
+            result=outcome.result, resolution=outcome.resolution or None, check_method="outcome_check",
+            checked_at=self.now(),
+        )
+        return self.result("executed", f"mediator {action.status}", mediated=True, outcome=outcome.result)
+
+    def _mediate(self, proposal: Proposal) -> tuple[Optional[MediatorResult], str]:
+        """Run the mediator unless halted. The HaltCheck is the first statement, so
+        nothing can run between it and the external call (the durable step wraps this
+        method). Returns (result, "") or (None, why it did not run)."""
+        try:
+            if self.deps.halt.halted():
+                return None, "halted after approval, before the mediator ran"
+        except Exception as exc:
+            return None, f"halt check failed ({type(exc).__name__}: {exc}); failing closed"
+        try:
+            return self.deps.mediator.execute(
+                action_class=proposal.action_class or "", payload=dict(proposal.payload),
+                proposal_id=self.proposal_id, idempotency_key=self.run_id, generation=self.generation or "",
+            ), ""
+        except Exception as exc:
+            return MediatorResult("failed", f"{type(exc).__name__}: {exc}"), ""

@@ -7,6 +7,7 @@ from archi.ops.control import BudgetUsage, RunInfo, build_status, halt_plan, res
 from archi.ops.escalation import (
     DECISION_SCHEMA,
     Decision,
+    Escalation,
     DecisionPayloadError,
     may_execute,
     parse_decision_payload,
@@ -30,25 +31,46 @@ def test_decision_payload_schema():
             parse_decision_payload(bad)
 
 
-@pytest.mark.parametrize("decision, ok", [
-    (Decision("approved", decided_at=at(100), timeout_at=at(600)), True),
-    (Decision("approved", decided_at=at(600), timeout_at=at(600)), True),
-    (Decision("approved", decided_at=at(601), timeout_at=at(600)), False),
-    (Decision("approved", decided_at=None, timeout_at=at(600)), False),
-    (Decision("approved", decided_at=at(100), timeout_at=None), False),
-    (Decision("approved", decided_at=at(900), timeout_at=at(2000)), False),  # after now
-    (Decision("rejected", decided_at=at(100), timeout_at=at(600)), False),
-    (Decision("timed_out", timeout_at=at(600)), False),
-    (Decision("error", error="x", timeout_at=at(600)), False),
-    (Decision("surprise", decided_at=at(1), timeout_at=at(600)), False),
+ESC = Escalation("esc-1", "prop-1", at(10), at(600))
+
+
+def ok(**over):
+    base = dict(status="approved", proposal_id="prop-1", escalation_id="esc-1", decided_by="alice",
+                decided_at=at(100))
+    return Decision(**{**base, **over})
+
+
+@pytest.mark.parametrize("decision, escalation, expect", [
+    (ok(), ESC, True),
+    (ok(decided_at=at(10)), ESC, True),   # at the moment it opened
+    (ok(decided_at=at(600)), ESC, True),  # at the deadline
+    (ok(decided_at=at(601)), ESC, False),
+    (ok(decided_at=at(9)), ESC, False),
+    (ok(decided_at=None), ESC, False),
+    (ok(decided_at=at(900)), ESC, False),  # after now
+    (ok(decided_by=None), ESC, False),
+    (ok(proposal_id="prop-2"), ESC, False),
+    (ok(escalation_id="esc-2"), ESC, False),
+    (ok(escalation_id=None), ESC, False),
+    (ok(), None, False),
+    (ok(status="rejected"), ESC, False),
+    (Decision("timed_out", "prop-1", "esc-1"), ESC, False),
+    (Decision("error", error="x"), ESC, False),
+    (ok(status="surprise"), ESC, False),
+    (ok(decided_at=datetime(2026, 10, 25, 12, 1)), ESC, False),  # naive
 ])
-def test_may_execute(decision, ok):
-    assert bool(may_execute(decision, at(700))) is ok
-    assert may_execute(decision, at(700)).reason
+def test_may_execute(decision, escalation, expect):
+    assert bool(may_execute(decision, escalation, at(700))) is expect
+    assert may_execute(decision, escalation, at(700)).reason
+
+
+def test_only_a_late_approval_is_marked_late():
+    assert may_execute(ok(decided_at=at(601)), ESC, at(700)).late
+    assert not may_execute(ok(decided_by=None), ESC, at(700)).late
 
 
 def automation(name, level="L2", mode="live"):
-    return AutomationConfig(name, level, "L2", "L2", mode)
+    return AutomationConfig(name, "L1", "L2", instance_level=level, mode=mode)
 
 
 def test_status_rows():
@@ -57,9 +79,10 @@ def test_status_rows():
         paused_schedules={"c"},
         budgets={"a": BudgetUsage(1.0, 10.0, 10.0)},
         proposals=[
-            {"automation": "a", "mode": "shadow", "text": DEMOTED_PREFIX + "stale"},
+            {"automation": "a", "mode": "shadow", "mode_reason": DEMOTED_PREFIX + "stale"},
             {"automation": "a", "mode": "shadow"},
             {"automation": "a", "mode": "live"},
+            {"automation": "a", "mode": "placeholder"},
         ],
     )
     a, b, c = rows

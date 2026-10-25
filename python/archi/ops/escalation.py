@@ -62,16 +62,25 @@ def status_from_payload(payload: Any) -> str:
 
 
 @dataclass(frozen=True)
+class Escalation:
+    """The escalation the loop opened for one proposal."""
+
+    escalation_id: str
+    proposal_id: str
+    opened_at: datetime
+    #: The loop sets this from its own clock; it does not trust the Decider's copy.
+    timeout_at: datetime
+
+
+@dataclass(frozen=True)
 class Decision:
-    """What the Decider reports about one escalation."""
+    """What the Decider reports about one escalation once it is decided."""
 
     status: str
+    proposal_id: Optional[str] = None
     escalation_id: Optional[str] = None
     decided_by: Optional[str] = None
     decided_at: Optional[datetime] = None
-    #: The proposal's deadline. The loop sets this from its own clock; it does
-    #: not trust the Decider's copy.
-    timeout_at: Optional[datetime] = None
     note: Optional[str] = None
     error: Optional[str] = None
 
@@ -82,30 +91,49 @@ class Execution:
 
     ok: bool
     reason: str
+    #: True when the only fault is that the approval came after the deadline
+    late: bool = False
 
     def __bool__(self) -> bool:
         return self.ok
 
 
-def may_execute(decision: Decision, now: datetime) -> Execution:
-    """True only for an approval made at or before the deadline.
+def _aware(*moments: Optional[datetime]) -> bool:
+    return all(m is not None and m.tzinfo is not None and m.utcoffset() is not None for m in moments)
 
-    An approval that arrives late, has no decision time, or has no deadline to
-    check against does not execute: a decision we cannot show was in time was
-    not in time. `now` guards against a decision time in the future.
+
+def may_execute(decision: Decision, escalation: Optional[Escalation], now: datetime) -> Execution:
+    """True only for an approval that is bound to this escalation and in time.
+
+    All of these must hold: the decision is `approved`; it names the proposal
+    and the escalation the loop opened (not just any); a person (`decided_by`)
+    made it; it has a decision time at or after the escalation opened, at or
+    before the deadline, and not after `now`. Naive datetimes are refused,
+    not guessed at. A decision we cannot show was valid is not valid.
     """
     if decision.status != APPROVED:
         return Execution(False, f"decision is {decision.status}, not approved")
-    if decision.timeout_at is None:
-        return Execution(False, "no deadline to check the approval against")
+    if escalation is None:
+        return Execution(False, "no escalation was opened for this proposal")
+    if decision.proposal_id != escalation.proposal_id:
+        return Execution(False, f"decision is for proposal {decision.proposal_id!r}, not {escalation.proposal_id!r}")
+    if not decision.escalation_id or decision.escalation_id != escalation.escalation_id:
+        return Execution(False, f"decision is for escalation {decision.escalation_id!r}, not {escalation.escalation_id!r}")
+    if not decision.decided_by:
+        return Execution(False, "approval names no person (decided_by)")
     if decision.decided_at is None:
         return Execution(False, "approval has no decision time")
+    if not _aware(decision.decided_at, escalation.opened_at, escalation.timeout_at, now):
+        return Execution(False, "a time is naive (no timezone); refusing to compare")
+    if decision.decided_at < escalation.opened_at:
+        return Execution(False, f"approved at {decision.decided_at.isoformat()}, before the escalation opened")
     if decision.decided_at > now:
         return Execution(False, f"decision time {decision.decided_at.isoformat()} is after now")
-    if decision.decided_at > decision.timeout_at:
+    if decision.decided_at > escalation.timeout_at:
         return Execution(
             False,
             f"approved at {decision.decided_at.isoformat()}, after the deadline "
-            f"{decision.timeout_at.isoformat()}",
+            f"{escalation.timeout_at.isoformat()}",
+            late=True,
         )
     return Execution(True, "approved within the deadline")

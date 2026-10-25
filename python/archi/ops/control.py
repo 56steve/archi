@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Collection, Iterable, Mapping, Optional, Sequence
 
-from archi.ops.loop import AutomationConfig, DEMOTED_PREFIX, LevelRefused, effective_level
+from archi.ops.levels import LevelError
+from archi.ops.loop import DEMOTED_PREFIX, AutomationConfig, resolved_level
 
 #: Run states that can still reach a mediator. Everything else is final.
 LIVE_RUN_STATES = frozenset({"PENDING", "ENQUEUED", "DELAYED"})
@@ -67,13 +68,13 @@ class AutomationStatus:
 
 
 def shadow_summary(proposals: Iterable[Mapping[str, Any]]) -> dict[str, ShadowSummary]:
-    """Counts per automation from ops_proposal attrs (`automation`, `mode`, `text`)."""
+    """Counts per automation from ops_proposal attrs (`automation`, `mode`, `mode_reason`)."""
     counts: dict[str, list[int]] = {}
     for attrs in proposals:
         row = counts.setdefault(str(attrs.get("automation")), [0, 0, 0])
         if attrs.get("mode") == "shadow":
             row[0] += 1
-            if str(attrs.get("text") or "").startswith(DEMOTED_PREFIX):
+            if str(attrs.get("mode_reason") or "").startswith(DEMOTED_PREFIX):
                 row[2] += 1
         elif attrs.get("mode") == "live":
             row[1] += 1
@@ -92,8 +93,8 @@ def build_status(
     rows = []
     for automation in automations:
         try:
-            level, problem = f"L{effective_level(automation)}", None
-        except LevelRefused as exc:
+            level, problem = resolved_level(automation), None
+        except LevelError as exc:
             level, problem = None, str(exc)
         rows.append(AutomationStatus(
             name=automation.name, level=level, level_problem=problem, mode=automation.mode,
