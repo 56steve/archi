@@ -48,6 +48,33 @@ def test_extraction_rules_shape_and_regexes():
     assert re.search(by_type["cms_jira_key"][0], "see CMSCOMPPR-67026").group(1) == "CMSCOMPPR-67026"
 
 
+def test_jira_key_rules_cover_every_project_the_downloader_fetches():
+    # A project the downloader fetches but the key rule cannot match
+    # yields tickets nothing ever links to: PRCAMPAIGNS keys do not
+    # start with CMS and were missed that way.
+    from archi.downloaders.jira import DEFAULT_PROJECTS
+
+    extraction = dict(
+        (id_type, regex) for id_type, regex, _ in defaults.load_extraction_rules()
+    )["cms_jira_key"]
+    catalog = {
+        entry["id_type"]: entry["regex"]
+        for entry in defaults.load_identifier_patterns()
+    }["cms_jira_key"]
+    assert "PRCAMPAIGNS" in DEFAULT_PROJECTS
+    for project in DEFAULT_PROJECTS:
+        key = f"{project}-93"
+        assert re.search(extraction, f"fixes {key}.").group(1) == key, project
+        assert re.search(catalog, f"fixes {key}.").group(0) == key, project
+    # Still narrow: other dashed upper-case tokens are not ticket keys.
+    for text in (
+        "CMSSW_14_0_1", "UTF-8", "SHA-256", "ISO-8601", "T2_US_MIT",
+        "XPRCAMPAIGNS-93", "PRCAMPAIGNS-", "prcampaigns-93", "RUCIO-123",
+    ):
+        assert re.search(extraction, text) is None, text
+        assert re.search(catalog, text) is None, text
+
+
 def test_dqm_extraction_rules_are_the_wisdqm_extras():
     rules = defaults.load_dqm_extraction_rules()
     by_type = {id_type: regex for id_type, regex, _ in rules}
@@ -69,11 +96,38 @@ def test_identifier_patterns_compile_and_cover_cms_ids():
 def test_linker_config_routes_reference_document_chunk():
     routes = defaults.load_linker_config()["routes"]
     for id_type, by_src in routes.items():
-        assert set(by_src) == {"document_chunk"}, id_type
-        route = by_src["document_chunk"]
-        assert route["edge_type"] == "references"
-        assert route["dst_template"] == "{resolved}"
-        assert 0 < route["confidence"] <= 1
+        # Every identifier is read from chunk text. A JIRA key is also
+        # read from a commit message (okg#3649).
+        expected = {"document_chunk"}
+        if id_type == "cms_jira_key":
+            expected.add("git_commit")
+        assert set(by_src) == expected, id_type
+        for route in by_src.values():
+            assert route["edge_type"] == "references"
+            assert route["dst_template"] == "{resolved}"
+            assert 0 < route["confidence"] <= 1
+
+
+def test_commit_to_ticket_route_has_its_narrowing():
+    # The route makes git_commit references jira_issue edges; okg
+    # rejects an edge whose triple no bridge allows.
+    import yaml
+    from importlib import resources
+
+    bridge = yaml.safe_load(
+        resources.files("archi.schemas").joinpath("bridges/operations.yaml")
+        .read_text(encoding="utf-8")
+    )
+    narrowing = next(
+        cls["attributes"]["git_commit_references_jira_issue"]["annotations"]
+        for cls in bridge["classes"].values()
+        if "git_commit_references_jira_issue" in (cls.get("attributes") or {})
+    )
+    assert narrowing["edge_archetype"] == "references"
+    assert narrowing["src_subtypes"] == "GitCommit"
+    assert narrowing["dst_subtypes"] == "JiraIssue"
+    # A deployment without the git_graph module still composes.
+    assert narrowing["optional_when_subtypes_missing"] == "true"
 
 
 def test_cross_link_rules_file_and_unknown_name():

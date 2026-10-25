@@ -5,6 +5,8 @@ import time
 
 import pytest
 
+import archi.sources.jira as jira_mod
+
 from okg.deployment import EdgeFact, NodeFact
 from okg.deployment import MutableApiProbe
 
@@ -69,7 +71,7 @@ API_ISSUE = {
 }
 
 
-def _write_caches(tmp_path, records=None, with_targets=False):
+def _write_caches(tmp_path, records=None, with_targets=False, **source_kwargs):
     (tmp_path / "data" / "jira").mkdir(parents=True, exist_ok=True)
     if records is not None:
         (tmp_path / "data" / "jira" / "records.json").write_text(
@@ -111,6 +113,7 @@ def _write_caches(tmp_path, records=None, with_targets=False):
         project_keys=PROJECT_KEYS,
         base=str(tmp_path),
         **kwargs,
+        **source_kwargs,
     )
 
 
@@ -487,3 +490,409 @@ def test_api_parent_dict_yields_key_not_repr(tmp_path):
     text = chunks[0].attrs["text"]
     assert "{'id'" not in text
     assert "parent: CMSPROD-9" in text
+
+
+# --- email redaction (parity with okg-deployments cms jira, b25e36f06c) -----
+
+# One address per text field the source reads, each with a distinct local
+# part so a leak names the field it came from. Mixed forms: plain, +tag,
+# quoted local part, HTML-encoded @, double-encoded @, and URL %40.
+EMAIL_ISSUE = {
+    "key": "CMSPROD-300",
+    "summary": "Contact summary.owner+ops@cern.ch about run 381000",
+    "description": 'Ask "descr author"@cern.ch or descrtwo&#64;cern.ch.',
+    "project": "CMSPROD",
+    "status": "Waiting for statusperson@cern.ch",
+    "priority": "Major",
+    "issue_type": "Bug",
+    "assignee": {"displayName": "Ada Lovelace <assigneeaddr@cern.ch>"},
+    "reporter": "reporteraddr@cern.ch",
+    "created": "2026-01-05T10:00:00.000+0000",
+    "updated": "2026-02-01T09:30:00.000+0000",
+    "environment": "prod, owner envaddr&amp;#64;cern.ch",
+    "components": ["transfers componentaddr@cern.ch"],
+    "labels": ["labeladdr@cern.ch"],
+    "fix_versions": ["v1 fixaddr@cern.ch"],
+    "recent_comments": [
+        {
+            "author": {"displayName": "commentauthor@cern.ch"},
+            "created": "2026-01-06T08:00:00.000+0000",
+            "body": " ".join([
+                "Retrying via cmsweb.cern.ch; see",
+                "https://its.cern.ch/jira/secure/ViewProfile?mail=commentbody%40cern.ch",
+                "for the owner",
+            ]),
+        }
+    ],
+}
+EMAIL_LOCAL_PARTS = (
+    "summary.owner",
+    "descr author",
+    "descrtwo",
+    "statusperson",
+    "assigneeaddr",
+    "reporteraddr",
+    "envaddr",
+    "componentaddr",
+    "labeladdr",
+    "fixaddr",
+    "commentauthor",
+    "commentbody",
+)
+
+
+def test_email_addresses_removed_from_every_emitted_field(tmp_path):
+    source = _write_caches(tmp_path, [EMAIL_ISSUE])
+    run, facts = _run_facts(source, mode="scope_complete")
+    emitted = json.dumps(
+        [
+            {
+                "id": getattr(f, "node_id", None),
+                "attrs": f.attrs,
+                "record": f.source_record_id,
+            }
+            for f in facts
+        ],
+        sort_keys=True,
+    ).casefold()
+    leaked = [part for part in EMAIL_LOCAL_PARTS if part in emitted]
+    assert leaked == []
+    assert "@" not in emitted
+    assert "%40" not in emitted
+    assert "&#64;" not in emitted
+
+    # Only the addresses go; the text around them survives, as in cms.
+    (issue,) = _nodes(facts, "jira_issue")
+    assert issue.attrs["summary"] == "Contact  about run 381000"
+    assert issue.attrs["assignee"] == "Ada Lovelace <>"
+    assert issue.attrs["reporter"] == ""
+    chunk_text = "\n".join(
+        c.attrs["text"] for c in _nodes(facts, "document_chunk")
+    )
+    assert "Retrying via cmsweb.cern.ch" in chunk_text
+    # "=" is a local-part character, so the query key goes too.
+    assert "ViewProfile? for the owner" in chunk_text
+    assert "environment: prod, owner" in chunk_text
+    assert run.health.status == "ok"
+
+
+def test_email_redaction_covers_rest_api_shaped_comments(tmp_path):
+    issue = {
+        "key": "CMSPROD-301",
+        "fields": {
+            **API_ISSUE["fields"],
+            "summary": "Mail apiowner@cern.ch",
+            "comment": {
+                "comments": [
+                    {
+                        "author": {"displayName": "Enrico Fermi"},
+                        "body": "cc apicomment@cern.ch please",
+                    }
+                ]
+            },
+        },
+    }
+    source = _write_caches(tmp_path, [issue])
+    _, facts = _run_facts(source)
+    emitted = json.dumps([f.attrs for f in facts], sort_keys=True)
+    assert "apiowner" not in emitted
+    assert "apicomment" not in emitted
+    assert "cc  please" in emitted
+
+
+def test_text_without_an_address_is_emitted_verbatim(tmp_path):
+    # Redaction decodes nothing: an issue with HTML entities and no
+    # address keeps them, so its chunk text and chunk id do not change.
+    issue = {
+        **FLAT_ISSUE,
+        "key": "CMSPROD-302",
+        "summary": "R&amp;D link to AT&amp;T &#64; noon",
+        "description": "Ticket &commat;ops, 100% &amp;amp; done",
+    }
+    source = _write_caches(tmp_path, [issue])
+    _, facts = _run_facts(source)
+    (node,) = _nodes(facts, "jira_issue")
+    assert node.attrs["summary"] == "R&amp;D link to AT&amp;T &#64; noon"
+    (chunk,) = _nodes(facts, "document_chunk")
+    assert "R&amp;D link to AT&amp;T &#64; noon" in chunk.attrs["text"]
+    assert "Ticket &commat;ops, 100% &amp;amp; done" in chunk.attrs["text"]
+
+
+def test_non_ascii_and_padded_addresses_leave_no_fragment(tmp_path):
+    issue = {
+        **FLAT_ISSUE,
+        "key": "CMSPROD-303",
+        "summary": "Ask j\u00fcrgen.k\u00f6nig&#064;cern.ch or fwidthaddr\uff20cern.ch",
+        "assignee": "\u00fcber.m\u00fcller@cern.ch",
+        "reporter": "Grace Hopper",
+        "recent_comments": [],
+    }
+    source = _write_caches(tmp_path, [issue])
+    _, facts = _run_facts(source)
+    emitted = json.dumps(
+        [f.attrs for f in facts], sort_keys=True, ensure_ascii=False
+    )
+    for fragment in ("j\u00fcrgen", "k\u00f6nig", "\u00fcber", "m\u00fc", "fwidthaddr"):
+        assert fragment not in emitted
+    (node,) = _nodes(facts, "jira_issue")
+    assert node.attrs["summary"] == "Ask  or "
+    # An assignee that is only an address yields no person, as in cms.
+    assert [p.attrs["display_name"] for p in _nodes(facts, "person")] == [
+        "Grace Hopper"
+    ]
+
+
+def test_adjacent_addresses_in_table_markup_are_both_removed(tmp_path):
+    issue = {
+        **FLAT_ISSUE,
+        "key": "CMSPROD-304",
+        "description": "||owner||backup||\n|tablebob@cern.ch|tablealice@fnal.gov|",
+        "recent_comments": [],
+    }
+    source = _write_caches(tmp_path, [issue])
+    _, facts = _run_facts(source)
+    emitted = json.dumps([f.attrs for f in facts], sort_keys=True)
+    assert "tablebob" not in emitted
+    assert "tablealice" not in emitted
+    (node,) = _nodes(facts, "jira_issue")
+    assert node.attrs["description"] == "||owner||backup||\n|"
+
+
+def test_git_account_kept_and_next_address_still_removed(tmp_path):
+    # Operator decision (2026-09-28), changing #5's behavior for JIRA too:
+    # the literal git@ account of a git host is kept, so clone
+    # instructions survive; an address right after it is still removed,
+    # and ssh user@host logins still go.
+    issue = {
+        **FLAT_ISSUE,
+        "key": "CMSPROD-305",
+        "summary": "Clone git@gitlab.cern.ch:cms/y.git",
+        "description": "\n".join([
+            "git clone git@github.com:x/y.git by gitnextaddr@cern.ch",
+            "then ssh sshloginaddr@lxplus.cern.ch",
+        ]),
+        "recent_comments": [],
+    }
+    source = _write_caches(tmp_path, [issue])
+    _, facts = _run_facts(source)
+    emitted = json.dumps([f.attrs for f in facts], sort_keys=True)
+    assert "gitnextaddr" not in emitted
+    assert "sshloginaddr" not in emitted
+    (node,) = _nodes(facts, "jira_issue")
+    assert node.attrs["summary"] == "Clone git@gitlab.cern.ch:cms/y.git"
+    assert node.attrs["description"] == (
+        "git clone git@github.com:x/y.git by \nthen ssh "
+    )
+    chunk_text = "\n".join(
+        c.attrs["text"] for c in _nodes(facts, "document_chunk")
+    )
+    assert "git clone git@github.com:x/y.git by \n" in chunk_text
+    assert "Clone git@gitlab.cern.ch:cms/y.git" in chunk_text
+
+
+# --- issue links as edges (okg#3649) ----------------------------------------
+
+def _link(key, link_type, direction):
+    return {"key": key, "type": link_type, "direction": direction}
+
+
+def _linked(facts):
+    return sorted(
+        (e.src, e.dst, e.attrs["link_type"]) for e in _edges(facts, "linked_to")
+    )
+
+
+def test_issue_links_become_one_edge_per_pair_from_the_outward_side(tmp_path):
+    # The downloader caches every link on both issues: outward on one,
+    # inward on the other. Each linked pair becomes one edge, from the
+    # outward side, whichever record is read first.
+    records = [
+        {"key": "CMSPROD-1", "issue_links": [
+            _link("CMSPROD-2", "Child-Issue", "outward"),
+            _link("CMSPROD-3", "Blocks", "inward"),
+        ]},
+        {"key": "CMSPROD-2", "issue_links": [
+            _link("CMSPROD-1", "Child-Issue", "inward"),
+        ]},
+        {"key": "CMSPROD-3", "issue_links": [
+            _link("CMSPROD-1", "Blocks", "outward"),
+            # Same pair, another type: the graph holds one edge per
+            # ordered pair, so both names ride on it.
+            _link("CMSPROD-1", "Relates", "outward"),
+        ]},
+    ]
+    source = _write_caches(tmp_path, records, issue_link_edges=True)
+    _, facts = _run_facts(source)
+    assert _linked(facts) == [
+        ("jira:CMSPROD-1", "jira:CMSPROD-2", "Child-Issue"),
+        ("jira:CMSPROD-3", "jira:CMSPROD-1", "Blocks; Relates"),
+    ]
+    both = next(
+        e for e in _edges(facts, "linked_to") if e.src == "jira:CMSPROD-3"
+    )
+    assert both.attrs["link_kind"] == "blocks"
+    child = next(
+        e for e in _edges(facts, "linked_to") if e.attrs["link_type"] == "Child-Issue"
+    )
+    assert child.source_record_id == {
+        "issue_key": "CMSPROD-1",
+        "linked_issue_key": "CMSPROD-2",
+    }
+    assert child.source_revision["run_id"] == "run-1"
+
+
+def test_links_to_issues_outside_the_cache_are_dropped(tmp_path):
+    records = [
+        {"key": "CMSPROD-1", "issue_links": [
+            _link("CMSPROD-99", "Relates", "outward"),  # not cached
+            _link("CMSPROD-1", "Relates", "outward"),   # self link
+            _link("OTHER-5", "Relates", "outward"),     # not a project key
+            {"key": "CMSPROD-2", "type": "Relates"},    # no direction
+            "relates to CMSPROD-2",                     # legacy text shape
+        ]},
+        {"key": "CMSPROD-2"},
+    ]
+    source = _write_caches(tmp_path, records, issue_link_edges=True)
+    _, facts = _run_facts(source)
+    assert _edges(facts, "linked_to") == []
+    # The legacy keys still reach the chunk text.
+    text = next(
+        c.attrs["text"]
+        for c in _nodes(facts, "document_chunk")
+        if c.source_record_id["issue_key"] == "CMSPROD-1"
+    )
+    assert "issue_links: CMSPROD-1 CMSPROD-2 CMSPROD-99" in text
+
+
+def test_rest_api_issuelinks_shape(tmp_path):
+    records = [
+        {"key": "CMSPROD-10", "fields": {
+            "summary": "parent",
+            "issuelinks": [
+                {"type": {"name": "Duplicate", "inward": "is duplicated by",
+                          "outward": "duplicates"},
+                 "outwardIssue": {"key": "CMSPROD-11"}},
+                {"type": {"name": "Blocks"},
+                 "inwardIssue": {"key": "CMSPROD-12", "fields": {}}},
+            ],
+        }},
+        {"key": "CMSPROD-11"},
+        {"key": "CMSPROD-12"},
+    ]
+    source = _write_caches(tmp_path, records, issue_link_edges=True)
+    _, facts = _run_facts(source)
+    assert _linked(facts) == [
+        ("jira:CMSPROD-10", "jira:CMSPROD-11", "Duplicate"),
+        ("jira:CMSPROD-12", "jira:CMSPROD-10", "Blocks"),
+    ]
+
+
+def test_subtasks_link_parent_to_child_once(tmp_path):
+    # A sub-task names its parent and the parent lists its sub-tasks:
+    # one Sub-task edge per pair, from the parent.
+    records = [
+        {"key": "CMSPROD-20", "subtasks": ["CMSPROD-21", "CMSPROD-22"]},
+        {"key": "CMSPROD-21", "parent_key": "CMSPROD-20"},
+        {"key": "CMSPROD-22"},
+        {"key": "CMSPROD-23", "parent_key": "CMSPROD-77"},  # parent not cached
+    ]
+    source = _write_caches(tmp_path, records, issue_link_edges=True)
+    _, facts = _run_facts(source)
+    assert _linked(facts) == [
+        ("jira:CMSPROD-20", "jira:CMSPROD-21", "Sub-task"),
+        ("jira:CMSPROD-20", "jira:CMSPROD-22", "Sub-task"),
+    ]
+
+
+def test_issue_node_carries_resolution_labels_and_components(tmp_path):
+    records = [
+        dict(FLAT_ISSUE, resolution="Fixed", labels=["Late", "8001"]),
+        API_ISSUE,
+    ]
+    source = _write_caches(tmp_path, records, issue_link_edges=True)
+    _, facts = _run_facts(source)
+    issues = {n.node_id: n for n in _nodes(facts, "jira_issue")}
+    flat = issues["jira:CMSPROD-101"].attrs
+    assert flat["resolution"] == "Fixed"
+    assert flat["labels"] == ["Late", "8001"]
+    assert flat["components"] == ["transfers"]
+    api = issues["jira:CMSPROD-100"].attrs
+    assert (api["resolution"], api["labels"], api["components"]) == ("", [], [])
+
+
+def test_a_subtask_that_is_also_linked_is_one_child_edge(tmp_path):
+    # Sub-task parent and a Relates link on the same ordered pair: one
+    # edge, the more specific kind, both names kept. The reverse
+    # direction is its own pair and its own edge.
+    records = [
+        {"key": "CMSPROD-30", "subtasks": ["CMSPROD-31"], "issue_links": [
+            _link("CMSPROD-31", "Relates", "outward"),
+            _link("CMSPROD-31", "Blocks", "inward"),
+        ]},
+        {"key": "CMSPROD-31", "parent_key": "CMSPROD-30"},
+    ]
+    source = _write_caches(tmp_path, records, issue_link_edges=True)
+    _, facts = _run_facts(source)
+    assert sorted(
+        (e.src, e.dst, e.attrs["link_kind"], e.attrs["link_type"])
+        for e in _edges(facts, "linked_to")
+    ) == [
+        ("jira:CMSPROD-30", "jira:CMSPROD-31", "child", "Relates; Sub-task"),
+        ("jira:CMSPROD-31", "jira:CMSPROD-30", "blocks", "Blocks"),
+    ]
+
+
+def test_issue_link_option_changes_the_probe_token_only_when_on(tmp_path):
+    def token(**kwargs):
+        return _write_caches(
+            tmp_path, [FLAT_ISSUE], **kwargs
+        ).change_probe.build_token()
+
+    assert token() == token(issue_link_edges=False)
+    assert token(issue_link_edges=True) != token()
+
+
+def test_issue_link_edges_are_off_unless_asked_for(tmp_path):
+    # The edge is a new output a strict output_signature must list, so
+    # a deployment that does not set the option emits none.
+    records = [
+        {"key": "CMSPROD-1", "issue_links": [
+            _link("CMSPROD-2", "Blocks", "outward"),
+        ], "subtasks": ["CMSPROD-2"]},
+        {"key": "CMSPROD-2", "parent_key": "CMSPROD-1"},
+    ]
+    source = _write_caches(tmp_path, records)
+    assert source.issue_link_edges is False
+    _, facts = _run_facts(source)
+    assert _edges(facts, "linked_to") == []
+
+
+@pytest.mark.parametrize("raw, kind", [
+    ("Child-Issue", "child"),
+    ("parent", "child"),
+    ("Sub-task", "child"),
+    ("Blocks", "blocks"),
+    ("Cloners", "clones"),
+    ("Duplicate", "duplicates"),
+    ("Duplibcate", "duplicates"),
+    ("Finish-to-Start link (WBSGantt)", "gantt"),
+    ("Hierarchy link (WBSGantt)", "gantt"),
+    ("multi-level hierarchy [GANTT]", "gantt"),
+    ("Relates", "relates"),
+    ("Relation", "relates"),
+    ("Causal", "relates"),
+    ("Dependency", "relates"),
+    ("some type nobody has seen", "relates"),
+])
+def test_link_kind_collapses_the_raw_type_and_keeps_it(tmp_path, raw, kind):
+    assert jira_mod.link_kind(raw) == kind
+    assert kind in jira_mod.LINK_KINDS
+    records = [
+        {"key": "CMSPROD-1", "issue_links": [_link("CMSPROD-2", raw, "outward")]},
+        {"key": "CMSPROD-2"},
+    ]
+    source = _write_caches(tmp_path, records, issue_link_edges=True)
+    _, facts = _run_facts(source)
+    (edge,) = [e for e in _edges(facts, "linked_to")
+               if e.attrs["link_type"] == raw]
+    assert edge.attrs == {"link_kind": kind, "link_type": raw}

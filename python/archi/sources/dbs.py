@@ -8,8 +8,11 @@ helpers come from :mod:`archi.auth.cache` /
 and the hardcoded ``data/cms/dbs-datasets/records.json`` path is a
 parameter (default keeps the cms layout minus the ``cms/`` segment).
 As in the original the source is optional (``required=False``) and
-offline-only; a missing cache raises ``FileNotFoundError`` from
-``run()`` (only ``preflight`` reports it), matching the original.
+offline-only; a missing, unreadable, truncated or
+empty records cache is ``cache_missing`` with ``completed_scope=False`` from
+both ``preflight`` and ``run()`` (empty-cache-fails-loudly; the original
+raised from ``run()`` on a missing cache and reported an empty one as
+``skipped_optional``, which okg accepts as a complete scope to retract).
 
 Registry-entry template — same three prerequisites as
 ``archi/sources/jira.py``'s template; the ``dataset`` subtype comes
@@ -18,7 +21,7 @@ from a substrate module (the cms deployment composed it), not from
 
     dbs_datasets:
       module: archi.sources.dbs
-      class: DBSDatasetSource
+      class: DBSDatasetAdapter
       ownership_id: <instance>.dbs-datasets
       admission_policy:
         producer_id: <instance>.dbs-datasets
@@ -39,7 +42,7 @@ from a substrate module (the cms deployment composed it), not from
           edges:
             - dataset derives_from dataset
       source_class: reference_catalog
-      record_identity_kind: remote_id
+      record_identity_kind: domain_key
       record_identity_fields: [dataset]
       source_revision_kind: content_hash
       deletion_semantics: missing_from_completed_scope
@@ -69,12 +72,21 @@ from okg.deployment import (
 from archi.auth.cache import (
     content_hash,
     content_hash_change_probe,
-    load_json,
 )
 from archi.sources._cache_report import (
+    CacheUnusable,
     cache_preflight_result,
     cache_source_health,
+    read_cache_json,
+    unusable_cache_preflight,
+    unusable_cache_run,
 )
+from archi.sources._run_modes import (
+    COMPLETED_SCOPE_RUN_MODES,
+    RELEASE_RUN_MODES,
+    input_content_checkpoint,
+)
+from archi.sources._sdk_adapter import ReaderAdapter
 
 
 @dataclass(frozen=True)
@@ -126,10 +138,14 @@ class DBSDatasetSource:
         return (self.records_path,)
 
     def preflight(self, mode: str = "live") -> PreflightResult:
+        # Same verdict run() reaches: a missing, unreadable, truncated
+        # or empty cache is cache_missing, never an empty success.
         try:
-            records = self._records()
-        except FileNotFoundError:
-            records = None
+            records, skipped = self._records_with_skips()
+        except CacheUnusable as exc:
+            return unusable_cache_preflight(
+                exc, source_name=self.name, required=False
+            )
         return cache_preflight_result(
             source_name=self.name,
             description="DBS dataset",
@@ -137,10 +153,18 @@ class DBSDatasetSource:
             records=records,
             required=False,
             base=self.base,
+            skipped_count=skipped,
         )
 
     def run(self, run_id: str, *, mode: str = "cursor") -> ConnectorRun:
-        records, skipped = self._records_with_skips()
+        try:
+            records, skipped = self._records_with_skips()
+        except CacheUnusable as exc:
+            # An empty cache is a failed fetch, not an empty catalog: a
+            # complete scope over zero records would retract every
+            # record ingested before (okg honours that order for
+            # skipped_optional health too), so report cache_missing.
+            return unusable_cache_run(exc, mode=mode)
         revision = {
             "run_id": run_id,
             "content_hash": content_hash(self.cache_paths, base=self.base),
@@ -152,10 +176,26 @@ class DBSDatasetSource:
                 yield _node_fact(record, revision)
             yield from _edge_facts(records, revision)
 
+        # In okg's reference-catalog modes (release_new, release_unchanged)
+        # this source deliberately claims NO complete scope, so okg never
+        # deletes records missing from the cache. A cache is a selection
+        # exported by hand or by a downloader; a narrower export would
+        # otherwise retract an unbounded share of the catalog, and okg has
+        # no guard on retraction size yet (mitdbg/okg#3307). okg never skips
+        # a read for this reader (it does not declare
+        # probe_short_circuit_safe), so every run re-reads the cache in
+        # full. The checkpoint only gives the source stored state, which is
+        # what lets okg accept an unchanged rerun as a no-op.
+        release_mode = mode in RELEASE_RUN_MODES
         return ConnectorRun(
             facts=_facts(),
             completed_scope=(
-                mode in {"scope_complete", "reconcile"} and not skipped
+                mode in COMPLETED_SCOPE_RUN_MODES and not release_mode and not skipped
+            ),
+            next_checkpoint=(
+                input_content_checkpoint(self.cache_paths, base=self.base)
+                if release_mode
+                else None
             ),
             run_mode=mode,
             health=cache_source_health(
@@ -171,11 +211,9 @@ class DBSDatasetSource:
         return self._records_with_skips()[0]
 
     def _records_with_skips(self) -> tuple[list[DBSDatasetRecord], int]:
-        payload = load_json(self.records_path, base=self.base)
-        if not isinstance(payload, list):
-            raise ValueError(
-                f"{self.records_path}: expected a JSON list of datasets"
-            )
+        payload = read_cache_json(
+            self.records_path, expect=list, base=self.base
+        )
         records: list[DBSDatasetRecord] = []
         skipped = 0
         for item in payload:
@@ -327,3 +365,21 @@ def _era(processed_dataset: str) -> str:
 def _campaign(processed_dataset: str) -> str:
     match = re.match(r"([A-Za-z]+\d{4}[A-Za-z]*)", processed_dataset)
     return match.group(1) if match else _era(processed_dataset)
+
+
+class DBSDatasetAdapter(ReaderAdapter):
+    """Registry adapter for :class:`DBSDatasetSource`.
+
+    The registry-entry template in this module's docstring names this
+    class. The reader's behavior is unchanged; this class only drives it
+    through the substrate's adapter contract, which a bare reader cannot
+    satisfy (its ``ConnectorRun`` has no ``next_cursor``).
+
+    ``profile`` and ``change_probe_kind`` must be string literals; see
+    ``ReaderAdapter``. ``test_bundle_source_adapters.py`` parses this
+    file and holds them equal to the reader's own values.
+    """
+
+    reader_class = DBSDatasetSource
+    profile = "reference_catalog"
+    change_probe_kind = "content_hash"

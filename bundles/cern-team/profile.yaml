@@ -1,10 +1,10 @@
 # Bundle: cern-team
 #
 # Generic CERN team knowledge instance built from the archi v3
-# connectors (W2, req.w2.sources): TWiki (EOS snapshot), documentation
+# connectors (W2, req.w2.sources): TWiki (EOS dump only), documentation
 # sites, the public CMSSW release catalog, JIRA (cache-backed,
 # optional credential), Indico (optional, see
-# source-defaults/indico.yaml.example), a live TWiki crawl, and GitHub
+# source-defaults/indico.yaml.example), and GitHub
 # and GitLab repositories via the substrate's own git_graph adapter
 # (composed by default — see modules.yaml).
 #
@@ -40,8 +40,9 @@ classification: reusable
 description: |
   Generic CERN team knowledge instance. Composes the document/person/
   extraction substrate modules with the archi HEP connectors: TWiki
-  snapshot reader, documentation-site reader, CMSSW release catalog
-  (live public fetch), cache-backed JIRA, a live TWiki crawl, and
+  EOS-dump reader (the only TWiki path), documentation-site reader,
+  CMSSW release catalog (live public fetch),
+  cache-backed JIRA, and
   GitHub/GitLab repositories the connectors clone themselves. Indico
   stays an optional add-on an instance enables after install.
   Ships the archi playbooks (skills/) and a core-pages-floor
@@ -76,11 +77,14 @@ init_questions:
     default: data
     description: |
       Root for the connector cache files (jira/, docsite/,
-      cmssw-releases/, twiki-snapshot/). The default `data` is
-      deployment-dir-relative: run okg commands from the deployment
-      dir, or export ARCHI_DATA_ROOT=<deployment dir> so the archi
-      cache resolver anchors relative paths there. Pass an absolute
-      path to decouple the data root from the deployment dir.
+      cmssw-releases/, twiki-snapshot/ by default). The default `data` is
+      relative. The archi cache readers anchor a relative root on
+      ARCHI_DATA_ROOT when it is set, but repository checkouts
+      (repo_root, `<data root>/repos/<name>`) resolve against the
+      directory okg runs from and do not follow ARCHI_DATA_ROOT. Pass
+      an absolute path (the quickstart uses
+      `--archi-data-root "$ARCHI_DATA_ROOT/data"`) and keep it outside
+      the deployment dir, which `okg install --force` deletes.
 
   - id: cmssw_map_path
     prompt: path to a reviewed, immutable CMSSW releases.map (frozen mode
@@ -110,36 +114,33 @@ init_questions:
       unverified bytes. Verify the digest independently of whoever handed
       you the file — a digest taken from the same source proves nothing.
 
-  - id: twiki_base_url
-    prompt: TWiki base URL to crawl
+  - id: twiki_eos_root
+    prompt: directory holding your TWiki EOS dump (only used if you enable
+      source-defaults/twiki_eos.yaml.example)
     type: string
     required: false
-    default: https://twiki.cern.ch/twiki
+    default: data/twiki-snapshot
     description: |
-      Base URL of the TWiki to crawl live. The crawl connector walks
-      from the seed topic below over HTTP — no EOS snapshot needed.
+      TWiki reaches this bundle from an EOS dump only; there is no live
+      crawl and no anonymous web fallback. Point this at a directory of
+      raw TWiki markup: one `<Topic>.txt` per topic, each including its
+      `%META:` lines. Subdirectories are subwebs. Topics of the web named
+      by `web_root` (CMS in the shipped file) sit directly in this
+      directory; do not nest them under an extra `CMS/` folder or every
+      page id is double-prefixed.
 
-  - id: twiki_seed_topic
-    prompt: TWiki seed topic (Web/Topic)
-    type: string
-    required: false
-    default: CMSPublic/SWGuideCrab
-    description: |
-      Where the crawl starts, as Web/Topic. NOTE: a CERN SSO cookie is
-      required even for a web whose pages are public — the connector
-      reads topic source via `?raw=all`, which CERN redirects to its
-      login. See source-defaults/twiki_crawl.yaml.
+      A relative path (the default included) is read from the directory
+      you run okg from, not from the deployment dir, and it does NOT
+      follow `archi_data_root`: if you pass a non-default
+      `--archi-data-root`, also pass `--twiki-eos-root` explicitly. Give
+      an absolute path.
 
-  - id: twiki_max_depth
-    prompt: how many links deep to follow from the seed topic
-    type: string
-    required: false
-    default: "0"
-    description: |
-      Depth bound for the crawl. 0 is the seed topic only, which is the
-      safe default: any linked topic that fails to fetch makes the whole
-      run forfeit its completed-scope claim. Raise deliberately once you
-      know the web's link hygiene.
+      Only used if you enabled source-defaults/twiki_eos.yaml.example by
+      renaming it. The source is required: a missing or empty dump
+      blocks the publish rather than shrinking the graph quietly. To
+      scope the read, edit the renamed file: `seed_topics` and
+      `max_depth` for a subtree, `physics_filter` for physics topics
+      only, `page_index_path` to write the list of kept page ids.
 
   - id: github_repo_name
     prompt: short name for the GitHub repository (graph identity)
@@ -190,6 +191,24 @@ init_questions:
       unavailable` and blocks the whole publish. Enable the file and
       answer this, or leave the file as an example.
 
+  - id: code_extractors_dir
+    prompt: directory holding extractors.yaml for the code-text sources
+      (leave the default)
+    type: string
+    required: false
+    default: ${deployment_dir}
+    description: |
+      Only used if you enabled source-defaults/code_text.yaml.example or
+      code_text_gitlab.yaml.example. Those sources store the code itself
+      (function bodies) and read their parser and chunk-size settings from
+      the extractors.yaml this bundle installs in the deployment directory.
+
+      Leave the default. It is the literal text ${deployment_dir}: the
+      installer does not expand it, and okg replaces it with the
+      deployment directory each time it reads the source registry, so the
+      deployment can move. Give an absolute path only to use an
+      extractors.yaml of your own.
+
   - id: chat_site_name
     prompt: name for the chat site
     type: string
@@ -220,3 +239,9 @@ skills: skills/
 # as it already does for skills/. This is what removes the manual
 # schema-copy step and with it the whole --no-publish interlude.
 schemas: schemas/
+# Installed at the deployment root, byte for byte. extractors.yaml holds the
+# parsers and chunk sizes the optional code-text sources read
+# (source-defaults/code_text.yaml.example); without one of those enabled
+# nothing reads it.
+files:
+  - extractors.yaml

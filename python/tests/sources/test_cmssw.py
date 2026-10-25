@@ -113,15 +113,22 @@ def test_family_rows_keep_the_scope_claim_but_malformed_rows_still_break_it(
     facts = list(run.facts)
     assert run.completed_scope is True
     assert "unparseable" not in (run.health.reason or "")
-    # Dropped, not turned into releases: the family nodes this connector emits
-    # are derived from the concrete releases, so a family ROW would duplicate
-    # one. CMSSW_20_1_X has no concrete release here and must not appear.
+    # Integration-series rows are release records of their own, under their
+    # own labels. The derived family node (`CMSSW_14_0`) comes only from
+    # concrete releases, so CMSSW_20_1_X mints no 20.1 family.
     labels = {
         n.attrs["label"]
         for n in facts
         if isinstance(n, NodeFact) and n.subtype == "cmssw_release"
     }
-    assert labels == {"CMSSW_14_0_1", "CMSSW_14_0_2", "CMSSW_14_0_X"}
+    assert labels == {
+        "CMSSW_14_0_1",
+        "CMSSW_14_0_2",
+        "CMSSW_14_0",
+        "CMSSW_20_1_X",
+        "CMSSW_9_4_AN_X",
+        "CMSSW_6_2_X_SLHC",
+    }
 
     _source2, degraded = _run_map(
         tmp_path / "second",
@@ -261,20 +268,22 @@ def test_cache_backed_records_families_and_supersedes(tmp_path):
     facts = list(run.facts)
     nodes = _nodes(facts)
     assert set(nodes) == {
-        "cmssw_release:CMSSW_14_0_X",
+        "cmssw_release_family:CMSSW_14_0",
         "cmssw_release:CMSSW_14_0_1",
         "cmssw_release:CMSSW_14_0_2",
         "cmssw_release:CMSSW_14_0_2_patch1",
     }
     assert all(n.subtype == "cmssw_release" for n in nodes.values())
-    family = nodes["cmssw_release:CMSSW_14_0_X"]
-    assert family.attrs["release_type"] == "release_family"
+    family = nodes["cmssw_release_family:CMSSW_14_0"]
+    assert family.attrs["release_kind"] == "release_family"
+    assert "release_type" not in family.attrs
     assert family.attrs["family"] is True
     rel = nodes["cmssw_release:CMSSW_14_0_2"]
     assert rel.attrs["major"] == 14 and rel.attrs["patch"] == 2
     assert rel.attrs["architecture"] == "el8_amd64_gcc12,el9_amd64_gcc12"
     patch = nodes["cmssw_release:CMSSW_14_0_2_patch1"]
-    assert patch.attrs["release_type"] == "patch"
+    assert patch.attrs["release_type"] == "Production"
+    assert patch.attrs["release_kind"] == "patch"
     assert _supersedes(facts) == {
         ("cmssw_release:CMSSW_14_0_2", "cmssw_release:CMSSW_14_0_1"),
         ("cmssw_release:CMSSW_14_0_2_patch1", "cmssw_release:CMSSW_14_0_2"),
@@ -295,7 +304,7 @@ def test_releases_map_mode_same_emission_shape(tmp_path):
     facts = list(source.run("run-1", mode="scope_complete").facts)
     nodes = _nodes(facts)
     assert set(nodes) == {
-        "cmssw_release:CMSSW_14_0_X",
+        "cmssw_release_family:CMSSW_14_0",
         "cmssw_release:CMSSW_14_0_1",
         "cmssw_release:CMSSW_14_0_2",
     }
@@ -305,6 +314,106 @@ def test_releases_map_mode_same_emission_shape(tmp_path):
     assert _supersedes(facts) == {
         ("cmssw_release:CMSSW_14_0_2", "cmssw_release:CMSSW_14_0_1"),
     }
+
+
+# --- release_type keeps the source value; release_kind is okg's (relkind A) ---
+
+PATCH2_LINES = "\n".join(
+    [
+        # releases.map 2026-09-18 snapshot, lines 4910-4912, verbatim.
+        "architecture=el8_aarch64_gcc12;label=CMSSW_15_0_19_patch2;type=Production;state=Announced;prodarch=0;",
+        "architecture=el8_amd64_gcc12;label=CMSSW_15_0_19_patch2;type=Production;state=Announced;prodarch=1;default_micro_arch=x86-64-v3;",
+        "architecture=el9_amd64_gcc12;label=CMSSW_15_0_19_patch2;type=Production;state=Announced;prodarch=0;default_micro_arch=x86-64-v3;",
+    ]
+)
+
+FIXTURE_15_0 = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "cmssw" / "releases_15_0.map"
+)
+
+
+def test_patch_release_keeps_source_type(tmp_path):
+    """A patch is a Production release of kind patch.
+
+    Before the split the derived kind overwrote the source type
+    (`release_type: patch`), so a count of CMSSW_15_0 Production releases
+    returned 22 instead of 45.
+    """
+    _source, run = _run_map(tmp_path, PATCH2_LINES)
+    node = _nodes(run.facts)["cmssw_release:CMSSW_15_0_19_patch2"]
+    assert node.attrs["release_type"] == "Production"
+    assert node.attrs["release_kind"] == "patch"
+    assert node.attrs["suffix"] == "patch2"
+    assert node.attrs["architecture"] == (
+        "el8_aarch64_gcc12,el8_amd64_gcc12,el9_amd64_gcc12"
+    )
+    assert "Production" in node.attrs["text"] and "patch" in node.attrs["text"]
+
+
+def test_integration_series_row_and_family_both_exist(tmp_path):
+    """`CMSSW_15_0_X` the cms-bot row and the derived 15.0 family are two records.
+
+    They once shared the id `cmssw_release:CMSSW_15_0_X`, so the source row
+    (type Development, state IB, its architectures) was lost.
+    """
+    _source, run = _run_map(
+        tmp_path,
+        PATCH2_LINES
+        + "\narchitecture=el8_amd64_gcc12;label=CMSSW_15_0_X;type=Development;state=IB;prodarch=1;",
+    )
+    nodes = _nodes(run.facts)
+    series = nodes["cmssw_release:CMSSW_15_0_X"]
+    assert series.attrs["release"] == "CMSSW_15_0_X"
+    assert series.attrs["release_type"] == "Development"
+    assert series.attrs["release_kind"] == "integration-series"
+    assert series.attrs["state"] == "IB"
+    assert series.attrs["architecture"] == "el8_amd64_gcc12"
+    assert (series.attrs["major"], series.attrs["minor"]) == (15, 0)
+    assert "family" not in series.attrs
+    family = nodes["cmssw_release_family:CMSSW_15_0"]
+    assert family.attrs["release"] == "CMSSW_15_0"
+    assert family.attrs["release_kind"] == "release_family"
+    assert family.attrs["series"] == "CMSSW_15_0_X"
+    assert "release_type" not in family.attrs
+    # Distinct alias values (`release`), so neither record's alias collides.
+    assert series.attrs["release"] != family.attrs["release"]
+    assert run.completed_scope is True
+
+
+def test_cmssw_15_0_fixture_counts(tmp_path):
+    """Counts on the real 15.0 slice of releases.map (186 rows, 49 labels).
+
+    Source: 45 Production + 4 Development labels. The graph before this change
+    stored release_type Production 22, patch 23, pre-release 3, plus one
+    family node that took the CMSSW_15_0_X row's id.
+    """
+    _source, run = _run_map(tmp_path, FIXTURE_15_0.read_text(encoding="utf-8"))
+    facts = list(run.facts)
+    releases = [
+        n for n in _nodes(facts).values() if n.node_id.startswith("cmssw_release:")
+    ]
+    families = [
+        n
+        for n in _nodes(facts).values()
+        if n.node_id.startswith("cmssw_release_family:")
+    ]
+    by_type = {}
+    by_pair = {}
+    for n in releases:
+        by_type[n.attrs["release_type"]] = by_type.get(n.attrs["release_type"], 0) + 1
+        pair = (n.attrs["release_type"], n.attrs["release_kind"])
+        by_pair[pair] = by_pair.get(pair, 0) + 1
+    assert len(releases) == 49
+    assert by_type == {"Production": 45, "Development": 4}
+    assert by_pair == {
+        ("Production", "release"): 22,
+        ("Production", "patch"): 23,
+        ("Development", "pre-release"): 3,
+        ("Development", "integration-series"): 1,
+    }
+    assert [f.node_id for f in families] == ["cmssw_release_family:CMSSW_15_0"]
+    assert run.completed_scope is True
+    assert run.health.record_count == 49
 
 
 def test_parse_releases_map_limit():
@@ -426,7 +535,7 @@ def test_frozen_map_verified_emission_and_revision(frozen_map):
     run = source.run("frozen", mode="scope_complete")
     facts = list(run.facts)
     assert set(_nodes(facts)) == {
-        "cmssw_release:CMSSW_14_0_X",
+        "cmssw_release_family:CMSSW_14_0",
         "cmssw_release:CMSSW_14_0_1",
         "cmssw_release:CMSSW_14_0_2",
     }
@@ -560,3 +669,148 @@ def test_unpinned_live_map_still_fetches(tmp_path, monkeypatch):
     source = CMSSWReleaseSource(map_cache_path=str(tmp_path / "live.map"), fetch=True)
     assert source.run("live", mode="scope_complete").completed_scope is True
     assert calls == [source.releases_map_url]
+
+
+# --- reference-catalog-complete-scope regressions ---
+# okg runs a reference_catalog source in release_new (its whole-scope mode,
+# chosen automatically); release_unchanged comes only from an explicit mode
+# setting. Both complete the scope. A reader that only knew
+# scope_complete/reconcile never claimed it, so okg admission refused
+# every later zero-output run as partial and blocked publishing.
+
+
+@pytest.mark.parametrize("mode", ["release_new", "release_unchanged"])
+def test_reference_catalog_modes_claim_a_complete_scope(tmp_path, mode):
+    root = tmp_path / "data" / "cmssw-releases"
+    root.mkdir(parents=True)
+    (root / "records.json").write_text(json.dumps(RECORDS))
+    run = CMSSWReleaseSource(base=str(tmp_path)).run("run-1", mode=mode)
+    assert run.completed_scope is True
+    assert run.run_mode == mode
+
+
+@pytest.mark.parametrize("mode", ["release_new", "release_unchanged"])
+def test_reference_catalog_modes_keep_the_guards(tmp_path, mode):
+    root = tmp_path / "data" / "cmssw-releases"
+    root.mkdir(parents=True)
+    (root / "records.json").write_text(json.dumps(RECORDS + ["junk"]))
+    skipped = CMSSWReleaseSource(base=str(tmp_path)).run("run-1", mode=mode)
+    assert skipped.completed_scope is False
+    (root / "records.json").write_text(json.dumps([]))
+    empty = CMSSWReleaseSource(base=str(tmp_path)).run("run-2", mode=mode)
+    assert empty.completed_scope is False
+    (root / "releases.map").write_text(CLEAN_RELEASES_MAP)
+    truncated = CMSSWReleaseSource(
+        map_cache_path="data/cmssw-releases/releases.map",
+        fetch=False,
+        limit=1,
+        base=str(tmp_path),
+    ).run("run-3", mode=mode)
+    assert truncated.completed_scope is False
+
+
+def test_cursor_mode_still_claims_no_scope(tmp_path):
+    root = tmp_path / "data" / "cmssw-releases"
+    root.mkdir(parents=True)
+    (root / "records.json").write_text(json.dumps(RECORDS))
+    run = CMSSWReleaseSource(base=str(tmp_path)).run("run-1", mode="cursor")
+    assert run.completed_scope is False
+
+
+# --- production architecture (`prodarch=1` in releases.map) ---
+
+PRODARCH_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "fixtures"
+    / "cmssw"
+    / "releases_prodarch_excerpt.map"
+)
+
+
+def test_production_architecture_is_parsed_and_searchable(tmp_path):
+    """Six architectures, one marked: the marked one is the production one."""
+    _source, run = _run_map(tmp_path, PRODARCH_FIXTURE.read_text(encoding="utf-8"))
+    node = _nodes(run.facts)["cmssw_release:CMSSW_14_0_0"]
+    assert node.attrs["architecture"] == (
+        "el8_aarch64_gcc12,el8_amd64_gcc12,el8_ppc64le_gcc12,"
+        "el9_aarch64_gcc12,el9_amd64_gcc12,slc7_amd64_gcc12"
+    )
+    assert node.attrs["production_architecture"] == "el8_amd64_gcc12"
+    assert "production architecture: el8_amd64_gcc12" in node.attrs["text"]
+
+
+def test_several_marked_architectures_are_all_kept(tmp_path):
+    _source, run = _run_map(tmp_path, PRODARCH_FIXTURE.read_text(encoding="utf-8"))
+    node = _nodes(run.facts)["cmssw_release:CMSSW_1_3_0"]
+    assert node.attrs["production_architecture"] == "slc3_ia32_gcc323,slc4_ia32_gcc345"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # no prodarch key at all
+        "architecture=el8_amd64_gcc12;label=CMSSW_14_0_3;type=Production;state=Announced;",
+        # key present, nothing marked
+        "architecture=el8_amd64_gcc12;label=CMSSW_14_0_3;type=Production;state=Announced;prodarch=0;",
+    ],
+)
+def test_no_marker_means_no_field(tmp_path, line):
+    _source, run = _run_map(tmp_path, line)
+    node = _nodes(run.facts)["cmssw_release:CMSSW_14_0_3"]
+    assert "production_architecture" not in node.attrs
+    assert "production architecture" not in node.attrs["text"]
+    assert node.attrs["architecture"] == "el8_amd64_gcc12"
+
+
+def test_family_records_carry_no_production_architecture(tmp_path):
+    _source, run = _run_map(tmp_path, PRODARCH_FIXTURE.read_text(encoding="utf-8"))
+    family = _nodes(run.facts)["cmssw_release_family:CMSSW_14_0"]
+    assert "production_architecture" not in family.attrs
+
+
+def test_frozen_map_parses_the_marker_the_same_way(tmp_path):
+    body = PRODARCH_FIXTURE.read_bytes()
+    path = tmp_path / "releases.map"
+    path.write_bytes(body)
+    pin = "sha256:" + hashlib.sha256(body).hexdigest()
+    run = _frozen_source(path, pin).run("frozen", mode="scope_complete")
+    node = _nodes(run.facts)["cmssw_release:CMSSW_14_0_0"]
+    assert node.attrs["production_architecture"] == "el8_amd64_gcc12"
+
+
+def test_ids_and_edges_do_not_depend_on_the_marker(tmp_path):
+    marked = PRODARCH_FIXTURE.read_text(encoding="utf-8")
+    unmarked = marked.replace(";prodarch=1;", ";prodarch=0;")
+    _s, run_a = _run_map(tmp_path / "a", marked)
+    _s, run_b = _run_map(tmp_path / "b", unmarked)
+    facts_a, facts_b = list(run_a.facts), list(run_b.facts)
+    assert set(_nodes(facts_a)) == set(_nodes(facts_b))
+    assert _supersedes(facts_a) == _supersedes(facts_b)
+
+
+def test_cache_records_accept_a_production_architecture(tmp_path):
+    root = tmp_path / "data" / "cmssw-releases"
+    root.mkdir(parents=True)
+    records = [dict(RECORDS[0], production_architecture="el8_amd64_gcc12")]
+    (root / "records.json").write_text(json.dumps(records))
+    run = CMSSWReleaseSource(base=str(tmp_path)).run("r", mode="scope_complete")
+    node = _nodes(run.facts)["cmssw_release:CMSSW_14_0_1"]
+    assert node.attrs["production_architecture"] == "el8_amd64_gcc12"
+
+
+def test_cache_records_sort_the_production_architecture(tmp_path):
+    root = tmp_path / "data" / "cmssw-releases"
+    root.mkdir(parents=True)
+    records = [
+        dict(RECORDS[0], production_architecture=["slc4_ia32_gcc345", "slc3_ia32_gcc323"]),
+        dict(RECORDS[1], production_architecture="el9_amd64_gcc12,el8_amd64_gcc12"),
+    ]
+    (root / "records.json").write_text(json.dumps(records))
+    run = CMSSWReleaseSource(base=str(tmp_path)).run("r", mode="scope_complete")
+    nodes = _nodes(run.facts)
+    assert nodes["cmssw_release:CMSSW_14_0_1"].attrs["production_architecture"] == (
+        "slc3_ia32_gcc323,slc4_ia32_gcc345"
+    )
+    assert nodes["cmssw_release:CMSSW_14_0_2"].attrs["production_architecture"] == (
+        "el8_amd64_gcc12,el9_amd64_gcc12"
+    )

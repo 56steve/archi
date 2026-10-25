@@ -1,0 +1,84 @@
+# OPTIONAL — Code symbols (functions, classes, imports, calls) for the
+# GitHub repository that github_repo.yaml.example clones. Without this a
+# repository gives file PATHS only; with it an agent can also find what is
+# inside the files.
+#
+# Rename to code_structure.yaml to enable, together with:
+#   1. github_repo.yaml (rename github_repo.yaml.example, answer
+#      `github_repo_url` at install time) — this source reads that source's
+#      checkout and does not clone anything itself.
+#   2. The `code_graph` module and the four it needs, appended to this
+#      bundle's modules.yaml: code_graph, agent_sessions, ci, compute_env,
+#      openspec (see docs/cern-team-quickstart.md). Without them the code_symbol / code_import /
+#      code_reference subtypes do not resolve and the catalog fails to load.
+#
+# `repo` and `repo_root` are the SAME values github_repo uses. `repo` must
+# match: symbols attach to the file nodes `file:<repo>:<path>` that
+# github_repo emits. `repo_root` is anchored under ${archi_data_root}
+# exactly as in github_repo.yaml.example (default answer `data`, so the
+# checkout is data/repos/<name> relative to the directory okg runs from).
+# Do not point it anywhere else: a repo_root that does not exist fails
+# admission and blocks the publish for every source.
+#
+# For a GitLab repository use code_structure_gitlab.yaml.example (same shape,
+# reads the gitlab_repo checkout).
+
+code_structure:
+  module: okg.substrate.library.sources.code_graph
+  class: CodeStructureSource
+  ownership_id: ${deployment_name}.code-structure
+  admission_policy:
+    producer_id: ${deployment_name}.code-structure
+    producer_kind: source
+    trust_label: implicit_legacy_trusted
+    admission_mode: fast_track
+    authority_scope:
+      source_family: cern-team
+      source_name: code_structure
+    output_signature:
+      nodes:
+        - {subtype: code_symbol}
+        - {subtype: code_import}
+        - {subtype: code_reference}
+      edges:
+        - {src_subtype: source_file, edge_type: contains, dst_subtype: code_symbol}
+        - {src_subtype: source_file, edge_type: contains, dst_subtype: code_import}
+        - {src_subtype: source_file, edge_type: contains, dst_subtype: code_reference}
+        - {src_subtype: code_symbol, edge_type: member_of, dst_subtype: code_symbol}
+        - {src_subtype: code_reference, edge_type: references, dst_subtype: code_symbol}
+        - {src_subtype: code_symbol, edge_type: calls, dst_subtype: code_symbol}
+    output_scope_summary:
+      summary: functions, classes, imports and calls found in the configured GitHub repository
+      nodes: [code_symbol, code_import, code_reference]
+      edges:
+        - source_file contains code_symbol
+        - source_file contains code_import
+        - source_file contains code_reference
+        - code_symbol member_of code_symbol
+        - code_reference references code_symbol
+        - code_symbol calls code_symbol
+  source_class: discovery_crawl
+  record_identity_kind: scoped_locator
+  record_identity_fields: [repo, path]
+  source_revision_kind: content_hash
+  deletion_semantics: missing_from_completed_scope
+  publication_mode: published_generation
+  required_for_baseline: false
+  params:
+    repo: '${github_repo_name}'
+    # SINGLE-quoted, as in github_repo.yaml.example (answers are substituted
+    # as text, then parsed as YAML).
+    repo_root: '${archi_data_root}/repos/${github_repo_name}'
+    include_exts: [".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"]
+    exclude_globs:
+      - "**/__pycache__/**"
+      - "**/.venv/**"
+      - "**/node_modules/**"
+      - "**/.git/**"
+      - "**/*.pyc"
+    max_files: 5000
+    max_bytes_per_file: 1000000
+  sync:
+    triggers: [manual, reconcile]
+    default_event_mode: scope_complete
+    reconcile_mode: scope_complete

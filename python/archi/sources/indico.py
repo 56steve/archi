@@ -88,10 +88,14 @@ from okg.deployment import (
 from archi.auth.cache import (
     content_hash,
     content_hash_change_probe,
-    load_json,
-    resolve_repo_path,
 )
-from archi.sources._cache_report import skipped_items_status
+from archi.sources._cache_report import (
+    CacheUnusable,
+    read_cache_json,
+    skipped_items_status,
+    unusable_cache_preflight,
+    unusable_cache_run,
+)
 from archi.sources._sdk_adapter import ReaderAdapter
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -183,31 +187,38 @@ class IndicoSource:
         return (self.records_path,)
 
     def preflight(self, mode: str = "live") -> PreflightResult:
-        path = resolve_repo_path(self.records_path, base=self.base)
-        if not path.is_file():
-            return PreflightResult(
-                source_name=self.name,
-                status="cache_missing",
-                mode="cache",
-                required=True,
-                cache_path=str(path),
-                reason="Indico cache file is missing",
-                checked_at=_checked_at(),
+        # Same verdict run() reaches for the same cache.
+        try:
+            records, skipped = self._records_with_skips()
+        except CacheUnusable as exc:
+            return unusable_cache_preflight(
+                exc, source_name=self.name, required=True
             )
-        records = self._records()
+        status, reason = skipped_items_status(
+            status="ok",
+            reason="local Indico cache present",
+            record_count=len(records),
+            skipped_count=skipped,
+        )
         return PreflightResult(
             source_name=self.name,
-            status="ok",
+            status=status,
             mode="cache",
             required=True,
             record_count=len(records),
             content_hash=content_hash(self.cache_paths, base=self.base),
-            reason="local Indico cache present",
+            reason=reason,
             checked_at=_checked_at(),
         )
 
     def run(self, run_id: str, *, mode: str = "cursor") -> ConnectorRun:
-        records, skipped = self._records_with_skips()
+        try:
+            records, skipped = self._records_with_skips()
+        except CacheUnusable as exc:
+            # A missing, truncated or empty cache is a failed fetch,
+            # never an empty catalog: a complete scope over zero
+            # records would retract every record ingested before.
+            return unusable_cache_run(exc, mode=mode)
         revision = {
             "run_id": run_id,
             "content_hash": content_hash(self.cache_paths, base=self.base),
@@ -246,11 +257,9 @@ class IndicoSource:
         return self._records_with_skips()[0]
 
     def _records_with_skips(self) -> tuple[list[IndicoEventRecord], int]:
-        payload = load_json(self.records_path, base=self.base)
-        if not isinstance(payload, list):
-            raise ValueError(
-                f"{self.records_path}: expected a JSON list of events"
-            )
+        payload = read_cache_json(
+            self.records_path, expect=list, base=self.base
+        )
         records: list[IndicoEventRecord] = []
         seen_event_ids: set[str] = set()
         skipped = 0
@@ -470,6 +479,7 @@ def _pdf_document_facts(
                     "text": chunk_text,
                     "char_offset": offset,
                     "char_length": len(chunk_text),
+                    "char_end": offset + len(chunk_text),
                     "chunker_name": chunker_name,
                     "heading_path": record.title,
                 },
@@ -495,15 +505,25 @@ def _pdf_document_facts(
 
 
 def _chunks(text: str) -> Iterator[tuple[int, int, str]]:
+    """Yield ``(index, start, chunk)`` over overlapping windows of ``text``.
+
+    ``start`` is where the stored chunk begins in ``text``: the window's
+    offset plus the leading whitespace ``strip`` removed. So
+    ``text[start:start + len(chunk)]`` is the chunk (``_pg_text`` only
+    turns NUL into a space, which keeps the length), and a reader can
+    cut the overlap two neighbouring chunks repeat.
+    """
     if not text:
         return
     step = max(1, _CHUNK_SIZE - _CHUNK_OVERLAP)
     idx = 0
     offset = 0
     while offset < len(text):
-        chunk = _pg_text(text[offset:offset + _CHUNK_SIZE].strip())
+        window = text[offset:offset + _CHUNK_SIZE]
+        chunk = _pg_text(window.strip())
         if chunk:
-            yield idx, offset, chunk
+            start = offset + len(window) - len(window.lstrip())
+            yield idx, start, chunk
             idx += 1
         if offset + _CHUNK_SIZE >= len(text):
             break

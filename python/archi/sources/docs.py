@@ -41,6 +41,16 @@ Changes from the original:
   previously mis-ingested binary is then correctly retracted).
 - ``DocumentationSource.run`` reports ``cache_missing`` health when the
   records cache is absent instead of raising from ``load_json``.
+- 2026-09 (empty-cache-fails-loudly): ``DocumentationSource`` also
+  reports ``cache_missing`` (no facts, no complete scope) for a records
+  cache that is unreadable, zero bytes, truncated JSON or an empty
+  list, and ``endpoint_failed`` for a non-list payload; items that are
+  not objects or have no ``url`` are skipped per item but stop the run
+  claiming a complete scope (duplicate URLs are deduplication, not
+  skips). ``preflight()`` reaches the same verdict. An
+  ``SSOCookieDocsSource`` crawl that yields zero pages is
+  ``endpoint_failed`` with no complete scope instead of an ``ok``
+  empty scope that would retract every page.
 - The reference-target caches (sites / releases / jira / services) are
   optional (default ``None`` -> no reference edges of that kind). As in
   the original, a *configured* sites/releases/services path whose file
@@ -285,6 +295,13 @@ from okg.deployment import (
     ConnectorRun,
 )
 
+from archi.sources._cache_report import (
+    CacheUnusable,
+    read_cache_json,
+    skipped_items_status,
+    unusable_cache_preflight,
+    unusable_cache_run,
+)
 from archi.sources._sdk_adapter import ReaderAdapter
 from archi.auth.cache import (
     cache_or_forced_live_change_probe,
@@ -306,6 +323,25 @@ _CMSSW_RE = re.compile(r"\bCMSSW_\d+_\d+_\d+(?:_[A-Za-z0-9_]+)?\b")
 # Generalized from the original's hardcoded CMS project-key alternation;
 # reference edges stay bounded by the known-key intersection below.
 _ISSUE_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9_]*-\d+\b")
+# Dataset paths as DBS names them: /PrimaryDataset/ProcessingVersion/TIER.
+# The tier alternation is the whole defence against false positives.
+# Prose is full of slashes -- file paths, URLs, "signal/background",
+# fractions -- and a three-segment pattern with a free-form third
+# segment turns every one of them into a candidate. The known-target
+# intersection below would discard them, but only after the scan has
+# built a large candidate set on every chunk of every document.
+_DATASET_RE = re.compile(
+    r"(?<![\w/])"
+    r"/[A-Za-z0-9][A-Za-z0-9._-]*"          # primary dataset
+    r"/[A-Za-z0-9][A-Za-z0-9._-]*"          # processed / campaign
+    r"/(?:AOD|AODSIM|MINIAOD|MINIAODSIM|NANOAOD|NANOAODSIM|RAW|RECO|"
+    r"GEN|GEN-SIM|GEN-SIM-RECO|GEN-SIM-DIGI-RAW|USER|ALCARECO|DQMIO)"
+    r"(?![\w/])"
+)
+# Conditions global tags, e.g. 106X_dataRun2_v32 or 124X_mcRun3_2022_v4.
+# Anchored on the <cycle>X_ prefix, which is what makes a tag a tag
+# rather than an arbitrary underscore-joined token.
+_GLOBAL_TAG_RE = re.compile(r"\b\d{2,3}X_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*\b")
 _HOST_RE = re.compile(
     r"(?<![\w.@-])"
     r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
@@ -357,6 +393,8 @@ class DocumentationSource:
         releases_map_path: str | None = None,
         jira_records_path: str | None = None,
         services_path: str | None = None,
+        datasets_path: str | None = None,
+        global_tags_path: str | None = None,
         repo_base_url: str = DEFAULT_REPO_BASE_URL,
         chunker_name: str = DEFAULT_CHUNKER_NAME,
         base: str | None = None,
@@ -369,6 +407,8 @@ class DocumentationSource:
         self.releases_map_path = releases_map_path
         self.jira_records_path = jira_records_path
         self.services_path = services_path
+        self.datasets_path = datasets_path
+        self.global_tags_path = global_tags_path
         self.repo_base_url = repo_base_url.rstrip("/")
         self.chunker_name = chunker_name
         self.base = base
@@ -384,48 +424,38 @@ class DocumentationSource:
         return (self.records_path,)
 
     def preflight(self, mode: str = "live") -> PreflightResult:
-        path = resolve_repo_path(self.records_path, base=self.base)
-        if not path.is_file():
-            return PreflightResult(
-                source_name=self.name,
-                status="cache_missing",
-                mode="cache",
-                required=self.required,
-                cache_path=str(path),
-                reason=f"{self.name} records cache file is missing",
-                checked_at=_checked_at(),
+        # Same verdict run() reaches for the same cache.
+        try:
+            records, skipped = self._records_with_skips()
+        except CacheUnusable as exc:
+            return unusable_cache_preflight(
+                exc, source_name=self.name, required=self.required
             )
-        records = self._records()
+        status, reason = skipped_items_status(
+            status="ok",
+            reason=f"local {self.name} documentation cache present",
+            record_count=len(records),
+            skipped_count=skipped,
+        )
         return PreflightResult(
             source_name=self.name,
-            status="ok",
+            status=status,
             mode="cache",
             required=self.required,
             record_count=len(records),
             content_hash=content_hash(self.cache_paths, base=self.base),
-            reason=f"local {self.name} documentation cache present",
+            reason=reason,
             checked_at=_checked_at(),
         )
 
     def run(self, run_id: str, *, mode: str = "cursor") -> ConnectorRun:
-        path = resolve_repo_path(self.records_path, base=self.base)
-        if not path.is_file():
-            return ConnectorRun(
-                facts=(),
-                completed_scope=False,
-                run_mode=mode,
-                health=ConnectorHealth(
-                    status="cache_missing",
-                    mode="cache",
-                    cache_path=str(path),
-                    reason=(
-                        f"{self.name} records cache is absent; "
-                        "no facts emitted"
-                    ),
-                    checked_at=_checked_at(),
-                ),
-            )
-        records = self._records()
+        try:
+            records, skipped = self._records_with_skips()
+        except CacheUnusable as exc:
+            # Missing, unreadable, truncated or empty: a failed crawl,
+            # never an empty site. A complete scope over zero pages
+            # would retract every page ingested before.
+            return unusable_cache_run(exc, mode=mode)
         revision = {
             "run_id": run_id,
             "content_hash": content_hash(self.cache_paths, base=self.base),
@@ -442,16 +472,24 @@ class DocumentationSource:
                 chunker_name=self.chunker_name,
             )
 
+        status, reason = skipped_items_status(
+            status="ok",
+            reason=f"local {self.name} documentation cache used",
+            record_count=len(records),
+            skipped_count=skipped,
+        )
         return ConnectorRun(
             facts=_facts(),
-            completed_scope=(mode in {"scope_complete", "reconcile"}),
+            completed_scope=(
+                mode in {"scope_complete", "reconcile"} and not skipped
+            ),
             run_mode=mode,
             health=ConnectorHealth(
-                status="ok",
+                status=status,
                 mode="cache",
                 record_count=len(records),
                 content_hash=revision["content_hash"],
-                reason=f"local {self.name} documentation cache used",
+                reason=reason,
             ),
         )
 
@@ -462,15 +500,15 @@ class DocumentationSource:
             releases_map_path=self.releases_map_path,
             jira_records_path=self.jira_records_path,
             services_path=self.services_path,
+            datasets_path=self.datasets_path,
+            global_tags_path=self.global_tags_path,
             base=self.base,
         )
 
-    def _records(self) -> list[DocumentationRecord]:
-        payload = load_json(self.records_path, base=self.base)
-        if not isinstance(payload, list):
-            raise ValueError(
-                f"{self.records_path}: expected a JSON list of docs"
-            )
+    def _records_with_skips(self) -> tuple[list[DocumentationRecord], int]:
+        payload = read_cache_json(
+            self.records_path, expect=list, base=self.base
+        )
         return _records_from_payload(payload)
 
 
@@ -511,6 +549,8 @@ class SSOCookieDocsSource(DocumentationSource):
         releases_map_path: str | None = None,
         jira_records_path: str | None = None,
         services_path: str | None = None,
+        datasets_path: str | None = None,
+        global_tags_path: str | None = None,
         repo_base_url: str = DEFAULT_REPO_BASE_URL,
         chunker_name: str = DEFAULT_CHUNKER_NAME,
         base: str | None = None,
@@ -527,6 +567,8 @@ class SSOCookieDocsSource(DocumentationSource):
         self.releases_map_path = releases_map_path
         self.jira_records_path = jira_records_path
         self.services_path = services_path
+        self.datasets_path = datasets_path
+        self.global_tags_path = global_tags_path
         self.repo_base_url = repo_base_url.rstrip("/")
         self.chunker_name = chunker_name
         self.base = base
@@ -635,6 +677,32 @@ class SSOCookieDocsSource(DocumentationSource):
             skip_note = (
                 f"; skipped {len(crawl.skipped_non_html)} non-HTML "
                 "sitemap entries (excluded from scope by design)"
+            )
+        if not records and not crawl.failed_urls:
+            # A sitemap crawl that yields no page (an empty sitemap, an
+            # error page served as the sitemap, every entry non-HTML or
+            # blank) is a failed crawl, never an empty site: a complete
+            # scope over zero pages would retract every page ingested
+            # before.
+            return ConnectorRun(
+                facts=(),
+                completed_scope=False,
+                run_mode=mode,
+                health=ConnectorHealth(
+                    status="endpoint_failed",
+                    mode="live",
+                    credential_refs=(self.cookie_file_env,),
+                    record_count=0,
+                    content_hash=record_hash,
+                    endpoint=self.sitemap_url,
+                    reason=(
+                        f"sitemap {self.sitemap_url} yielded no "
+                        f"documentation pages ({crawl.total_urls} URLs "
+                        f"crawled{truncation_note}{skip_note}); no facts "
+                        "emitted and no complete scope claimed"
+                    ),
+                    checked_at=_checked_at(),
+                ),
             )
         if crawl.failed_urls:
             # A partially failed crawl must never claim a complete scope
@@ -834,14 +902,23 @@ def _checked_at() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _records_from_payload(payload: list[Any]) -> list[DocumentationRecord]:
+def _records_from_payload(
+    payload: list[Any],
+) -> tuple[list[DocumentationRecord], int]:
+    """(records, skipped item count). A repeated URL is deduplication,
+    not a skip; an item that is not an object or has no URL is."""
     records: list[DocumentationRecord] = []
     seen_urls: set[str] = set()
+    skipped = 0
     for item in payload:
         if not isinstance(item, dict):
+            skipped += 1
             continue
         url = _pg_text(str(item.get("url") or ""))
-        if not url or url in seen_urls:
+        if not url:
+            skipped += 1
+            continue
+        if url in seen_urls:
             continue
         seen_urls.add(url)
         records.append(
@@ -858,7 +935,7 @@ def _records_from_payload(payload: list[Any]) -> list[DocumentationRecord]:
                 ),
             )
         )
-    return records
+    return records, skipped
 
 
 def _facts_for_records(
@@ -902,6 +979,7 @@ def _facts_for_records(
                     "text": chunk_text,
                     "char_offset": offset,
                     "char_length": len(chunk_text),
+                    "char_end": offset + len(chunk_text),
                     "chunker_name": chunker_name,
                     "heading_path": record.title,
                 },
@@ -1006,6 +1084,22 @@ def _reference_edges(
             revision,
             match_type="jira_issue",
         )
+    for dataset in sorted(set(_DATASET_RE.findall(text)) & targets["dataset"]):
+        yield _reference_edge(
+            chunk_id,
+            f"dataset:{dataset}",
+            source_record_id,
+            revision,
+            match_type="dbs_dataset",
+        )
+    for tag in sorted(set(_GLOBAL_TAG_RE.findall(text)) & targets["global_tag"]):
+        yield _reference_edge(
+            chunk_id,
+            f"global_tag:{tag}",
+            source_record_id,
+            revision,
+            match_type="conditions_global_tag",
+        )
     service_lookup = targets["service"]
     matched_services: set[str] = set()
     for host in _HOST_RE.findall(text):
@@ -1052,6 +1146,8 @@ def _reference_targets(
     releases_map_path: str | None = None,
     jira_records_path: str | None = None,
     services_path: str | None = None,
+    datasets_path: str | None = None,
+    global_tags_path: str | None = None,
     base: str | None = None,
 ) -> dict[str, Any]:
     """Known reference targets.
@@ -1070,6 +1166,8 @@ def _reference_targets(
         ),
         "jira": _known_jira(jira_records_path, base=base),
         "service": _known_services(services_path, base=base),
+        "dataset": _known_datasets(datasets_path, base=base),
+        "global_tag": _known_global_tags(global_tags_path, base=base),
     }
 
 
@@ -1099,6 +1197,48 @@ def _known_sites(path: str | None, *, base: str | None = None) -> set[str]:
     payload = _configured_json(path, base=base)
     if isinstance(payload, dict):
         return {str(k) for k in payload}
+    return set()
+
+
+def _known_datasets(path: str | None, *, base: str | None = None) -> set[str]:
+    """Dataset names the graph has, from a DBS records cache.
+
+    Accepts the two shapes a cache is written in: a list of records
+    carrying ``dataset``/``name``, or a mapping keyed by dataset name.
+    Unconfigured means no dataset edges, which is the state of any
+    deployment that does not install DBS.
+    """
+    payload = _configured_json(path, base=base)
+    if isinstance(payload, dict):
+        return {str(key) for key in payload}
+    if isinstance(payload, list):
+        names: set[str] = set()
+        for item in payload:
+            if isinstance(item, dict):
+                name = item.get("dataset") or item.get("name")
+                if name:
+                    names.add(str(name))
+            elif isinstance(item, str):
+                names.add(item)
+        return names
+    return set()
+
+
+def _known_global_tags(path: str | None, *, base: str | None = None) -> set[str]:
+    """Conditions global tags the graph has, from a CondDB cache."""
+    payload = _configured_json(path, base=base)
+    if isinstance(payload, dict):
+        return {str(key) for key in payload}
+    if isinstance(payload, list):
+        tags: set[str] = set()
+        for item in payload:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("global_tag") or item.get("tag_name")
+                if name:
+                    tags.add(str(name))
+            elif isinstance(item, str):
+                tags.add(item)
+        return tags
     return set()
 
 
@@ -1196,15 +1336,25 @@ def _endpoint_host(value: str) -> str:
 
 
 def _chunks(text: str) -> Iterator[tuple[int, int, str]]:
+    """Yield ``(index, start, chunk)`` over overlapping windows of ``text``.
+
+    ``start`` is where the stored chunk begins in ``text``: the window's
+    offset plus the leading whitespace ``strip`` removed. So
+    ``text[start:start + len(chunk)]`` is the chunk (``_pg_text`` only
+    turns NUL into a space, which keeps the length), and a reader can
+    cut the overlap two neighbouring chunks repeat.
+    """
     if not text:
         return
     step = max(1, _CHUNK_SIZE - _CHUNK_OVERLAP)
     idx = 0
     offset = 0
     while offset < len(text):
-        chunk = _pg_text(text[offset:offset + _CHUNK_SIZE].strip())
+        window = text[offset:offset + _CHUNK_SIZE]
+        chunk = _pg_text(window.strip())
         if chunk:
-            yield idx, offset, chunk
+            start = offset + len(window) - len(window.lstrip())
+            yield idx, start, chunk
             idx += 1
         if offset + _CHUNK_SIZE >= len(text):
             break

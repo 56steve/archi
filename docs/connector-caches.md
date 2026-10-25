@@ -9,8 +9,9 @@ at.
 
 It exists because a live bring-up of the comp-ops instance found that
 eight connectors had no refresh tooling anywhere: the runbook assumed
-downloader scripts that were never written, and only `download_jira.py`
-and `download_static_docs.py` exist in any repo. Whoever writes the
+downloader scripts that were never written, and only the JIRA and static
+docs downloaders exist (now `archi.downloaders.jira` and
+`archi.downloaders.static_docs`, moved from okg-deployments). Whoever writes the
 missing ones — us or an operations team who already fetch this data —
 needs to know exactly what to produce. That is this page.
 
@@ -110,12 +111,17 @@ upstream or normalized names: `RequestName` / `request_name` /
 
 | connector | cache | refreshed by |
 |---|---|---|
-| `jira` | `data/jira/records.json` (+ `meta.json`) | `download_jira.py`. Needs the `jira` Python package installed in the operator venv — absent, the token alone does not help. The parsed record count is cross-checked against `meta.json`'s `record_count`; a mismatch withholds the scope claim. |
-| `docsite`, `gitlab_docs` | `data/docsite/records.json`, `data/gitlab-docs/records.json` | `download_static_docs.py` |
+| `jira` | `data/jira/records.json` (+ `meta.json`) | `python -m archi.downloaders.jira`. Needs the `jira` Python package in the operator venv (`pip install jira`); without it the downloader stops with a message naming the package. The token (`CERN_JIRA_TOKEN`) is optional: unset, the download is anonymous and sees only public projects such as `ADAPTYST`; a project that is not public stops the run with a plain message. The parsed record count is cross-checked against `meta.json`'s `record_count`; a mismatch withholds the scope claim. |
+| `docsite`, `gitlab_docs` | `data/docsite/records.json`, `data/gitlab-docs/records.json` | `python -m archi.downloaders.static_docs` (targets in the packaged `source-download-manifest.yaml`) |
 | `cmssw_releases` | `data/cmssw-releases/releases.map` | the connector itself, from the public cms-bot map — no auth, no downloader |
-| `cmsweb_docs`, `hypernews` | crawled live through an SSO cookie jar | `sso-login.py`, which is **interactive and needs a TOTP code** — inherently an operator step |
+| `cmssst_site_status` | `data/cmssst-site-status/records.json`: a JSON **list**, one object per CMS site, keys `site`, `time` (snapshot epoch), `alert`, `msg`, `ggus` (`[ticket id, opened epoch]` pairs) and `metrics` (metric name → time range → list of status-letter strings; the reader reads each metric's `today`). | `python -m archi.downloaders.cmssst`, from the public CMS SST site status data (`siteStatus/data/summary.js` and `<SITE>.json`) — no auth. All or nothing: one failed site fetch writes no cache. |
+| `cmsweb_docs`, `hypernews` | crawled live through an SSO cookie jar | `python -m archi.downloaders.sso_login`, which is **interactive and needs a TOTP code** — inherently an operator step |
 | `twiki_eos` | an EOS snapshot path | whatever populates that EOS area |
 | `monit_*` | none — queried live | a MONIT/Grafana token |
+
+Upgrade note for `cmssw_releases`: release records now carry `production_architecture`. An instance installed earlier keeps its own copy of `schemas/operations.yaml`; copy the new file over it (or reinstall) so the field is declared and searchable. After copying, commit the deployment config, then run `okg catalog ownership claim --deployment .` and `okg catalog load --apply` from the deployment directory before the next ingest: without the load, ingest refuses with `catalog_applied_version_absent`. Then re-ingest `cmssw_releases` and publish; about 2,365 release records update.
+
+Upgrade note for `twiki_eos`: TWiki pages whose topic name holds a CMS analysis id (HIG29991, B2G28992Review) now carry `analysis_id` (HIG-29-991) and the page text gains "HIG-29-991 CMS-HIG-29-991", so a search for the hyphenated id finds them. An earlier install keeps its own copy of `schemas/sources.yaml`; copy the new file over it (or reinstall), commit, run `okg catalog ownership claim --deployment .` and `okg catalog load --apply`, then re-ingest `twiki_eos` and publish. On the CMS dump, 4,282 of 43,431 page records change (new attribute and text); no chunk changes, so no chunk is re-embedded.
 
 ## Reference caches are different
 
@@ -130,3 +136,9 @@ For releases specifically there are two accepted shapes: a
 cms-bot map that `cmssw_releases` already fetches
 (`releases_map_path: data/cmssw-releases/releases.map`). Use the map on
 a live instance — nothing produces a releases `records.json`.
+
+## Shipping caches without credentials
+
+`python -m archi.snapshot` packs existing caches into checksummed, redacted
+per-group archives with a lock file, so an install can fetch data without
+CERN access. See [cache snapshots](cache-snapshot.md).

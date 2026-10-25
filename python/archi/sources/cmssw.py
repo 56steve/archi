@@ -5,8 +5,8 @@ Merge of two lineages (req.w2.sources-catalogs):
 - okg-deployments ``cms/cms_sources/cmssw.py`` (324 LOC,
   ``CMSSWReleaseSource``) at ``main@f33a9c4`` — canonical. Reads a JSON
   records cache and emits ``cmssw_release`` nodes (individual releases
-  + ``CMSSW_X_Y_X`` family nodes) plus deterministic ``supersedes``
-  edges between known predecessor releases.
+  + one release-family node per ``major_minor`` series) plus
+  deterministic ``supersedes`` edges between known predecessor releases.
 - The archi W1 seam-proof module this file previously held — the
   public cms-bot ``releases.map`` fetch (no auth). Kept as an *option*:
   pass ``releases_map_url``/``map_cache_path`` (and ``fetch=True``) to
@@ -92,6 +92,7 @@ from archi.auth.cache import (
     resolve_repo_path,
 )
 from archi.sources._cache_report import skipped_items_status
+from archi.sources._run_modes import COMPLETED_SCOPE_RUN_MODES
 from archi.sources._sdk_adapter import ReaderAdapter
 
 RELEASES_MAP_URL = (
@@ -125,10 +126,34 @@ _VERSION_RE = re.compile(
 _OTHER_PRODUCTS = ("ECALTBH4_",)
 # Integration-build FAMILY rows: two version numbers, then `X`, with optional
 # word segments before it (`CMSSW_9_4_AN_X`) or after (`CMSSW_6_2_X_SLHC`).
-# A family names a release series, not a release.
+# A family names a release series, not a release. cms-bot lists these rows
+# with `type=Development` and `state=IB`; each one is kept as a release
+# record of its own (`release_kind: integration-series`), under its own label.
 _FAMILY_RE = re.compile(
     r"^CMSSW_\d+_\d+_(?:[A-Za-z0-9]+_)*X(?:_[A-Za-z0-9]+)*$"
 )
+# Major and minor of an integration-series label (`CMSSW_9_4_AN_X` -> 9, 4).
+_SERIES_RE = re.compile(r"^CMSSW_(\d+)_(\d+)_")
+
+# Release-family nodes are DERIVED: one per major/minor series that has at
+# least one concrete release. They live in their own id namespace,
+# `cmssw_release_family:CMSSW_<major>_<minor>`, so they can never take the id
+# `cmssw_release:<label>` that belongs to a source row. They once used
+# `cmssw_release:CMSSW_<major>_<minor>_X`, which is also the label of the
+# cms-bot integration-series row for that series, so one of the two records
+# was lost. Every `cmssw_release:<label>` id now names exactly the source row
+# with that label.
+FAMILY_ID_PREFIX = "cmssw_release_family"
+
+
+def family_key(major: int | str, minor: int | str) -> str:
+    """The family's own name and alias value: `CMSSW_15_0`."""
+    return f"CMSSW_{int(major)}_{int(minor)}"
+
+
+def family_node_id(major: int | str, minor: int | str) -> str:
+    """`cmssw_release_family:CMSSW_15_0` for the 15.0 series."""
+    return f"{FAMILY_ID_PREFIX}:{family_key(major, minor)}"
 
 
 @dataclass(frozen=True)
@@ -139,6 +164,8 @@ class CMSSWReleaseRecord:
     architecture: tuple[str, ...]
     release_notes: str = ""
     release_date: str = ""
+    # Architectures the map marks `prodarch=1`; empty when none is marked.
+    production_architecture: tuple[str, ...] = ()
 
     @property
     def node_id(self) -> str:
@@ -266,8 +293,8 @@ class CMSSWReleaseSource:
             revision["map_cache_digest"] = self.map_cache_digest
 
         def _facts() -> Iterator[Any]:
-            for family in _release_families(records):
-                yield _family_node_fact(family, revision)
+            for major, minor in _release_families(records):
+                yield family_node_fact(major, minor, revision)
             for record in records:
                 yield _node_fact(record, revision)
             yield from _supersedes_edges(records, revision)
@@ -304,7 +331,7 @@ class CMSSWReleaseSource:
         return ConnectorRun(
             facts=_facts(),
             completed_scope=(
-                mode in {"scope_complete", "reconcile"}
+                mode in COMPLETED_SCOPE_RUN_MODES
                 and not skipped
                 and not truncated
                 and bool(records)
@@ -356,6 +383,9 @@ class CMSSWReleaseSource:
                     architecture=architecture,
                     release_notes=str(item.get("release_notes") or ""),
                     release_date=str(item.get("release_date") or ""),
+                    production_architecture=_as_tuple(
+                        item.get("production_architecture")
+                    ),
                 )
             )
         return records, skipped, False
@@ -431,18 +461,14 @@ def _parse_map_with_skips(
             continue
         fields = dict(part.split("=", 1) for part in line.split(";") if "=" in part)
         label = fields.get("label", "")
-        if not _VERSION_RE.match(label):
-            # Not a release label. Two kinds of row are out of scope rather
-            # than unreadable, and must not cost the run its completed-scope
-            # claim:
-            #
-            #   family rows (`CMSSW_14_0_X`) name a release series. This
-            #   connector already mints one family node per series from the
-            #   concrete releases below, so the row is a duplicate of a node
-            #   we derive, never a release of its own;
-            #
-            #   rows for a NAMED other product (`ECALTBH4_0_2_2`) are outside
-            #   a CMSSW release catalog's declared scope entirely.
+        if not (_VERSION_RE.match(label) or _FAMILY_RE.match(label)):
+            # Neither a release label nor an integration-series label
+            # (`CMSSW_14_0_X`, kept as a release record of its own, with
+            # `release_kind: integration-series`). One kind of row is out of
+            # scope rather than unreadable, and must not cost the run its
+            # completed-scope claim: rows for a NAMED other product
+            # (`ECALTBH4_0_2_2`) are outside a CMSSW release catalog's
+            # declared scope entirely.
             #
             # The product list is closed on purpose. "Anything that does not
             # start with CMSSW_" would also absorb a wholesale upstream
@@ -456,9 +482,8 @@ def _parse_map_with_skips(
             #
             # Anything else -- an empty or absent label, a malformed `CMSSW_*`
             # label, an unknown product -- counts as a skip and degrades the
-            # scope claim. The version check runs FIRST so a label that really
-            # does parse as a release can never be discarded as a family.
-            if _FAMILY_RE.match(label) or label.startswith(_OTHER_PRODUCTS):
+            # scope claim.
+            if label.startswith(_OTHER_PRODUCTS):
                 continue
             skipped += 1
             continue
@@ -469,11 +494,21 @@ def _parse_map_with_skips(
                 "type": fields.get("type", ""),
                 "state": fields.get("state", ""),
                 "architecture": [],
+                "production_architecture": [],
             },
         )
         arch = fields.get("architecture", "")
         if arch and arch not in rec["architecture"]:
             rec["architecture"].append(arch)
+        # `prodarch=1` marks the production architecture of the release.
+        # `prodarch=0`, or no `prodarch` key, marks nothing. Older releases
+        # can carry the marker on several architectures; all are kept.
+        if (
+            arch
+            and fields.get("prodarch", "").strip() == "1"
+            and arch not in rec["production_architecture"]
+        ):
+            rec["production_architecture"].append(arch)
     ordered = sorted(
         by_label.values(),
         key=lambda r: _sort_key(r["label"]),
@@ -484,6 +519,7 @@ def _parse_map_with_skips(
             xml_type=rec["type"],
             state=rec["state"],
             architecture=tuple(sorted(rec["architecture"])),
+            production_architecture=tuple(sorted(rec["production_architecture"])),
         )
         for rec in ordered
     ], skipped
@@ -492,9 +528,22 @@ def _parse_map_with_skips(
 def _sort_key(label: str) -> tuple[int, int, int, str]:
     parts = _version_parts(label)
     if parts is None:
+        series = _SERIES_RE.match(label) if _FAMILY_RE.match(label) else None
+        if series:
+            # An integration series sorts just before its first release.
+            return (int(series.group(1)), int(series.group(2)), -1, label)
         return (0, 0, 0, label)
     major, minor, patch, _suffix = parts
     return (int(major), int(minor), int(patch), label)
+
+
+def _as_tuple(value: Any) -> tuple[str, ...]:
+    """A cache value that is a string or a list, as a tuple of strings."""
+    if not value:
+        return ()
+    if isinstance(value, str):
+        return tuple(sorted(part.strip() for part in value.split(",") if part.strip()))
+    return tuple(sorted(str(v) for v in value))
 
 
 def _checked_at() -> str:
@@ -504,6 +553,9 @@ def _checked_at() -> str:
 def _parse_version(label: str) -> dict[str, Any]:
     parts = _version_parts(label)
     if parts is None:
+        series = _SERIES_RE.match(label) if _FAMILY_RE.match(label) else None
+        if series:
+            return {"major": int(series.group(1)), "minor": int(series.group(2))}
         return {}
     major, minor, patch, suffix = parts
     parsed: dict[str, Any] = {
@@ -516,9 +568,23 @@ def _parse_version(label: str) -> dict[str, Any]:
     return parsed
 
 
-def _release_type(label: str, xml_type: str, suffix: str | None) -> str:
+def release_kind(label: str) -> str:
+    """okg's own classification of a release label.
+
+    Derived from the label alone, never from the source `type`: that value is
+    kept unchanged in `release_type` (cms-bot writes only `Production` or
+    `Development`). `CMSSW_15_0_19_patch2` is a `Production` release of kind
+    `patch`; before this split it was stored as `release_type: patch` and the
+    source type was lost.
+    """
+    parts = _version_parts(label)
+    if parts is None:
+        if _FAMILY_RE.match(label):
+            return "integration-series"
+        return "unrecognized"
+    suffix = parts[3]
     if not suffix:
-        return xml_type or "release"
+        return "release"
     lowered = suffix.lower()
     if lowered.startswith("pre"):
         return "pre-release"
@@ -526,7 +592,7 @@ def _release_type(label: str, xml_type: str, suffix: str | None) -> str:
         return "hlt-patch"
     if lowered.startswith("patch"):
         return "patch"
-    return xml_type or "variant"
+    return "variant"
 
 
 def _node_fact(
@@ -534,27 +600,37 @@ def _node_fact(
     revision: dict[str, Any],
 ) -> NodeFact:
     version = _parse_version(record.label)
-    suffix = version.get("suffix")
-    release_type = _release_type(record.label, record.xml_type, suffix)
+    kind = release_kind(record.label)
     architecture = ",".join(record.architecture)
+    production_architecture = ",".join(record.production_architecture)
     text_parts = [
         record.label,
-        release_type,
+        record.xml_type,
+        kind,
         record.state,
         architecture,
+        (
+            f"production architecture: {production_architecture}"
+            if production_architecture
+            else ""
+        ),
         record.release_notes,
     ]
     attrs = {
         "label": record.label,
         "name": record.label,
         "release": record.label,
-        "release_type": release_type,
+        # The source's own type, unchanged (Production or Development).
+        "release_type": record.xml_type,
+        "release_kind": kind,
         "state": record.state,
         "architecture": architecture,
         "release_date": record.release_date,
         "text": " ".join(p for p in text_parts if p).strip(),
         **version,
     }
+    if production_architecture:
+        attrs["production_architecture"] = production_architecture
     return NodeFact(
         node_id=record.node_id,
         subtype="cmssw_release",
@@ -564,52 +640,57 @@ def _node_fact(
     )
 
 
-def _release_families(records: list[CMSSWReleaseRecord]) -> tuple[str, ...]:
-    families: set[str] = set()
+def _release_families(
+    records: list[CMSSWReleaseRecord],
+) -> tuple[tuple[int, int], ...]:
+    """(major, minor) of every series with at least one concrete release.
+
+    An integration-series row alone (`CMSSW_20_1_X` before any 20.1 release)
+    mints no family; it is a release record of its own.
+    """
+    families: set[tuple[int, int]] = set()
     for record in records:
-        version = _parse_version(record.label)
-        major = version.get("major")
-        minor = version.get("minor")
-        if major is None or minor is None:
+        parts = _version_parts(record.label)
+        if parts is None:
             continue
-        families.add(f"CMSSW_{major}_{minor}_X")
+        families.add((int(parts[0]), int(parts[1])))
     return tuple(sorted(families))
 
 
-def _family_node_fact(
-    family: str,
+def family_node_fact(
+    major: int,
+    minor: int,
     revision: dict[str, Any],
+    *,
+    state: str = "family",
 ) -> NodeFact:
-    version = _parse_family(family)
+    """The derived release-family node for one major/minor series.
+
+    It carries no `release_type`: that attribute holds only a source value,
+    and a family is not a source row.
+    """
+    key = family_key(major, minor)
+    series = f"{key}_X"
     return NodeFact(
-        node_id=f"cmssw_release:{family}",
+        node_id=family_node_id(major, minor),
         subtype="cmssw_release",
         attrs={
-            "label": family,
-            "name": family,
-            "release": family,
-            "release_type": "release_family",
-            "state": "family",
+            "label": key,
+            "name": key,
+            "release": key,
+            "release_kind": "release_family",
+            "series": series,
+            "state": state,
             "architecture": "",
             "release_date": "",
-            "text": family,
-            **version,
+            "text": f"{key} release family {series}",
+            "major": int(major),
+            "minor": int(minor),
+            "family": True,
         },
-        source_record_id={"release_family": family},
+        source_record_id={"release_family": key},
         source_revision=revision,
     )
-
-
-def _parse_family(label: str) -> dict[str, Any]:
-    match = re.match(r"^CMSSW_(\d+)_(\d+)_X$", label)
-    if not match:
-        return {}
-    major, minor = match.groups()
-    return {
-        "major": int(major),
-        "minor": int(minor),
-        "family": True,
-    }
 
 
 def _supersedes_edges(

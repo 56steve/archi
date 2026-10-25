@@ -28,6 +28,9 @@ Deliberately **not** ported:
   anonymizer per the porting matrix); the hook point to preserve there
   is the text surface this module emits — ``jira_issue.attrs`` text
   fields and ``document_chunk.attrs["text"]`` — before embedding.
+  The cms source's narrower, always-on email removal *is* kept: every
+  string read from the cache goes through :func:`_pg_text`, which
+  calls :func:`archi.enrichment.anonymizer.redact_email_addresses`.
 - The live JIRA fetch itself: like the cms original this source reads
   an externally maintained records cache; credentials stay env-var
   references only.
@@ -70,6 +73,13 @@ Changes from the cms original:
   ``degraded``) with both counts in the reason, and the run never
   claims ``completed_scope`` — a truncated cache claimed complete
   would retract every record it happened to drop.
+- 2026-09 (empty-cache-fails-loudly): a records cache that is
+  unreadable, zero bytes, truncated JSON or an empty list is
+  ``cache_missing`` with no facts and no complete scope, whatever
+  ``meta.json`` says — a complete scope over zero issues retracts every
+  issue. Items without an issue key are skipped per item but stop the
+  run claiming a complete scope. ``preflight()`` and ``run()`` share
+  one verdict, so preflight now also reports the meta mismatch.
 
 Registry-entry template — INGEST-PROVEN 2026-08-11 on a scratch
 instance (okg dev@21c5b8c3e). Three things beyond the registry entry
@@ -113,6 +123,8 @@ are required or ingest fails after a green lint:
             - {src_subtype: jira_issue, edge_type: reported_by, dst_subtype: person}
             - {src_subtype: jira_issue, edge_type: contains, dst_subtype: document_chunk}
             - {src_subtype: document_chunk, edge_type: references, dst_subtype: jira_issue}
+            # Uncomment together with `issue_link_edges: true` below:
+            # - {src_subtype: jira_issue, edge_type: linked_to, dst_subtype: jira_issue}
             # Uncomment together with the matching params below:
             # - {src_subtype: document_chunk, edge_type: references, dst_subtype: cmssw_release}
             # - {src_subtype: document_chunk, edge_type: references, dst_subtype: site}
@@ -125,6 +137,8 @@ are required or ingest fails after a green lint:
             - jira_issue reported_by person
             - jira_issue contains document_chunk
             - document_chunk references jira_issue
+            # Uncomment together with `issue_link_edges: true` below:
+            # - jira_issue linked_to jira_issue
             # Uncomment together with the matching params below:
             # - document_chunk references cmssw_release
             # - document_chunk references site
@@ -168,7 +182,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 from okg.deployment import (
     EdgeFact,
@@ -178,6 +192,14 @@ from okg.deployment import (
     ConnectorRun,
 )
 
+from archi.enrichment.anonymizer import redact_email_addresses
+from archi.sources._cache_report import (
+    CacheUnusable,
+    read_cache_json,
+    skipped_items_status,
+    unusable_cache_preflight,
+    unusable_cache_run,
+)
 from archi.sources._sdk_adapter import ReaderAdapter
 from archi.auth.cache import (
     cache_or_forced_live_change_probe,
@@ -294,6 +316,9 @@ class JiraIssueRecord:
     issue_links: tuple[str, ...] = ()
     subtasks: tuple[str, ...] = ()
     recent_comments: tuple[str, ...] = ()
+    # (linked key, link type name, "outward" | "inward") for each link
+    # whose type and direction the cache records; feeds linked_to edges.
+    typed_links: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def node_id(self) -> str:
@@ -320,6 +345,7 @@ class JiraIssueSource:
         releases_path: str | None = None,
         services_path: str | None = None,
         chunker_name: str = DEFAULT_CHUNKER_NAME,
+        issue_link_edges: bool = False,
         base: str | None = None,
     ) -> None:
         self.records_path = records_path
@@ -345,12 +371,21 @@ class JiraIssueSource:
         self.releases_path = releases_path
         self.services_path = services_path
         self.chunker_name = chunker_name
+        # Issue links and sub-task parents as jira_issue linked_to
+        # jira_issue edges. Opt-in: the edge is a new output the
+        # deployment's output_signature must list, so a deployment that
+        # says nothing emits exactly what it emitted before.
+        self.issue_link_edges = bool(issue_link_edges)
         self.base = base
         self.change_probe = cache_or_forced_live_change_probe(
             cache_paths=self.cache_paths,
             config={
                 "records_path": self.records_path,
                 "meta_path": self.meta_path,
+                # Present only when on, so a deployment that never set
+                # the option keeps its old config hash.
+                **({"issue_link_edges": True}
+                   if self.issue_link_edges else {}),
             },
             emit_targets=JiraIssueSource,
             base=base,
@@ -374,7 +409,7 @@ class JiraIssueSource:
         path = resolve_repo_path(self.records_path, base=self.base)
         if not path.is_file():
             expected = _expected_count(self.meta_path, base=self.base)
-            reason = "JIRA records cache file is missing"
+            reason = f"JIRA records cache file {path} is missing"
             if expected is not None:
                 reason += f"; metadata reports {expected} records"
             return PreflightResult(
@@ -388,17 +423,30 @@ class JiraIssueSource:
                 reason=reason,
                 checked_at=_checked_at(),
             )
-        records = self._records()
+        # Same verdict run() reaches for the same cache.
+        try:
+            records, skipped = self._records_with_skips()
+        except CacheUnusable as exc:
+            return unusable_cache_preflight(
+                exc,
+                source_name=self.name,
+                required=True,
+                credential_refs=self._credential_refs,
+                alias_refs=self._alias_refs,
+            )
+        status, reason, _complete = self._verdict(
+            len(records), skipped, "local JIRA records cache present"
+        )
         return PreflightResult(
             source_name=self.name,
-            status="ok",
+            status=status,
             mode="cache",
             required=True,
             credential_refs=self._credential_refs,
             alias_refs=self._alias_refs,
             record_count=len(records),
             content_hash=content_hash(self.cache_paths, base=self.base),
-            reason="local JIRA records cache present",
+            reason=reason,
             checked_at=_checked_at(),
         )
 
@@ -415,11 +463,26 @@ class JiraIssueSource:
                     credential_refs=self._credential_refs,
                     alias_refs=self._alias_refs,
                     cache_path=str(path),
-                    reason="JIRA records cache is absent; no facts emitted",
+                    reason=(
+                        f"JIRA records cache {path} is absent; no facts "
+                        "emitted and no complete scope claimed"
+                    ),
                     checked_at=_checked_at(),
                 ),
             )
-        records = self._records()
+        try:
+            records, skipped = self._records_with_skips()
+        except CacheUnusable as exc:
+            # Unreadable, truncated or empty: a failed fetch, never an
+            # empty project. A complete scope over zero issues would
+            # retract every issue ingested before, and meta.json cannot
+            # vouch for an empty cache.
+            return unusable_cache_run(
+                exc,
+                mode=mode,
+                credential_refs=self._credential_refs,
+                alias_refs=self._alias_refs,
+            )
         revision = {
             "run_id": run_id,
             "content_hash": content_hash(self.cache_paths, base=self.base),
@@ -433,10 +496,31 @@ class JiraIssueSource:
             base=self.base,
         )
 
+        links_by_src = (
+            _links_by_source(records) if self.issue_link_edges else {}
+        )
+
         def _facts() -> Iterator[Any]:
             emitted_people: set[str] = set()
             for record in records:
                 yield self._node_fact(record, revision)
+                for dst, link_types in sorted(
+                    links_by_src.get(record.key, {}).items()
+                ):
+                    yield EdgeFact(
+                        src=f"jira:{record.key}",
+                        dst=f"jira:{dst}",
+                        edge_type="linked_to",
+                        attrs={
+                            "link_kind": _strongest_kind(link_types),
+                            "link_type": "; ".join(sorted(link_types)),
+                        },
+                        source_record_id={
+                            "issue_key": record.key,
+                            "linked_issue_key": dst,
+                        },
+                        source_revision=revision,
+                    )
                 for role, display_name in (
                     ("assignee", record.assignee),
                     ("reporter", record.reporter),
@@ -477,6 +561,7 @@ class JiraIssueSource:
                             "text": chunk_text,
                             "char_offset": offset,
                             "char_length": len(chunk_text),
+                            "char_end": offset + len(chunk_text),
                             "chunker_name": self.chunker_name,
                             "heading_path": record.key,
                         },
@@ -499,8 +584,33 @@ class JiraIssueSource:
                         targets,
                     )
 
+        status, reason, complete = self._verdict(
+            len(records), skipped, "local JIRA records cache used"
+        )
+        return ConnectorRun(
+            facts=_facts(),
+            completed_scope=(
+                mode in {"scope_complete", "reconcile"} and complete
+            ),
+            run_mode=mode,
+            health=ConnectorHealth(
+                status=status,
+                mode="cache",
+                credential_refs=self._credential_refs,
+                alias_refs=self._alias_refs,
+                record_count=len(records),
+                content_hash=revision["content_hash"],
+                reason=reason,
+            ),
+        )
+
+    def _verdict(
+        self, record_count: int, skipped: int, ok_reason: str
+    ) -> tuple[str, str, bool]:
+        """(status, reason, may claim a complete scope), shared by
+        preflight() and run() so the two cannot disagree."""
         expected = _expected_count(self.meta_path, base=self.base)
-        if expected is not None and expected != len(records):
+        if expected is not None and expected != record_count:
             # meta.json says the fetch produced `expected` records but
             # the cache parsed a different number: the records file is
             # truncated or stale relative to its own metadata. Emit
@@ -509,40 +619,24 @@ class JiraIssueSource:
             # complete would retract every record it dropped. The
             # closed status vocabulary has no 'degraded', so report
             # endpoint_failed.
-            return ConnectorRun(
-                facts=_facts(),
-                completed_scope=False,
-                run_mode=mode,
-                health=ConnectorHealth(
-                    status="endpoint_failed",
-                    mode="cache",
-                    credential_refs=self._credential_refs,
-                    alias_refs=self._alias_refs,
-                    record_count=len(records),
-                    content_hash=revision["content_hash"],
-                    reason=(
-                        f"JIRA records cache parsed {len(records)} records "
-                        f"but {self.meta_path} reports record_count="
-                        f"{expected}; cache looks truncated or stale, "
-                        "facts emitted, no complete scope claimed"
-                    ),
-                    checked_at=_checked_at(),
-                ),
+            return (
+                "endpoint_failed",
+                f"JIRA records cache parsed {record_count} records "
+                f"but {self.meta_path} reports record_count="
+                f"{expected}; cache looks truncated or stale, "
+                "facts emitted, no complete scope claimed",
+                False,
             )
-        return ConnectorRun(
-            facts=_facts(),
-            completed_scope=(mode in {"scope_complete", "reconcile"}),
-            run_mode=mode,
-            health=ConnectorHealth(
-                status="ok",
-                mode="cache",
-                credential_refs=self._credential_refs,
-                alias_refs=self._alias_refs,
-                record_count=len(records),
-                content_hash=revision["content_hash"],
-                reason="local JIRA records cache used",
-            ),
+        # Items without an issue key (or not objects at all) are
+        # skipped per item, but the run then stops claiming a complete
+        # scope: the skipped items' issues would otherwise be retracted.
+        status, reason = skipped_items_status(
+            status="ok",
+            reason=ok_reason,
+            record_count=record_count,
+            skipped_count=skipped,
         )
+        return status, reason, not skipped
 
     def issue_url(self, key: str) -> str:
         """Browse URL for an issue (v2 collector's ticket metadata URL)."""
@@ -576,6 +670,9 @@ class JiraIssueSource:
                 "reporter": record.reporter,
                 "created": record.created,
                 "updated": record.updated,
+                "resolution": record.resolution,
+                "labels": list(record.labels),
+                "components": list(record.components),
                 "url": self.issue_url(record.key),
                 "text": text,
             },
@@ -583,13 +680,12 @@ class JiraIssueSource:
             source_revision=revision,
         )
 
-    def _records(self) -> list[JiraIssueRecord]:
-        payload = load_json(self.records_path, base=self.base)
-        if not isinstance(payload, list):
-            raise ValueError(
-                f"{self.records_path}: expected a JSON list of JIRA records"
-            )
+    def _records_with_skips(self) -> tuple[list[JiraIssueRecord], int]:
+        payload = read_cache_json(
+            self.records_path, expect=list, base=self.base
+        )
         items = [item for item in payload if isinstance(item, dict)]
+        skipped = len(payload) - len(items)
         # Without configured project_keys the generic KEY-123 pattern
         # would extract strings like COVID-19 from free text; mirror
         # docs.py's intersect-with-known-keys discipline by bounding
@@ -603,6 +699,7 @@ class JiraIssueSource:
         for item in items:
             key = _pg_text(str(item.get("key") or item.get("issue_key") or ""))
             if not key:
+                skipped += 1
                 continue
             fields = (
                 item.get("fields") if isinstance(item.get("fields"), dict) else {}
@@ -674,8 +771,12 @@ class JiraIssueSource:
                     or item.get("comments")
                     or (fields.get("comment") or {}).get("comments")
                 )),
+                typed_links=tuple(_typed_links(
+                    item.get("issue_links") or fields.get("issuelinks"),
+                    key_re,
+                )),
             ))
-        return records
+        return records, skipped
 
     def _issue_keys_from_value(
         self, value: Any, key_re: re.Pattern[str] | None = None
@@ -705,6 +806,126 @@ def _cache_bounded_key_pattern(
         return _MATCH_NO_KEY_RE
     alternation = "|".join(re.escape(prefix) for prefix in sorted(prefixes))
     return re.compile(rf"\b(?:{alternation})-\d+\b")
+
+
+SUBTASK_LINK_TYPE = "Sub-task"
+
+#: The small set a JIRA link type name collapses to. Instances define
+#: their own link types (and misspell them: "Duplibcate"), so the raw
+#: name stays on the edge as ``link_type`` and ``link_kind`` is the
+#: value to filter or group on. Ordered most specific first: a pair of
+#: issues linked by several types takes the first kind present.
+LINK_KINDS = ("child", "blocks", "duplicates", "clones", "gantt", "relates")
+_LINK_KIND_MARKERS = (
+    # First match wins. Gantt first: the WBS-Gantt plugin's types
+    # ("Hierarchy link (WBSGantt)") are scheduling links, not parents.
+    ("gantt", "gantt"),
+    ("sub-task", "child"),
+    ("child", "child"),
+    ("parent", "child"),
+    ("block", "blocks"),
+    ("clon", "clones"),
+    ("dupl", "duplicates"),
+)
+
+
+def link_kind(link_type: str) -> str:
+    """Collapse a JIRA link type name to one of :data:`LINK_KINDS`.
+
+    Anything unrecognised (Relates, Relation, Causal, Dependency,
+    Follows, ...) is ``relates``: the edge still says the two issues
+    are linked and ``link_type`` keeps the exact name.
+    """
+    name = link_type.lower()
+    for marker, kind in _LINK_KIND_MARKERS:
+        if marker in name:
+            return kind
+    return "relates"
+
+
+def _strongest_kind(link_types: Iterable[str]) -> str:
+    """The one kind for a pair of issues linked by several link types.
+
+    The graph holds one ``linked_to`` edge per ordered pair, so a pair
+    that is both a Sub-task and a Relates link gets the more specific
+    kind; :data:`LINK_KINDS` is in that order, ``relates`` last.
+    """
+    kinds = {link_kind(link_type) for link_type in link_types}
+    return next(kind for kind in LINK_KINDS if kind in kinds)
+
+
+def _links_by_source(
+    records: list[JiraIssueRecord],
+) -> dict[str, dict[str, set[str]]]:
+    """``{src key: {dst key: link type names}}`` over the whole cache.
+
+    Both ends must be issues in the cache: a link to a ticket outside
+    the fetched projects would dangle. Each link is cached on both of
+    its issues, once as outward and once as inward, and lands here
+    once. Several link types between the same ordered pair are kept
+    together, because the graph holds one edge per pair.
+    """
+    cached_keys = {record.key for record in records}
+    out: dict[str, dict[str, set[str]]] = {}
+    for record in records:
+        for src, dst, link_type in _issue_link_triples(record):
+            if src == dst or src not in cached_keys or dst not in cached_keys:
+                continue
+            out.setdefault(src, {}).setdefault(dst, set()).add(link_type)
+    return out
+
+
+def _typed_links(
+    value: Any, key_re: re.Pattern[str]
+) -> list[tuple[str, str, str]]:
+    """``(key, link type, direction)`` for each typed issue link.
+
+    Reads both cache shapes: the downloader's flat
+    ``{"key", "type", "direction"}`` and the JIRA REST
+    ``{"type": {"name"}, "outwardIssue"|"inwardIssue": {"key"}}``.
+    A link with no direction, or whose key is not an issue key, is
+    left out; its key still reaches the chunk text via ``issue_links``.
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[tuple[str, str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("outwardIssue") or item.get("inwardIssue"):
+            direction = "outward" if item.get("outwardIssue") else "inward"
+            key = _name_or_key(item.get(f"{direction}Issue"))
+        else:
+            direction = str(item.get("direction") or "")
+            key = _pg_text(str(item.get("key") or ""))
+        if direction not in ("outward", "inward") or not key_re.fullmatch(key):
+            continue
+        out.append((key, _name_or_key(item.get("type")), direction))
+    return out
+
+
+def _issue_link_triples(
+    record: JiraIssueRecord,
+) -> Iterator[tuple[str, str, str]]:
+    """``(src key, dst key, link type)`` for every link this issue states.
+
+    The source is the issue on the link's outward side, so a link reads
+    the same from either end; a sub-task's parent is the source of a
+    ``Sub-task`` link. The cache keeps a link type's name, not its
+    outward wording, so for an instance-defined parent/child type the
+    outward side is taken to be the parent (true of CERN JIRA's
+    Child-Issue, "is parent of"); check that before relying on the
+    direction of ``child`` edges on another instance.
+    """
+    for key, link_type, direction in record.typed_links:
+        if direction == "outward":
+            yield record.key, key, link_type
+        else:
+            yield key, record.key, link_type
+    if record.parent_key:
+        yield record.parent_key, record.key, SUBTASK_LINK_TYPE
+    for subtask in record.subtasks:
+        yield record.key, subtask, SUBTASK_LINK_TYPE
 
 
 def _checked_at() -> str:
@@ -772,7 +993,16 @@ def _chunk_text(record: JiraIssueRecord) -> str:
 
 
 def _pg_text(text: str) -> str:
-    return text.replace("\x00", " ")
+    """Normalize one source string: NUL to space, email addresses removed.
+
+    Every string this source reads from the records cache passes through
+    here (key, summary, description, environment, dates, status-like
+    names, people, labels, components, comment authors and bodies), so
+    no address reaches a ``jira_issue`` or ``person`` attr or
+    ``document_chunk`` text. Parity with okg-deployments
+    ``cms/cms_sources/jira.py`` (commit b25e36f06c).
+    """
+    return redact_email_addresses(text.replace("\x00", " "))
 
 
 def _sha256(text: str) -> str:

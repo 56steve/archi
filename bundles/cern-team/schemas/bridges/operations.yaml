@@ -226,6 +226,13 @@ classes:
           src_subtypes: MeetingMinutes
           dst_subtypes: Document
 
+      meeting_minutes_contains_meeting_minutes:
+        description: An Indico event owns one record per talk (indico_live with contributions on).
+        annotations:
+          edge_archetype: contains
+          src_subtypes: MeetingMinutes
+          dst_subtypes: MeetingMinutes
+
       meeting_minutes_references_site:
         annotations:
           edge_archetype: references
@@ -609,3 +616,16 @@ classes:
           edge_archetype: references
           src_subtypes: DocumentChunk
           dst_subtypes: Run
+
+      # A git commit whose message names a Jira key (CMSTRANSF-974) links
+      # to that ticket: the cms_jira_key extractor route for git_commit in
+      # enrichment/defaults/linker_config.yaml. The target is matched
+      # exactly (ProjectionAliasBackend); a key with no ticket in the graph
+      # makes no edge and stays an unresolved link_retry row (okg#3649).
+      # Optional so a deployment without the git_graph module composes.
+      git_commit_references_jira_issue:
+        annotations:
+          edge_archetype: references
+          src_subtypes: GitCommit
+          dst_subtypes: JiraIssue
+          optional_when_subtypes_missing: 'true'

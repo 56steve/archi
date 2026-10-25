@@ -26,6 +26,25 @@ dev = [
     "isort>=5.13",
     "hatchling>=1.21",
 ]
+# The JIRA downloader (archi.downloaders.jira) needs the `jira` client. It is
+# optional: only operators who run that downloader install it
+# (`pip install jira`, or the `jira` extra of this checkout). Do not run
+# `pip install archi[jira]`: the name `archi` on PyPI is an unrelated package.
+# The readers never import it.
+jira = [
+    "jira>=3.8",
+]
+# The SSO cookie helper (archi.downloaders.sso_login) checks a Kerberos ticket
+# with `requests-kerberos`. Operators used to get it from okg's own `cern` extra,
+# which okg core removed (it keeps no CERN-specific install option). Install it
+# with `pip install -e "./python[cern]"` from a checkout; do not run
+# `pip install archi[cern]`: the name `archi` on PyPI is an unrelated package.
+# `requests-kerberos` builds `gssapi` and `krb5` from source on Linux, which needs
+# the Kerberos development headers (`libkrb5-dev` / `krb5-devel`). The readers
+# never import it. The JIRA downloader's `jira` client is the separate `jira` extra.
+cern = [
+    "requests-kerberos>=0.15",
+]
 
 [tool.black]
 line-length = 88

@@ -16,7 +16,7 @@ module (code_repos family), as in the cms deployment. ::
 
     github_repos:
       module: archi.sources.github_repos
-      class: GitHubRepoSource
+      class: GitHubRepoAdapter
       ownership_id: <instance>.github-repos
       admission_policy:
         producer_id: <instance>.github-repos
@@ -38,15 +38,16 @@ module (code_repos family), as in the cms deployment. ::
           edges:
             - software_repository references repo
       source_class: reference_catalog
-      record_identity_kind: remote_id
+      record_identity_kind: domain_key
       record_identity_fields: [repo]
       source_revision_kind: content_hash
       deletion_semantics: missing_from_completed_scope
       publication_mode: published_generation
       required_for_baseline: false
-      params:
-        # cms defaults (DEFAULT_REPOS); override per instance
-        # repos: [dmwm/WMCore, cms-sw/cmssw, ...]
+      # params: cms defaults (DEFAULT_REPOS); override per instance with
+      # repos: [dmwm/WMCore, cms-sw/cmssw, ...]. An empty mapping, not a
+      # bare `params:` (null), which strict admission refuses.
+      params: {}
       sync:
         triggers: [manual, reconcile]
         default_event_mode: scope_complete
@@ -67,6 +68,9 @@ from okg.deployment import (
     ConnectorRun,
 )
 from okg.deployment import ContentHashProbe
+
+from archi.sources._run_modes import COMPLETED_SCOPE_RUN_MODES
+from archi.sources._sdk_adapter import ReaderAdapter
 
 DEFAULT_REPOS = (
     "dmwm/WMCore",
@@ -121,7 +125,14 @@ class GitHubRepoSource:
     change_probe_kind = "content_hash"
 
     def __init__(self, *, repos: list[str] | None = None) -> None:
-        self.repos = tuple(repos or DEFAULT_REPOS)
+        if repos is not None and not list(repos):
+            # A missing ``repos`` keeps the defaults; an explicit empty
+            # list is a configuration error, not a request for them.
+            raise ValueError(
+                "github_repos: repos is an empty list; name at least one "
+                "owner/name slug, or omit repos to use the defaults"
+            )
+        self.repos = tuple(repos if repos is not None else DEFAULT_REPOS)
         self.change_probe = ContentHashProbe(
             content_items=lambda: [
                 ("repos", "\n".join(sorted(self.repos)).encode("utf-8")),
@@ -168,7 +179,9 @@ class GitHubRepoSource:
 
         return ConnectorRun(
             facts=_facts(),
-            completed_scope=(mode in {"scope_complete", "reconcile"}),
+            completed_scope=(
+                mode in COMPLETED_SCOPE_RUN_MODES and bool(records)
+            ),
             run_mode=mode,
             health=ConnectorHealth(
                 status="ok",
@@ -242,3 +255,21 @@ def _repo_node(
         source_record_id={"repo": record.slug},
         source_revision=revision,
     )
+
+
+class GitHubRepoAdapter(ReaderAdapter):
+    """Registry adapter for :class:`GitHubRepoSource`.
+
+    The registry-entry template in this module's docstring names this
+    class. The reader's behavior is unchanged; this class only drives it
+    through the substrate's adapter contract, which a bare reader cannot
+    satisfy (its ``ConnectorRun`` has no ``next_cursor``).
+
+    ``profile`` and ``change_probe_kind`` must be string literals; see
+    ``ReaderAdapter``. ``test_bundle_source_adapters.py`` parses this
+    file and holds them equal to the reader's own values.
+    """
+
+    reader_class = GitHubRepoSource
+    profile = "reference_catalog"
+    change_probe_kind = "content_hash"

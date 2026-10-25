@@ -20,8 +20,109 @@ reimplementation of OKG services.
 
 ## Current state (update this section when it changes)
 
+**First use of okg's image SDK (2026-10-21).** `archi.sources.indico_live` imports
+`okg.deployment.ImageRef` and, with the off-by-default `attachment_images`
+option, puts `ImageRef.url` values on talk records so an agent can open a
+talk's PDF, PNG or JPEG attachment with `inspect(kind="image")`. okg fetches
+the URL at read time, only from hosts in the deployment's
+`agent_surface.images.url.prefixes`; archi downloads and stores nothing. Tested
+against the v0.2.0 release (no pin change).
+
+**CI and the quickstart now use the public AKMON v0.2.0 release instead of
+private `mitdbg/okg` (2026-10-20).** AKMON (`github.com/mitdbg/akmon`) is the
+public release of okg. The Python package and the `okg` command keep their
+names, so no `import okg` line changed. CI installs the v0.2.0 wheel by URL and
+sha256, with no deploy key, so fork PRs now run the full suite instead of being
+skipped. The release was cut from okg `54e6cf44ee`, which contains the old pin
+`ac078aabd`, so this is a move forward, not a downgrade. The full archi suite
+gives 1795 passed and 1 failed against the wheel with no source change; the one failure is a 1-second timing assertion in `test_anonymizer.py` that also fails on unmodified `main` on a loaded host. Files okg left out of the public
+tree (agent-memory and enterprise-RAG benchmarks, two persona prompts, part of
+the operator console) are not used by archi. v0.2.0 also includes okg#3317 (`COMPLETED_SCOPE_RUN_MODES` is exported from `okg.deployment`), so the "known limit under an okg without mitdbg/okg#3317" below no longer applies to this release; switching `archi.sources._run_modes` to import the set is a follow-up, not done here.
+
+**Reference catalogs are no longer refused under okg's release modes
+(2026-10-05).** Since okg `d84f8fd275` (in `ac078aabd`, the pin at the time), okg runs a
+`reference_catalog` source in run mode `release_new`, which it picks
+automatically; `release_unchanged` comes only from an explicit mode setting.
+Both complete the scope in okg's table. CMSSW releases, CondDB global tags, DBS
+datasets and GitHub repositories only recognised `scope_complete` and
+`reconcile`, so they never claimed a complete scope and returned no cursor;
+okg admission then refused every later run that emitted nothing new as
+`partial`, which blocked publishing. A downstream CMS instance turned its CMSSW
+releases source off on 2026-10-01 for this reason. Now:
+
+- **CMSSW releases and GitHub repositories** claim a complete scope in both
+  release modes. Deletion by absence is live for them: each declares
+  `deletion_semantics: missing_from_completed_scope`, so a valid run retracts
+  records no longer in its input. Before, it could not happen: until
+  `d84f8fd275` such a retraction failed the run, and since then the readers
+  never claimed a complete scope. GitHub repositories withholds the claim when
+  no configured slug is valid, and refuses an explicit empty `repos: []` at
+  construction (a missing `repos` keeps the defaults). In `release_unchanged`
+  a catalog that shrank fails the run loudly, because okg refuses retractions
+  in that mode.
+- **DBS datasets and CondDB global tags** deliberately claim no complete scope
+  in the release modes, so they never delete by absence: a narrower cache
+  export would retract an unbounded share of the catalog, and okg has no guard
+  on retraction size yet (mitdbg/okg#3307). They return a cursor
+  (`input_content_sha256`, the SHA-256 of the input caches; for CondDB also the
+  CMSSW cache it reads). The cursor only gives the source stored state, which
+  lets okg accept an unchanged rerun as a no-op; okg still re-reads the cache
+  on every run. Costs: only a completed scope advances okg's last reconcile
+  time, so these two read as stale in freshness checks; and okg refuses
+  `scope_complete` and `reconcile` for a `reference_catalog` source at run
+  start, so under current okg no run removes datasets or tags that leave the
+  export. They stay until okg#3307 lands and these sources switch to deleting.
+  Known limit under an okg without mitdbg/okg#3317: a deployment where DBS or
+  CondDB already published facts without a cursor (the state the old bug
+  leaves) is still refused `partial` on its first run after this fix, because
+  every fact dedupes and no cursor is stored yet. okg#3317 fixes this in okg:
+  it counts a prior accepted and published admission of the source as
+  history, so that first unchanged rerun is accepted as `incomplete_scope_noop`,
+  with no deletion and no blocked publish. It applies once the instance's okg
+  includes #3317. A fresh deployment, or one where the source never published,
+  is unaffected either way.
+
+The scope-completing modes live in one archi module, `archi.sources._run_modes`,
+which a test holds equal to okg's `COMPLETED_SCOPE_RUN_MODES` and to the
+`reference_catalog` profile's accepted modes. Connectors may not import
+`okg.substrate` (`okg lint deployments`, DEPLOYMENT-001), so the set is copied,
+not imported. AKMON v0.2.0 now exports the set from `okg.deployment` (mitdbg/okg#3317, merged),
+so the readers can import it from there; that switch is a follow-up, not done
+here. The cursor uses the public `okg.deployment.Checkpoint`, added to the
+import block below.
+
+**Cache downloaders and a snapshot builder moved in (2026-09-28, comp-ops A4).**
+The JIRA, static-docs and SSO-login downloaders and the download manifest moved
+from okg-deployments `cms/scripts` into `archi.downloaders`; they import nothing
+from okg. `python -m archi.snapshot build` packs existing caches into one
+checksummed, email-free `tar.zst` per group plus `snapshot.lock.yaml` (collection
+date, SHA-256, file and record counts per group); `verify` checks archives
+against the lock. Each group is validated by running its own archi reader. No
+real snapshot is built yet. See [cache snapshots](cache-snapshot.md). No okg
+import was added, so the import block below is unchanged.
+
+**Comp-ops readers can now be run by okg (2026-09-27).** CRIC, CRIC core, DQM,
+GOCDB downtimes, CondDB global tags, DBS datasets, WMStats workflows and GitHub
+repositories each gain a registry adapter (`CRICAdapter`, `CRICCoreAdapter`,
+`DQMAdapter`, `GoCDBDowntimeAdapter`, `CondDBGlobalTagAdapter`,
+`DBSDatasetAdapter`, `WMStatsWorkflowAdapter`, `GitHubRepoAdapter`), and the
+registry template in each reader's docstring now names it. Before, the template
+named the bare reader, and okg's runner failed every run because the reader's
+result has no `next_cursor`. Tested against okg `5b2fd076c`.
+
+**Their templates now pass okg's install checks (2026-09-27).** The eight
+templates had declared profile combinations okg refuses; they now declare
+`scoped_locator` (CRIC, CRIC core, DQM, GOCDB), `domain_key` (CondDB, DBS,
+GitHub repositories) and `updated_at` revisions (WMStats), which is what the
+okg-deployments cms registry declared for the same reader code. No reader
+code changed, so no node is re-keyed. The GitHub template's empty `params:`
+became `{}`, which strict admission requires. Tests run each template through
+okg's profile check and strict registry admission, on both okg `5b2fd076c`
+and okg `dev` @ `fdf5638bf`. HyperNews, SITECONF, the four MONIT readers and
+`CERNPreflightSource` still have no adapter.
+
 **CI reads `mitdbg/okg` directly; pin bumped `5b2fd076c` → `ac078aabd`
-(2026-09-27, OKG#1906).** Every CI run since 2026-09-24 failed at the okg install
+(2026-09-27, OKG#1906). Superseded 2026-10-20 by the AKMON wheel above.** Every CI run since 2026-09-24 failed at the okg install
 with `Authentication failed`: the fork token no longer worked. CI now installs okg
 over SSH from `mitdbg/okg` with a read-only deploy key held in the repository
 secret `OKG_DEPLOY_KEY`; CI no longer uses the fork or `OKG_REPO_TOKEN`. The pin moved
@@ -41,8 +142,8 @@ path and SHA256 binding that never fetches in frozen mode. It preserves the live
 profile. The historical CMSSW cache is still unavailable; unit fixtures are not
 real-deployment baseline evidence. See [frozen CMSSW inputs](frozen-cmssw-input.md).
 
-*Last updated 2026-09-27, tested against okg `dev` @ `ac078aabd`; archi branch
-`archi_v3` @ `519b48a8`.*
+*Last updated 2026-10-20, tested against AKMON v0.2.0 @ `e2c618010b` (cut from okg `54e6cf44ee`); archi branch
+`main` @ `e1c28860`.*
 
 **Pin bumped `34efbad1b` → `5b2fd076c` (2026-09-15), OKG#1906.** The fork was
 synced to okg `dev` first; it had no commits of its own. Full archi suite
@@ -61,11 +162,11 @@ claim here was true of local runs only. Nothing failed, which is why nobody noti
 Found only because the connector SDK migration failed CI on `ImportError: cannot
 import name 'EdgeFact'` — the SDK did not exist in the pinned commit.
 
-**CI stopped using the fork on 2026-09-27.** It could not do so while CI
+**CI stopped using the fork on 2026-09-27 (deploy key since superseded by the AKMON wheel, 2026-10-20).** It could not do so while CI
 authenticated with `OKG_REPO_TOKEN`, a fine-grained token scoped to the fork's
 account (reading `mitdbg/okg` returned 403, run `34494575759`). The read-only
 deploy key on `mitdbg/okg` replaces both, so a pin bump no longer needs a fork sync.
-The workflow pin must still equal the commit in the *Last updated* line above.
+The workflow release must still equal the release in the *Last updated* line above.
 
 **Our migration debt, now measured rather than estimated.** 43 imports of
 `okg.substrate.*` across ten private modules:
@@ -304,8 +405,8 @@ below it is still private substrate, and all of it is enricher-side.
 
 ```
 okg.deployment:
-    NodeFact, EdgeFact, ProgressMarker,
-    ConnectorRun, ConnectorHealth, PreflightResult,
+    NodeFact, EdgeFact, ImageRef, ProgressMarker,
+    ConnectorRun, ConnectorHealth, PreflightResult, Checkpoint,
     ConnectorAdapter,
     ContentHashProbe, MutableApiProbe,
     file_preflight, credential_preflight, http_preflight, redact
