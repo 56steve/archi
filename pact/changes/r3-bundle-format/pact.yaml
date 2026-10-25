@@ -130,7 +130,7 @@ evidence:
   requirement: req.r3-bundle-format.manifests
   status: pass
   command: python -m pytest python/tests/bundles/test_manifest_schema.py -q
-  head: ba5aa7e97962ec1740d10355671e90814aca4431
+  head: 4b653632b9a922a4edabf67799d53579e774944c
   at: '2026-10-25T13:03:35+00:00'
   note: 'acc.r3-bundle-format.schema: 45 passed. Both published JSON schemas are valid draft
     2020-12 schemas that refuse unknown keys; the valid fixture catalog loads clean; one test
