@@ -171,4 +171,23 @@ evidence:
     admission drift), shown by a separate test. The rendered registry entries, schemas, invariants,
     files and playbooks equal what okg builds from the hand-written profile. Full suite 2025
     passed, 1 skipped.'
+- kind: executed_test
+  requirement: req.r3-bundle-format.packaging
+  status: pass
+  command: python -m pytest python/tests/bundles/test_packaging.py -q
+  head: ee7c6802cfedeeab7d2f9821ca89a3d8ec954338
+  at: '2026-10-25T13:19:54+00:00'
+  note: 'acc.r3-bundle-format.wheel and acc.r3-bundle-format.third-party: 9 passed, on built
+    artifacts. The hatchling-built archi wheel has no symlink entry, carries every file under
+    bundles/ and skills/ (symlinks followed) byte for byte under archi/_payload/, the manifest
+    schemas and base files, and registers the archi.packs / archi.bundles entry points. Unpacked
+    first on PYTHONPATH (archi imported from the wheel, asserted), archi bundles list --json
+    lists every bundle in the repo (today cern-team, as a legacy profile) from inside the
+    wheel. A fixture third-party package built as its own wheel registers a pack and a bundle
+    through the same groups: both are listed with provider ''fixture (archi-fixture-packs
+    0.0.1)'', archi render --bundle mirror-team renders it, and okg install --dry-run from
+    the instance dir with OKG_PROFILES_DIR unset returns dry_run_ok with --repo-mirror-url
+    answered. archi render --bundle cern-team copies the wheel''s legacy profile into ./profiles
+    and okg finds it with OKG_PROFILES_DIR unset. A broken entry point is listed as a problem
+    without hiding the rest. Full suite 2035 passed, 1 skipped.'
 decisions: []
