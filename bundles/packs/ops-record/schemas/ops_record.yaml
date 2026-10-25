@@ -79,7 +79,7 @@ classes:
         description: The normalised error text or code, for matching recurrences.
       severity:
       status:
-        description: open | mitigated | resolved
+        description: open | mitigated | resolved | false_alarm (not a real problem, no action needed)
         annotations:
           filterable: 'true'
           value_type: text
@@ -288,7 +288,7 @@ classes:
       action_id:
       result:
         required: true
-        description: resolved | not_resolved | partial | unknown
+        description: resolved | not_resolved | partial | unknown | no_action_needed (checked, and nothing needed doing)
         annotations:
           filterable: 'true'
           value_type: text
