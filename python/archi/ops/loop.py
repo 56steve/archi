@@ -279,6 +279,8 @@ def validate_proposal(
     if errors:
         raise ProposalError("; ".join(errors))
     confidence = raw.get("confidence")
+    if draft is None and level == "L1" and isinstance(payload.get("body"), str):
+        draft = payload["body"]  # a draft_reply's body is the draft (proposal schemas carry no `draft` key)
     return Proposal(
         summary=summary,
         evidence_ids=tuple(dict.fromkeys(evidence)),

@@ -114,3 +114,16 @@ def settings_problems(settings: Any, key: str, where: str) -> list[str]:
         if message:
             out.append(message)
     return out
+
+
+def instance_levels(automations: Optional[Mapping[str, Mapping[str, str]]]) -> dict[str, Optional[str]]:
+    """The level each automation is set to in archi.yaml (`Instance.automations`),
+    by name; None for one that sets none. Raises LevelError on L3 or an unknown level."""
+    out: dict[str, Optional[str]] = {}
+    for name, body in (automations or {}).items():
+        level = body.get("level")
+        message = level_problem(level, f"automations.{name}.level") if level is not None else None
+        if message:
+            raise LevelError(message)
+        out[name] = level
+    return out

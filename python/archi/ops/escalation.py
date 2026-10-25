@@ -137,3 +137,49 @@ def may_execute(decision: Decision, escalation: Optional[Escalation], now: datet
             late=True,
         )
     return Execution(True, "approved within the deadline")
+
+
+# --- reading an escalation row back (okg.escalation_live) ---------------------------
+
+SUBJECT_PREFIX = "ops_proposal:"
+OPEN_STATES = ("pending", "routed")
+
+
+def subject_for(proposal_id: str) -> str:
+    """The node id an escalation names as its subject."""
+    return SUBJECT_PREFIX + proposal_id
+
+
+def _moment(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def decision_from_row(escalation_id: str, subject: Optional[str], attrs: Optional[Mapping[str, Any]]) -> Decision:
+    """The Decision an `okg.escalation_live` row (current version) describes.
+
+    `subject` is the row's `subject_node_id`; the proposal the person decided on
+    is read from it, never assumed. A row still open, missing, or with a
+    verdict outside the schema is an error decision, so it can never execute.
+    """
+    proposal_id = subject[len(SUBJECT_PREFIX):] if subject and subject.startswith(SUBJECT_PREFIX) else None
+    if attrs is None:
+        return Decision(ERROR, proposal_id, escalation_id, error="escalation row not found")
+    status = attrs.get("status")
+    common = dict(proposal_id=proposal_id, escalation_id=escalation_id, decided_by=attrs.get("decided_by"),
+                  decided_at=_moment(attrs.get("decided_at")))
+    if status == "timed_out":
+        return Decision(TIMED_OUT, **common)
+    if status not in ("decided", "applied"):
+        return Decision(ERROR, **{**common, "decided_at": None}, error=f"escalation is {status}, not decided")
+    try:
+        verdict, note = parse_decision_payload(attrs.get("decision"))
+    except DecisionPayloadError as exc:
+        return Decision(ERROR, **common, error=f"decision payload refused: {exc}")
+    return Decision(APPROVED if verdict == "approve" else REJECTED, **common, note=note)

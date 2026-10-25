@@ -290,8 +290,12 @@ def submit(
     producer_id: str = PRODUCER_ID,
     dsn: Optional[str] = None,
     okg: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
 ) -> dict[str, Any]:
     """Submit `records` through okg admission; return okg's JSON reply.
+
+    `idempotency_key` makes a replay of the same call (a recovered workflow step)
+    write once: okg answers the second submit with `inserted: false`.
 
     Raises RecordError when the batch is empty or okg refuses it.
     """
@@ -316,6 +320,8 @@ def submit(
         ]
         if dsn:
             cmd += ["--dsn", dsn]
+        if idempotency_key:
+            cmd += ["--idempotency-key", idempotency_key]
         result = subprocess.run(cmd, capture_output=True, text=True)
     reply = _json_or_none(result.stdout)
     if result.returncode != 0 or reply is None:

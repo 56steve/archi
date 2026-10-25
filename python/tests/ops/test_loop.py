@@ -630,3 +630,14 @@ def test_a_mediator_step_that_refuses_supersedes_the_approval(verdict):
     assert w.recorder.calls[-1] == decision(
         verdict, "guard says no; supersedes the approval by alice (esc-1)", at_=60, **ALICE)
     assert w.recorder.calls[-2][2]["verdict"] == "approved" and "action" not in w.kinds
+
+
+def test_an_l1_draft_reply_body_is_recorded_as_the_draft():
+    reply = {"summary": "reply", "evidence_ids": ["jira:A-1"], "action_class": "draft_reply",
+             "payload": {"ticket_key": "A-1", "body": "We restarted it."}}
+    w = World(proposal=reply)
+    w.run(config("L1"))
+    assert w.recorder.calls[1][2]["draft"] == "We restarted it."
+    w2 = World(proposal={**reply, "action_class": "restart_service", "payload": {"service": "x"}})
+    w2.run(config("L1"))
+    assert "draft" not in w2.recorder.calls[1][2]  # no body, no draft
