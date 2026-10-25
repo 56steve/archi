@@ -105,7 +105,10 @@ def test_render_writes_the_lock(tmp_path):
     assert lock["packs"]["alpha"]["digest"].startswith("sha256:")
     files = lock["profile"]["files"]
     assert "profile.yaml" in files and "source-defaults/alpha.pages.yaml" in files
-    assert lock["composed"]["freshness"] == {"alpha.pages": {"max_staleness": "24h"}}
+    assert lock["composed"]["freshness"] == {
+        "alpha.pages": {"max_staleness": "24h"},
+        "beta.issues": {"max_staleness": "24h"},
+    }
     assert lock["composed"]["sources"] == {"alpha.pages": "alpha", "beta.issues": "beta"}
     assert lock["deployment"] is None
 

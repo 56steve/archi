@@ -20,6 +20,8 @@ from typing import Any, Iterable, Mapping, Optional
 
 import yaml
 
+from archi.bundles.duration import parse_duration
+
 SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 BASE_DIR = Path(__file__).resolve().parent / "base"
 
@@ -154,6 +156,14 @@ class Pack:
     def freshness(self) -> dict[str, dict[str, str]]:
         return dict(self.manifest.get("freshness", {}))
 
+    def max_staleness_seconds(self) -> dict[str, int]:
+        """Rendered source id -> declared `max_staleness`, in seconds."""
+        return {sid: parse_duration(slo["max_staleness"]) for sid, slo in self.freshness.items()}
+
+    @property
+    def link_coverage(self) -> tuple[dict[str, Any], ...]:
+        return tuple(dict(t) for t in self.manifest.get("link_coverage", ()))
+
     @property
     def files(self) -> tuple[str, ...]:
         return tuple(self.manifest.get("files", ()))
@@ -248,6 +258,19 @@ def _credential_value_problems(value: Any, where: str, path: Path) -> list[Probl
     return out
 
 
+def _output_edges(entry: Any) -> set[tuple[str, str, str]]:
+    """(src_subtype, edge_type, dst_subtype) triples a source template declares."""
+    try:
+        edges = entry["admission_policy"]["output_signature"].get("edges") or []
+    except (KeyError, TypeError, AttributeError):
+        return set()
+    out = set()
+    for edge in edges:
+        if isinstance(edge, Mapping) and {"src_subtype", "edge_type", "dst_subtype"} <= set(edge):
+            out.add((edge["src_subtype"], edge["edge_type"], edge["dst_subtype"]))
+    return out
+
+
 def _template_refs(text: str) -> set[str]:
     return set(TEMPLATE_REF.findall(text))
 
@@ -337,6 +360,7 @@ def validate_pack(directory: Path) -> list[Problem]:
     )
 
     sources = pack.sources()
+    declared_edges: set[tuple[str, str, str]] = set()
     if "sources" in data and data["kind"] == "context" and not sources:
         problems.append(Problem(manifest_path, f"sources: {data['sources']!r} holds no *.yaml template"))
     for source, template in sources.items():
@@ -356,12 +380,44 @@ def validate_pack(directory: Path) -> list[Problem]:
                 Problem(template, f"references ${{{ref}}}, which is neither a base question, one of this pack's questions, nor a question of a pack it requires")
             )
         problems.extend(_credential_value_problems(body, "", template))
+        declared_edges |= _output_edges(body[source])
 
-    for source_id in data.get("freshness", {}):
+    for source_id, slo in data.get("freshness", {}).items():
         pack_name, _, source = source_id.partition(".")
         if pack_name != pack.name or source not in sources:
             problems.append(
                 Problem(manifest_path, f"freshness: {source_id!r} is not one of this pack's sources ({pack.name}.<source>)")
+            )
+        try:
+            parse_duration(slo["max_staleness"])
+        except ValueError as exc:
+            problems.append(Problem(manifest_path, f"freshness.{source_id}.max_staleness: {exc}"))
+    # ADR 0002 section 6.1: every source of a context pack declares how stale
+    # it may get, so `archi doctor` and context gates have a number to hold it to.
+    if data["kind"] == "context":
+        for source in sources:
+            if f"{pack.name}.{source}" not in data.get("freshness", {}):
+                problems.append(
+                    Problem(manifest_path, f"freshness: source {pack.name}.{source} declares no max_staleness")
+                )
+
+    link_names: set[str] = set()
+    for i, target in enumerate(data.get("link_coverage", ())):
+        where = f"link_coverage[{i}]"
+        if target["name"] in link_names:
+            problems.append(Problem(manifest_path, f"{where}.name: duplicate target {target['name']!r}"))
+        link_names.add(target["name"])
+        if target.get("direction", "out") == "in":
+            edge = (target["to"], target["edge"], target["from"])
+        else:
+            edge = (target["from"], target["edge"], target["to"])
+        if edge not in declared_edges:
+            problems.append(
+                Problem(
+                    manifest_path,
+                    f"{where}: no source of this pack declares the edge "
+                    f"{edge[0]} -[{edge[1]}]-> {edge[2]} in its output_signature",
+                )
             )
 
     if "invariants" in data:

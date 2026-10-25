@@ -8,6 +8,16 @@ schemas: schemas/
 sources: sources/
 init_questions: questions.yaml
 invariants: invariants.yaml
+# Commits land daily and questions ask what the code is now; the sources are
+# reconciled by hand, so 24h is the bound to hold the operator to.
+freshness:
+  git-code.git_history: {max_staleness: 24h}
+  git-code.repo: {max_staleness: 24h}
+# Link-coverage targets (ADR 0002 section 6.1): each becomes the warn-level
+# invariant git_code_link_<name>.
+link_coverage:
+  # A tag names a release by the commit it points at.
+  - {name: tag_commit, from: git_tag, edge: references, to: git_commit, direction: out, min_fraction: 0.95}
 search_subtypes: [source_file, git_commit, git_file_diff, git_tag]
 prompt_fragment: prompt.md
 # The connector clones with the operator's own git credentials; a public

@@ -7,6 +7,10 @@ requires:
 schemas: schemas/
 sources: sources/
 invariants: invariants.yaml
+# Documentation sites change weekly at most, and the downloader is run by
+# hand: 7d.
+freshness:
+  docsite.docsite: {max_staleness: 7d}
 search_subtypes: [documentation_page, software_repository, document_chunk]
 prompt_fragment: prompt.md
 # The downloader fetches public pages; no credential is read.

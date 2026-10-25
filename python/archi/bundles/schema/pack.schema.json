@@ -52,7 +52,7 @@
       "$ref": "#/$defs/relpath"
     },
     "freshness": {
-      "description": "Freshness SLOs keyed by rendered source id (<pack>.<source>).",
+      "description": "Freshness SLOs keyed by rendered source id (<pack>.<source>). A context pack with sources declares one for every source; `archi doctor` compares each source's age, from okg's watermarks, to it.",
       "type": "object",
       "propertyNames": {"pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9_]*$"},
       "additionalProperties": {
@@ -61,9 +61,45 @@
         "required": ["max_staleness"],
         "properties": {
           "max_staleness": {
+            "description": "Longest acceptable age of the source's last successful run: a positive integer and one unit of s, m, h, d or w (36h, 7d).",
             "type": "string",
             "pattern": "^[1-9][0-9]*[smhdw]$"
           }
+        }
+      }
+    },
+    "link_coverage": {
+      "description": "Link-coverage targets for the identifiers the pack carries. Composition turns each into an okg invariant named <pack>_link_<name> that is checked per generation.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "from", "edge", "to", "min_fraction"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "from": {
+            "description": "Subtype of the nodes that carry the identifier.",
+            "type": "string", "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "edge": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "to": {
+            "description": "Subtype the carriers must link to.",
+            "type": "string", "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "direction": {
+            "description": "out: from -[edge]-> to (default). in: to -[edge]-> from.",
+            "enum": ["out", "in"]
+          },
+          "min_fraction": {
+            "description": "Share of `from` nodes that must have such an edge.",
+            "type": "number", "exclusiveMinimum": 0, "maximum": 1
+          },
+          "severity": {
+            "description": "warn (default) reports a miss; error blocks the publish.",
+            "enum": ["warn", "error"]
+          },
+          "description": {"type": "string", "minLength": 1}
         }
       }
     },

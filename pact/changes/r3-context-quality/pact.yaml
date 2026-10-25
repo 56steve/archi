@@ -9,7 +9,9 @@ why: Automations act on what the graph says, so the context layer has to be meas
   D12.
 affected_code:
 - bundles/packs/
-- python/archi/doctor/
+- python/archi/stack/
+- python/archi/bundles/
+- python/archi/ops/
 - python/archi/evaluation/
 - python/archi/enrichment/
 requirements:

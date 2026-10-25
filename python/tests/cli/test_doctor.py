@@ -13,6 +13,7 @@ import json
 import os
 import re
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -83,7 +84,31 @@ def healthy_db(dsn, sql):
     raise AssertionError(sql)
 
 
+def shipped_source_ids() -> list[str]:
+    """Every `<pack>.<source>` id the shipped packs give a max_staleness."""
+    ids = []
+    for manifest in sorted((REPO / "bundles" / "packs").glob("*/pack.yaml")):
+        ids += list((yaml.safe_load(manifest.read_text()) or {}).get("freshness", {}))
+    return ids
+
+
+def watermarks(age_hours=1, **late_hours):
+    """okg's `doctor --check sources` report: each shipped source last reconciled
+    `age_hours` ago, except those named in `late_hours` (source id with `.` as `__`)."""
+    now = datetime.now(timezone.utc)
+    sources = []
+    for sid in shipped_source_ids():
+        hours = late_hours.get(sid.replace(".", "__"), age_hours)
+        stamp = None if hours is None else (now - timedelta(hours=hours)).isoformat()
+        sources.append({"name": sid, "ownership_id": f"myteam.{sid.split('.', 1)[1]}",
+                        "coverage": {"watermark": {"last_reconcile_at": stamp} if stamp else {}}})
+    return {"returncode": 0, "data": {"ok": True, "runtime_available": True, "runtime_error": None,
+                                      "sources": sources, "errors": []}}
+
+
 def healthy_okg(*args):
+    if args[:3] == ("doctor", "--check", "sources"):
+        return watermarks()
     if args[0] == "status":
         return {"returncode": 0, "data": {"publishing": {
             "latest_published_generation": "okg:myteam:gen:1",
@@ -126,7 +151,8 @@ def test_doctor_report_is_json_for_agents(instance):
     assert report["ok"] is True
     json.dumps(report)
     assert {c["id"] for c in report["checks"]} >= {"okg-lint", "okg-doctor", "published"}
-    assert all(c["footgun"] for c in report["checks"] if c["id"] not in ("okg-lint", "okg-doctor"))
+    assert all(c["footgun"] for c in report["checks"]
+               if c["id"] not in ("okg-lint", "okg-doctor", "source-freshness"))
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +271,15 @@ def break_okg_lint(inst):
     return {"okg_json": okg}
 
 
+def break_source_freshness(inst):
+    def okg(*args):
+        if args[:3] == ("doctor", "--check", "sources"):
+            return watermarks(docsite__docsite=24 * 30)  # docsite allows 7d
+        return healthy_okg(*args)
+
+    return {"okg_json": okg}
+
+
 def break_okg_doctor(inst):
     def okg(*args):
         if args[0] == "doctor":
@@ -277,6 +312,7 @@ FIXTURES = {
     "webui-up": break_webui_up,
     "okg-lint": break_okg_lint,
     "okg-doctor": break_okg_doctor,
+    "source-freshness": break_source_freshness,
 }
 
 #: A check that warns rather than fails: the setting does not break archi,
@@ -294,7 +330,7 @@ def test_each_check_has_a_failing_fixture(instance, check_id):
 
 
 def test_every_check_has_a_failing_fixture():
-    registered = {check_id for check_id, _, _ in CHECKS} | {"okg-lint", "okg-doctor"}
+    registered = {check_id for check_id, _, _ in CHECKS} | {"okg-lint", "okg-doctor", "source-freshness"}
     assert registered == set(FIXTURES)
 
 

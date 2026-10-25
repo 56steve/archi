@@ -10,6 +10,9 @@ sources: sources/
 init_questions: questions.yaml
 invariants: invariants.yaml
 files: [extractors.yaml]
+# Rebuilt from git-code's checkout; same bound as git-code.
+freshness:
+  code-text.code_text: {max_staleness: 24h}
 search_subtypes: [document, document_chunk]
 prompt_fragment: prompt.md
 # It reads git-code's checkout and fetches nothing itself.

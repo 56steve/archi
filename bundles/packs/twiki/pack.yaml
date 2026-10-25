@@ -8,6 +8,9 @@ schemas: schemas/
 sources: sources/
 init_questions: questions.yaml
 invariants: invariants.yaml
+# The EOS dump is refreshed outside archi and TWiki topics change slowly: 7d.
+freshness:
+  twiki.twiki_eos: {max_staleness: 7d}
 search_subtypes: [documentation_page, document_chunk]
 prompt_fragment: prompt.md
 # The dump lives on CERN EOS, which only a CERN account can read; with no

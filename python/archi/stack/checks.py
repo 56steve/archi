@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import stat
 import subprocess
+from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -88,6 +89,7 @@ class Probes:
     mcp: Callable[[str, str], dict[str, Any]] = _mcp_probe
     environ: Optional[Mapping[str, str]] = None
     installed_okg: Optional[Callable[[], Optional[str]]] = None
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
 
 @dataclass
@@ -481,8 +483,49 @@ def okg_doctor(ctx: Context) -> Result:
     return Result("okg-doctor", PASS, "okg doctor: ok")
 
 
+def source_freshness(ctx: Context) -> Result:
+    """Each source's age, from okg's watermarks, against its pack's `max_staleness`.
+
+    `data.sources` lists `{source, age, max_staleness, ok}` (plus seconds and
+    a reason) for automations and context gates.
+    """
+    from archi.bundles.lock import LockError, read_lock
+    from archi.stack.freshness import evaluate
+
+    if ctx.probes.okg_json is None:
+        return Result("source-freshness", SKIP, "no okg runner")
+    try:
+        slos = read_lock(ctx.instance.dir).get("composed", {}).get("freshness") or {}
+    except LockError as exc:
+        return Result("source-freshness", SKIP, f"no pack freshness SLOs to check: {exc}")
+    if not slos:
+        return Result("source-freshness", SKIP, "no selected pack declares freshness")
+    out = ctx.probes.okg_json("doctor", "--check", "sources", "--deployment", ctx.instance.name)
+    report = out.get("data") or {}
+    if out.get("returncode") not in (0, None) and not report.get("sources"):
+        return Result("source-freshness", FAIL, "okg could not report source watermarks",
+                      f"okg doctor --check sources --deployment {ctx.instance.name} --json")
+    if not report.get("runtime_available"):
+        return Result("source-freshness", FAIL,
+                      f"okg cannot read the watermarks: {report.get('runtime_error') or 'runtime unavailable'}",
+                      "archi up; then archi doctor again (the graph database must answer)")
+    rows = evaluate(slos, report.get("sources") or [], ctx.probes.now())
+    late = [r for r in rows if not r["ok"]]
+    if late:
+        first = late[0]
+        more = f" (+{len(late) - 1} more)" if len(late) > 1 else ""
+        return Result("source-freshness", FAIL,
+                      f"{len(late)} of {len(rows)} sources over their max_staleness: "
+                      f"{first['source']}: {first['reason']}{more}",
+                      f"okg ingest --deployment {ctx.instance.name} (run in the instance); to relax the "
+                      "limit, edit the pack's freshness: and re-render",
+                      data={"sources": rows})
+    return Result("source-freshness", PASS, f"all {len(rows)} sources are within their max_staleness",
+                  data={"sources": rows})
+
+
 def run_checks(ctx: Context) -> list[Result]:
-    results = [okg_lint(ctx), okg_doctor(ctx)]
+    results = [okg_lint(ctx), okg_doctor(ctx), source_freshness(ctx)]
     for check_id, footgun, fn in CHECKS:
         try:
             result = fn(ctx)
