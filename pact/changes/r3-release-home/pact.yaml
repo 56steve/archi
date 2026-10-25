@@ -19,14 +19,19 @@ requirements:
 - id: req.r3-release-home.home
   statement: 'archi-physics/archi archi_v3 equals archi-okg main (history preserved), the
     previous archi_v3 tip is kept as tag archi_v3-pre-merge, and any commit on it not already
-    in archi-okg is either carried over or listed as dropped with a reason. Working rules
-    (AGENTS.md, CLAUDE.md, pact/project.yaml pr_policy) agree on where PRs land.
+    in archi-okg is either carried over or listed as dropped with a reason.
 
 
     Acceptance:
 
     - acc.r3-release-home.parity: git diff archi-okg/main archi/archi_v3 is empty after the
-    merge. [evidence: manual]
+    merge. [evidence: manual]'
+- id: req.r3-release-home.rules
+  statement: 'Working rules (AGENTS.md, CLAUDE.md, pact/project.yaml pr_policy) agree on where
+    PRs land.
+
+
+    Acceptance:
 
     - acc.r3-release-home.rules: AGENTS.md, CLAUDE.md and pact/project.yaml name the same
     PR base. [evidence: manual]'
@@ -63,7 +68,7 @@ tasks:
 
     - git log archi_v3-pre-merge --not archi-okg/main reviewed [evidence: manual]'
 - id: task.r3-release-home.rules
-  requirement: req.r3-release-home.home
+  requirement: req.r3-release-home.rules
   verification: 'Edit the three rule files together.
 
 
@@ -94,5 +99,16 @@ tasks:
     Test plan:
 
     - repo settings screenshot or API output [evidence: manual]'
-evidence: []
+evidence:
+- kind: manual
+  requirement: req.r3-release-home.home
+  status: pass
+  head: 011f5d64195f2fa47dbc051679c47e1c6c2ae8ab
+  at: '2026-10-25T01:39:46+00:00'
+  note: 'acc.r3-release-home.parity. archi-physics/archi archi_v3 and archi-physics/archi-okg
+    main both point at 011f5d64 (archi #764: a merge, not a force-push), and git diff
+    archi-okg/main archi/archi_v3 is empty. The old tip 09299e4e is tag archi_v3-pre-merge.
+    git log --no-merges archi-okg/main..archi_v3-pre-merge is now empty; the 011f5d64 commit
+    message records what was carried over (the 3.0 plan and approvals) and what was superseded
+    (the deploy-key CI, 54219413 and 41863a7e).'
 decisions: []
