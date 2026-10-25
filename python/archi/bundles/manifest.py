@@ -330,6 +330,11 @@ def validate_pack(directory: Path) -> list[Problem]:
         qproblems, question_ids = _question_problems(qpath, _read_yaml(qpath, problems))
         problems.extend(qproblems)
     known_refs = base_answer_ids() | question_ids
+    # A template may also name a question of a pack this one requires, by its
+    # rendered id (`${git_code_repo_name}`); compose checks it exists.
+    required_prefixes = tuple(
+        dep.replace("-", "_") + "_" for dep in data.get("requires", {}).get("packs", ())
+    )
 
     sources = pack.sources()
     if "sources" in data and data["kind"] == "context" and not sources:
@@ -345,8 +350,10 @@ def validate_pack(directory: Path) -> list[Problem]:
             )
             continue
         for ref in sorted(_template_refs(text) - known_refs):
+            if ref.startswith(required_prefixes):
+                continue
             problems.append(
-                Problem(template, f"references ${{{ref}}}, which is neither a base question nor one of this pack's questions")
+                Problem(template, f"references ${{{ref}}}, which is neither a base question, one of this pack's questions, nor a question of a pack it requires")
             )
         problems.extend(_credential_value_problems(body, "", template))
 

@@ -1,0 +1,14 @@
+name: cds
+kind: context
+version: 0.1.0
+description: CERN Document Server records, harvested over the public OAI-PMH endpoint.
+requires:
+  modules: [document_starter, person, extraction]
+schemas: schemas/
+sources: sources/
+init_questions: questions.yaml
+invariants: invariants.yaml
+search_subtypes: [cds_record]
+prompt_fragment: prompt.md
+# The OAI-PMH endpoint is public.
+needs_credentials: false

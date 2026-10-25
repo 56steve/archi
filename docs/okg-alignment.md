@@ -216,7 +216,9 @@ environment, sealed packages and lifecycle receipts that would make an
 acknowledgement outlive the day it is issued.
 
 **The bundle now ships the assistant's system prompt (2026-09-08, PR #632).**
-`bundles/cern-team/skills/chat-system-prompt.md`, declared as
+`skills/chat-system-prompt.md` (since PACT r3-packs-split the renderer writes it
+into the rendered profile from `python/archi/bundles/base/` and each pack's
+`prompt_fragment`), declared as
 `chat.preset.system_prompt_ref`. This is required, not decorative: `okg chat sync`
 refuses a deployment that declares neither `mcp_instructions` nor a
 `system_prompt_ref`, because Open WebUI never shows the model the MCP server's own
@@ -448,8 +450,8 @@ never referenced `next_cursor`, but the runner does, on the result of whatever
 class a source registry names. So a reader that returns `ConnectorRun` cannot be
 registered directly: every run raised `AttributeError: 'ConnectorRun' object has
 no attribute 'next_cursor'` from the connector migration until this was fixed.
-`ConnectorAdapter` is the framework's bridge, and `bundles/cern-team/source-defaults`
-now names one `<Reader>Adapter` per reader. The readers themselves are unchanged.
+`ConnectorAdapter` is the framework's bridge, and the shipped source templates
+(now `bundles/packs/*/sources/`) name one `<Reader>Adapter` per reader. The readers themselves are unchanged.
 
 **An adapter's authority must be a string literal (2026-09-20).** The substrate
 reads a source's `profile` and `change_probe_kind` off the class *before* it

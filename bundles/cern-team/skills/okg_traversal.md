@@ -1,1 +1,0 @@
-../../../skills/okg_traversal.md

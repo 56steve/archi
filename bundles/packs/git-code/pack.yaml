@@ -1,0 +1,15 @@
+name: git-code
+kind: context
+version: 0.1.0
+description: One Git repository's tracked files and history (commits, tags, authors, per-file diffs).
+requires:
+  modules: [document_starter, person, extraction, git_graph]
+schemas: schemas/
+sources: sources/
+init_questions: questions.yaml
+invariants: invariants.yaml
+search_subtypes: [source_file, git_commit, git_file_diff, git_tag]
+prompt_fragment: prompt.md
+# The connector clones with the operator's own git credentials; a public
+# repository needs none.
+needs_credentials: false

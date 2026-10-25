@@ -47,11 +47,15 @@ not leave that directory (`..`, absolute paths and `~` are refused).
 | `prompt_fragment` | | Markdown appended to the chat system prompt. |
 | `credentials` | | Environment-variable **names** the pack reads. |
 
-Source templates may reference two kinds of answers: the base questions
+Source templates may reference three kinds of answers: the base questions
 every instance has (`deployment_name`, `postgres_dsn`, `archi_data_root`,
 `chat_site_name`, `chat_model`; see
-[`base/questions.yaml`](../python/archi/bundles/base/questions.yaml)) and the
-pack's own questions, by their local id (`${site_url}`).
+[`base/questions.yaml`](../python/archi/bundles/base/questions.yaml)), the
+pack's own questions, by their local id (`${site_url}`), and the questions of
+a pack listed in `requires.packs`, by their rendered id
+(`${git_code_repo_name}` for `git-code`'s `repo_name`). The last kind is
+checked when the packs are composed: a reference no selected pack asks stops
+the render.
 
 ## bundle.yaml
 
@@ -82,7 +86,8 @@ Besides the schema, `validate` refuses:
   holding a literal instead of `${VAR}`, or a credential question with a
   default;
 - a template reference to a question that neither the base nor the pack
-  declares;
+  declares, unless it names a required pack's question (`${<pack>_<id>}`,
+  checked when the packs are composed);
 - a `freshness` key that is not one of the pack's own sources;
 - a bundle that names an unknown pack or bundle, extends itself in a cycle,
   or has no credential-free default context pack with sources (taking
@@ -159,12 +164,12 @@ the name labels the provider in `archi bundles list`. Two providers shipping
 a pack or bundle of the same name, or an entry point that fails to load, are
 listed as problems and do not hide the rest.
 
-A bundle directory that still holds an okg `profile.yaml` and no
-`bundle.yaml` (cern-team, until PACT `r3-bundle-cern-team`) is listed as a
-legacy profile. `archi render --bundle cern-team --instance DIR` copies it,
-symlinks followed, to `DIR/profiles/cern-team/`. Either way the profile lands
-in `<instance>/profiles/`, and okg run from the instance directory finds it,
-so no step sets `OKG_PROFILES_DIR`.
+A bundle directory that holds an okg `profile.yaml` and no `bundle.yaml` is
+listed as a legacy profile, and `archi render --bundle <name> --instance DIR`
+copies it, symlinks followed, to `DIR/profiles/<name>/`. Every bundle archi
+ships is now a `bundle.yaml` (cern-team since PACT `r3-packs-split`). Either
+way the profile lands in `<instance>/profiles/`, and okg run from the instance
+directory finds it, so no step sets `OKG_PROFILES_DIR`.
 
 ## archi.lock, archi add, archi diff
 
@@ -182,7 +187,7 @@ archi diff            # exit 0: no drift; 1: drift; 2: no usable lock
 ```
 
 `archi add <pack>` re-renders the instance with one more pack (and whatever
-it requires), then adds to the installed deployment only what is new: the
+it requires that the instance lacks), then adds to the installed deployment only what is new: the
 pack's registry entries with this deployment's answers filled in, schema
 slices, files, playbooks, invariants, skill triggers, modules and search
 subtypes. A file the deployment already holds with different content stops

@@ -3,9 +3,10 @@
 #
 # Usage: golden_path_run.sh <empty work dir>
 #
-# Runs the user commands of the golden path with the cern-team defaults, times
+# Runs the user commands of the golden path with the cern-team bundle, times
 # each one, and checks each result:
-#   1. archi init gp --bundle cern-team     instance repo, secrets, published graph
+#   1. archi init gp --bundle cern-team --without docsite,indico --with cmssw-releases
+#                                           instance repo, secrets, published graph
 #   2. archi up                             graph-db, chat-db, mcp, webui; okg chat sync
 #   3. archi doctor --json                  every check passes
 #   4. mcp_cited_answer.py "<question>"     a search over MCP that cites node ids
@@ -38,7 +39,7 @@ cleanup() {
 trap cleanup EXIT
 
 step "1. archi init"
-"$V/archi" init gp --bundle cern-team --dir "$INST" --data-root "$RUN/data"
+"$V/archi" init gp --bundle cern-team --without docsite,indico --with cmssw-releases --dir "$INST" --data-root "$RUN/data"
 
 step "2. archi up"
 "$V/archi" up --instance "$INST"

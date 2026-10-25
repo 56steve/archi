@@ -447,7 +447,20 @@ def add(
         raise LockError(f"pack {pack!r} is already in this instance")
 
     sel = lock["selection"]
-    with_packs = [p for p in sel["with"] if p != pack] + [pack]
+    # The pack's requirements come along when the instance lacks them;
+    # resolve() refuses a --with pack whose requirement is not selected.
+    needed: list[str] = []
+
+    def visit(name: str) -> None:
+        if name not in catalog.packs:
+            return  # resolve() reports the unknown pack by name
+        for dep in catalog.packs[name].requires_packs:
+            visit(dep)
+        if name not in needed and name not in lock["packs"]:
+            needed.append(name)
+
+    visit(pack)
+    with_packs = [p for p in sel["with"] if p not in needed] + needed
     without = [p for p in sel["without"] if p != pack]
     resolution, rendered, new_lock = render_and_lock(
         catalog, instance_dir, sel["bundles"], with_packs, without,

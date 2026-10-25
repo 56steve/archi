@@ -247,6 +247,17 @@ def compose(resolution: Resolution) -> Composition:
             fragments.append(pack.path("prompt_fragment").read_text(encoding="utf-8").strip())
 
     comp.questions = list(question_defs.values())
+    for sid, text in comp.sources.items():
+        unknown = sorted(set(TEMPLATE_REF.findall(text)) - set(question_defs))
+        if unknown:
+            raise CompositionError(
+                "template_ref_unknown",
+                f"source {sid!r} references {', '.join('${' + u + '}' for u in unknown)}, "
+                "which no selected pack asks; a template may name only base questions, "
+                "its own pack's, and those of the packs it requires",
+                source=sid,
+                refs=unknown,
+            )
     if intents:
         comp.triggers = {"version": trigger_version, "intents": intents}
     comp.prompt = "\n\n".join([base_prompt().rstrip()] + fragments) + "\n"

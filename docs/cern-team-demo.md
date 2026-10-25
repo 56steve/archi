@@ -1,5 +1,13 @@
 # cern-team bundle — end-to-end install demo (executed runbook)
 
+> **Historical.** This runbook was executed on the cern-team layout before
+> PACT r3-packs-split, when the bundle was an okg profile with
+> `source-defaults/` and `.yaml.example` files. cern-team is now a bundle of
+> packs (`bundles/cern-team/bundle.yaml`, `bundles/packs/`); the current
+> install steps are in [the cern-team quickstart](cern-team-quickstart.md)
+> and [packs and bundles](packs-and-bundles.md). The results below are kept as
+> the record of that run.
+
 The Archi v3 assembly milestone: install the `cern-team` bundle
 (`bundles/cern-team/`) into a fresh instance, ingest all four
 connectors, publish, and read back. Every command below was executed

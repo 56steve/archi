@@ -139,20 +139,23 @@ def test_bundles_list_from_the_wheel_lists_every_bundle(site, tmp_path):
     assert archi_packs == expected_packs
 
 
-def test_a_shipped_legacy_profile_installs_without_okg_profiles_dir(site, tmp_path):
-    """`archi render --bundle cern-team` copies the wheel's profile into the
-    instance; okg, run from there, finds it with OKG_PROFILES_DIR unset."""
+def test_the_shipped_cern_team_bundle_installs_without_okg_profiles_dir(site, tmp_path):
+    """`archi render --bundle cern-team` composes the wheel's packs into the
+    instance; okg, run from there, finds the profile with OKG_PROFILES_DIR
+    unset and accepts it."""
     instance = tmp_path / "instance"
     result = _run(site, tmp_path, "render", "--bundle", "cern-team", "--instance", str(instance))
     assert result.returncode == 0, result.stderr
-    copied = instance / "profiles" / "cern-team"
-    assert not [p for p in copied.rglob("*") if p.is_symlink()]
+    assert "with packs docsite, indico, core-playbooks" in result.stdout
+    rendered = instance / "profiles" / "cern-team"
+    assert not [p for p in rendered.rglob("*") if p.is_symlink()]
     report = _okg(instance, "install", "--profile", "cern-team", "--deployment-name", "qt",
                   "--postgres-dsn", "postgresql://localhost:1/qt",
                   "--deployments-root", str(tmp_path / "deployments"),
                   "--dry-run", "--json", "--non-interactive")
-    assert report.returncode == 0, report.stderr[-1500:]
-    assert json.loads(report.stdout)["status"] == "dry_run_ok"
+    assert report.returncode == 0, report.stderr[-1500:] + report.stdout[-1500:]
+    data = json.loads(report.stdout)
+    assert data["status"] == "dry_run_ok" and data["blockers"] == []
 
 
 # ---------------------------------------------------------------------------

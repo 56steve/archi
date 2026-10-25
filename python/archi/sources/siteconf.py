@@ -24,7 +24,7 @@ ship in ``archi/schemas/operations.yaml``. ::
 
     siteconf:
       module: archi.sources.siteconf
-      class: SITECONFSource
+      class: SITECONFAdapter
       ownership_id: <instance>.siteconf
       admission_policy:
         producer_id: <instance>.siteconf
@@ -45,7 +45,7 @@ ship in ``archi/schemas/operations.yaml``. ::
           edges:
             - site contains site_config
       source_class: discovery_crawl
-      record_identity_kind: remote_id
+      record_identity_kind: scoped_locator
       record_identity_fields: [site_name]
       source_revision_kind: content_hash
       deletion_semantics: missing_from_completed_scope
@@ -87,6 +87,7 @@ from okg.deployment import MutableApiProbe
 from okg.deployment import credential_preflight
 
 from archi.auth.cache import load_json
+from archi.sources._sdk_adapter import ReaderAdapter
 
 _DEFAULT_BASE_URL = "https://gitlab.cern.ch"
 _DEFAULT_GROUP_ID = 4099  # CMS SITECONF group on CERN GitLab
@@ -651,3 +652,21 @@ def _env_value(name: str, aliases: tuple[str, ...]) -> str:
 
 def _pg_text(text: str) -> str:
     return text.replace("\x00", " ")
+
+
+class SITECONFAdapter(ReaderAdapter):
+    """Registry adapter for :class:`SITECONFSource`.
+
+    The cms-catalogs pack's `siteconf` source names this class. The reader's
+    behavior is unchanged; this class only drives it through the
+    substrate's adapter contract, which a bare reader cannot satisfy (its
+    ``ConnectorRun`` has no ``next_cursor``).
+
+    ``profile`` and ``change_probe_kind`` must be string literals; see
+    ``ReaderAdapter``. ``test_bundle_source_adapters.py`` parses this
+    file and holds them equal to the reader's own values.
+    """
+
+    reader_class = SITECONFSource
+    profile = "discovery_crawl"
+    change_probe_kind = "mutable_api"
