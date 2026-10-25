@@ -13,6 +13,15 @@ running services — it is installed onto an OKG deployment via bundles
 (e.g. `okg install --profile cern-team`). Instances live in their own
 repositories and carry only configuration and secrets.
 
+## Start here
+
+```bash
+archi init myteam && cd myteam && archi up && archi doctor
+```
+
+[Quickstart](docs/quickstart.md): install, the four commands, and what each
+one does.
+
 ## Repository layout
 
 - [`python/`](python/) — the `archi` package (wheel source, tests).
