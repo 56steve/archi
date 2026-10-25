@@ -69,6 +69,18 @@ def test_by_entity_most_recent_first_and_matching_signature_first():
     assert found["precedents"][1]["outcomes"] == []
 
 
+def test_outcomes_are_listed_oldest_first():
+    rows = _graph()
+    # A later ticket resolution, inserted ahead of the outcome check it follows.
+    rows.insert(0, {"node_id": "ops_outcome:out-late", "subtype": "ops_outcome",
+                    "attrs": {"record_id": "out-late", "incident_id": "inc-20260914-t2usmit-srm",
+                              "result": "unknown", "check_method": "ticket_resolution",
+                              "checked_at": "2026-09-20T09:00:00Z"}})
+    found = find_precedents(_reader(rows), incident="inc-20261003-t2usmit-srm")
+    outcomes = found["precedents"][0]["outcomes"]
+    assert [o["record_id"] for o in outcomes] == ["out-20260914-t2usmit-srm-1", "out-late"]
+
+
 def test_an_entity_with_no_history_has_no_precedents():
     assert find_precedents(_reader(_graph()), entity="T3_XX_NOWHERE")["precedents"] == []
 

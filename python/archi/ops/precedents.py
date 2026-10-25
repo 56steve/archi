@@ -95,8 +95,11 @@ def find_precedents(
                 "actions": [{"node_id": a["node_id"], **_attrs(a)}
                             for a in read("ops_action", "proposal_id", pattrs["record_id"])],
             })
-        outcomes = [{"node_id": o["node_id"], **_attrs(o)}
-                    for o in read("ops_outcome", "incident_id", rid)]
+        # Oldest first, so the last outcome is the latest word on the incident
+        # (a later ticket resolution can follow an outcome check).
+        outcomes = sorted(({"node_id": o["node_id"], **_attrs(o)}
+                           for o in read("ops_outcome", "incident_id", rid)),
+                          key=lambda o: o.get("checked_at") or "")
         precedents.append({
             "node_id": row["node_id"],
             **attrs,

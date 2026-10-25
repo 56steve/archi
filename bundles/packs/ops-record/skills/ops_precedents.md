@@ -63,6 +63,9 @@ precedent incidents it relied on.
   is none.
 - `result: unknown` from a ticket resolution means the ticket closed without
   a fix (Won't Fix, Duplicate). Do not present it as a fix.
+- `archi.ops.precedents` lists an incident's outcomes oldest first by
+  `checked_at`; the last one is the latest. When outcomes disagree, report
+  both with their dates.
 - A precedent whose proposal was rejected or timed out is still useful: say
   why it was refused (`reason`).
 - When you propose an action because of a precedent, put the precedent's
