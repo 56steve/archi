@@ -1,6 +1,8 @@
 """The `archi` command: pack and bundle tooling.
 
     archi bundles validate [PATH ...]   check pack.yaml / bundle.yaml
+    archi render --bundle B [--with P] [--without P] [--instance DIR]
+                                        compose packs into an okg profile
 """
 from __future__ import annotations
 
@@ -48,6 +50,35 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _packs_arg(values: list[str]) -> list[str]:
+    """--with a,b --with c -> [a, b, c]"""
+    return [name for value in values for name in value.split(",") if name]
+
+
+def cmd_render(args: argparse.Namespace) -> int:
+    from archi.bundles.render import render
+    from archi.bundles.resolve import CompositionError, resolve
+
+    catalog = _catalog(args)
+    for problem in catalog.problems:
+        print(f"warning: {problem}", file=sys.stderr)
+    try:
+        resolution = resolve(
+            catalog, args.bundle, _packs_arg(args.with_packs), _packs_arg(args.without_packs)
+        )
+        rendered = render(resolution, args.instance, name=args.name)
+    except CompositionError as exc:
+        print(f"error ({exc.code}): {exc}", file=sys.stderr)
+        return 1
+    for note in resolution.notes:
+        print(f"note: {note}", file=sys.stderr)
+    print(f"rendered profile {rendered.name!r} with packs {', '.join(resolution.pack_names)}")
+    print(f"  {rendered.profile_dir}")
+    print(f"run okg from {args.instance} so it finds profiles/{rendered.name}/:")
+    print(f"  okg install --profile {rendered.name} --deployment-name <slug> --postgres-dsn ...")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="archi", description="Archi pack and bundle tooling.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -74,6 +105,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     roots(validate)
     validate.set_defaults(func=cmd_validate)
+
+    render = sub.add_parser("render", help="compose bundles and packs into one okg profile")
+    render.add_argument("--bundle", action="append", required=True,
+                        help="bundle to install (repeatable; chat scalars come from the last)")
+    render.add_argument("--with", dest="with_packs", action="append", default=[],
+                        help="add packs (comma-separated or repeated)")
+    render.add_argument("--without", dest="without_packs", action="append", default=[],
+                        help="remove packs (comma-separated or repeated)")
+    render.add_argument("--instance", type=Path, default=Path("."),
+                        help="instance directory; the profile goes to <instance>/profiles/<name>/")
+    render.add_argument("--name", help="profile name (default: the bundle names joined by -)")
+    roots(render)
+    render.set_defaults(func=cmd_render)
     return parser
 
 

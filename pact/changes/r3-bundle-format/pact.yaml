@@ -138,4 +138,37 @@ evidence:
     template and in a question default, an unknown template reference, a bundle with no credential-free
     default pack (inherited defaults count), an extends cycle. archi bundles validate exits
     1 and lists every problem. Full suite: 1953 passed, 1 skipped.'
+- kind: executed_test
+  requirement: req.r3-bundle-format.compose
+  status: pass
+  command: python -m pytest python/tests/bundles/test_compose.py -q
+  head: 5dd4d53d0f97b4b00fc22eafec45e0679d4b1ee5
+  at: '2026-10-25T13:14:03+00:00'
+  note: 'acc.r3-bundle-format.rules: 46 passed. One test per ADR 0002 3.3 rule: extends closure
+    (parents first, transitive), requires closure (requirements first, unlisted packs pulled
+    in, cycles refused), --with/--without (unknown pack, unmet requirement after --with or
+    --without, removing an unselected pack all refused with the fix named), a pack selected
+    twice installs once, modules union, schema byte identity (conflict names both packs and
+    both sha256 digests), <pack>.<source> ids, <pack>_<id> question identity (identical merges,
+    differing refused), pack-owned invariants and freshness (dropping the pack drops them;
+    same name different body refused), subtype union, playbook/trigger/action-class/file identity,
+    reserved prompt file, prompt fragments in resolution order, chat scalars from the last
+    bundle given with the losers reported, okg range intersection and an empty one refused.'
+- kind: executed_test
+  requirement: req.r3-bundle-format.compose
+  status: pass
+  command: python -m pytest python/tests/bundles/test_render_okg.py -q
+  head: 5dd4d53d0f97b4b00fc22eafec45e0679d4b1ee5
+  at: '2026-10-25T13:14:03+00:00'
+  note: 'acc.r3-bundle-format.no-trace and acc.r3-bundle-format.okg-accepts: 26 passed. Real
+    input: the shipped cern-team profile regrouped into packs at test time. no-trace: for
+    each of the 6 optional packs P, render(cern-team --with P --without P) is byte-identical
+    to render(cern-team), and no source or question P owns appears in it; same on the fixture
+    library. okg-accepts: for 8 selections (bare, each optional pack, all), okg 0.2.0 install
+    --dry-run --json run from the instance dir with OKG_PROFILES_DIR unset returns dry_run_ok
+    with no blockers, and okg deployment lint on the scaffold reports exactly the two blockers
+    the hand-written cern-team profile already has (docsite params.source_name; git_history
+    admission drift), shown by a separate test. The rendered registry entries, schemas, invariants,
+    files and playbooks equal what okg builds from the hand-written profile. Full suite 2025
+    passed, 1 skipped.'
 decisions: []

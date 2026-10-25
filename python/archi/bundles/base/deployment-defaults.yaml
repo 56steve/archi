@@ -1,0 +1,64 @@
+# deployment.yaml defaults every rendered profile starts from. The renderer
+# fills the parts packs and bundles decide: the `content` search subtypes,
+# the chat suggestions and description, and the Nomos owner name. Values
+# here are copied from the cern-team profile proven on 2026-08-11/12; see
+# bundles/cern-team/deployment-defaults.yaml for why each one is set.
+
+# No always-on runtime worker on a fresh instance.
+runtime:
+  enabled: false
+
+# A rendered profile installs outside a Git checkout; the first publish
+# records standalone provenance instead of resolving Git state.
+release:
+  kind: standalone
+
+# Nomos rollout deferred with a structured owner and a review date. Edit
+# the contact after install.
+nomos:
+  rollout:
+    status: deferred
+    owner:
+      name: null            # archi-<profile name>, set by the renderer
+      contact: replace-with-team-contact@example.org
+    review_by: "2026-12-01"
+
+skills_dir: skills
+skill_triggers: skills/skill-triggers.yaml
+
+search:
+  default_profile: content
+  profiles:
+    content:
+      description: Documents, code files and catalog entries — what a question is asked about.
+      subtypes: []          # union of the selected packs' search_subtypes
+
+chat:
+  enabled: true
+  ui:
+    site_name: ${chat_site_name}
+    features:
+      web_search: false
+      image_generation: false
+      code_interpreter: false
+  models:
+    builtin:
+      - ${chat_model}
+    default: ${chat_model}
+  preset:
+    display_name: ${chat_site_name}
+    system_prompt_ref: skills/chat-system-prompt.md
+    description: >-
+      Answers from this instance's knowledge graph with the sources it used.
+    suggestions: []         # union of the bundles' chat suggestions
+  search_profile: content
+  mcp:
+    port: 8765
+    tools:
+      - inspect
+      - search
+      - expand
+      - filter
+      - map
+      - aggregate
+    auth_token_env: OKG_CHAT_MCP_TOKEN

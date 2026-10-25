@@ -88,3 +88,51 @@ Besides the schema, `validate` refuses:
   into account), because a bundle with nothing configured must publish.
 
 It prints every problem it finds and exits 1 if there is any.
+
+## Composing an instance
+
+```bash
+archi render --bundle cern-team --with indico,git-code --instance ~/myteam
+```
+
+`render` selects packs by ADR 0002 §3.3:
+
+```
+packs = closure(requires, ∪ default(extends*(A, B, ...))) ∪ with − without
+```
+
+in a fixed *resolution order*: each `--bundle` in the order given, preceded
+by the bundles it extends (parents first); their default packs, each preceded
+by the packs it requires; then `--with` packs; then `--without` removals.
+`requires` is closed over the defaults only, so a `--with` pack whose
+requirement is not selected stops the render with the `--with` that fixes it,
+and so does a `--without` that removes a pack another selected pack needs.
+
+It then merges the packs and writes one okg profile to
+`<instance>/profiles/<name>/` (`<name>` defaults to the bundle names joined
+by `-`). okg looks in `./profiles/`, so running okg from the instance
+directory finds it with no `OKG_PROFILES_DIR`.
+
+| Part | Rule | Conflict |
+|---|---|---|
+| modules | union | — |
+| schemas | union by relative path | same path, different bytes: stops, printing both digests |
+| sources | id `<pack>.<source>`; file `source-defaults/<pack>.<source>.yaml` | — |
+| init questions | base questions, then each pack's as `<pack>_<id>` (flag `--<pack>-<id>`) | same id, different definition: stops |
+| invariants | union; each stays with its pack | same name, different body: stops |
+| freshness | union; each stays with its pack | — |
+| search `content` subtypes | union | — |
+| playbooks, skill triggers | union by file name / intent id | different content: stops |
+| action classes | union by id | different body: stops |
+| files | union by path | different bytes: stops |
+| chat prompt | the base prompt, then each `prompt_fragment` in resolution order | a pack shipping `chat-system-prompt.md` or `skill-triggers.yaml` as a playbook: stops |
+| chat scalars | from the last `--bundle` given (a child before its parents); other values are printed as notes | — |
+| chat suggestions | union | — |
+| `okg` range | intersection | empty: stops |
+
+A pack that is not selected contributes nothing: rendering a selection with
+`--with P --without P` gives the same bytes as rendering it without `P`. The
+profile directory is rebuilt from scratch on every render.
+
+The base questions, deployment defaults and chat prompt every profile starts
+from are in [`python/archi/bundles/base/`](../python/archi/bundles/base/).

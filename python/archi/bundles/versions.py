@@ -108,4 +108,4 @@ def intersect(ranges: Iterable[str]) -> SpecifierSet:
 
 def canonical(spec: SpecifierSet) -> str:
     """A stable spelling: specifiers sorted, comma-joined."""
-    return ",".join(sorted(str(Specifier(str(s))) for s in spec))
+    return ",".join(sorted({str(Specifier(str(s))) for s in spec}))
