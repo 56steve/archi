@@ -142,6 +142,12 @@
       "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.]*(:[A-Za-z_][A-Za-z0-9_]*)?$"},
       "uniqueItems": true
     },
+    "idempotent_tools": {
+      "description": "Live tools (a subset of live_tools) that honour the idempotency key the runtime passes: called twice with the same key they have the effect once. A tool used as the mediator of an action class that can run at L2 must be listed here (ADR 0002 section 7.2).",
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.]*(:[A-Za-z_][A-Za-z0-9_]*)?$"},
+      "uniqueItems": true
+    },
     "action_classes": {
       "description": "YAML file with a top-level action_classes mapping keyed by action-class id (ADR 0002 section 7.2). Merged by id.",
       "$ref": "#/$defs/relpath"

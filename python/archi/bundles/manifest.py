@@ -179,6 +179,10 @@ class Pack:
         return tuple(self.manifest.get("live_tools", ()))
 
     @property
+    def idempotent_tools(self) -> tuple[str, ...]:
+        return tuple(self.manifest.get("idempotent_tools", ()))
+
+    @property
     def freshness(self) -> dict[str, dict[str, str]]:
         return dict(self.manifest.get("freshness", {}))
 
@@ -382,6 +386,9 @@ def validate_pack(
     for rel in data.get("files", ()):
         if not (directory / rel).is_file():
             problems.append(Problem(manifest_path, f"files: {rel!r} is missing"))
+    for tool in data.get("idempotent_tools", ()):
+        if tool not in data.get("live_tools", ()):
+            problems.append(Problem(manifest_path, f"idempotent_tools: {tool!r} is not one of this pack's live_tools"))
     # A context pack brings sources, or only a schema slice that other
     # producers write into through admission (ops-record).
     if data["kind"] == "context" and "sources" not in data and "schemas" not in data:

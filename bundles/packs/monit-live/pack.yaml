@@ -30,6 +30,12 @@ live_tools:
   - archi.tools.monit:archi_monit_rucio_aggregate
   - archi.tools.monit:archi_monit_condor_search
   - archi.tools.monit:archi_monit_condor_aggregate
+# Read-only MONIT queries: a repeat with the same key has the same effect (none).
+idempotent_tools:
+  - archi.tools.monit:archi_monit_rucio_search
+  - archi.tools.monit:archi_monit_rucio_aggregate
+  - archi.tools.monit:archi_monit_condor_search
+  - archi.tools.monit:archi_monit_condor_aggregate
 prompt_fragment: prompt.md
 credentials: [MONIT_GRAFANA_TOKEN]
 # The snapshots and the live tools both query MONIT with a Grafana token.
