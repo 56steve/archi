@@ -155,7 +155,7 @@ W2=$(new_run l2a-1); ESC2=$($T pending "$W2" --timeout 120); echo "escalation $E
 $OPS pending | tee "$RUN/pending-2.txt"
 check "ops pending lists the escalation" "'$ESC2' in open('$RUN/pending-2.txt').read()" < /dev/null
 $OPS status --json > "$RUN/status-2.json" 2>"$RUN/status-2.err" || cat "$RUN/status-2.err"
-check "status shows level L2, mode live, one pending escalation, the pack's budget" \
+check "status shows level L2, mode live, one pending escalation and the pack budget" \
   "d['automations'][0]['level'] == 'L2' and d['automations'][0]['mode'] == 'live' and len(d['pending']) == 1 and d['scanner'] == {'archi_ops_scan': 'active'} and d['automations'][0]['budget']['per_day_cap'] == 10" < "$RUN/status-2.json"
 check "no marker before approval" "d == 0" < <(markers)
 $OPS approve "$ESC2" --as scratch-op --note "scratch approve"
@@ -205,6 +205,7 @@ check "the first run, still under the 10 per day cap, finishes" "d['status'] == 
 WD2=$(new_run cap-2); $T wait "$WD2" | tee "$RUN/cap2.out"
 check "the second run is refused: budget_exhausted by the day cap" \
   "d['status'] == 'SUCCESS' and 'budget_exhausted' in str(d['output']) and 'day budget exhausted' in str(d['output'])" < "$RUN/cap2.out"
+$T day-fill 1.0 > /dev/null   # put the day's spend back, so the later cases are not held by the cap
 
 echo "== 12. L3 in archi.yaml (acc no-l3): refused at run start, nothing runs"
 configure --level L3 --proposal marker --cost 0.1
