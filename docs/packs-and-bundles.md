@@ -32,7 +32,7 @@ not leave that directory (`..`, absolute paths and `~` are refused).
 | `needs_credentials` | yes | `true` when the pack cannot publish without a credential. |
 | `requires.modules` | | okg ontology modules the pack needs. |
 | `requires.packs` | | Other packs it needs. |
-| `sources` | context packs | Directory of templates, one `<source>.yaml` per source. Its single top-level key is `<source>`. |
+| `sources` | context packs | Directory of templates, one `<source>.yaml` per source. Its single top-level key is `<source>`. A context pack with no sources must declare `schemas` (records reach it through okg admission, as in `ops-record`). |
 | `schemas` | | Directory of LinkML schema slices. |
 | `init_questions` | | File holding an `init_questions:` list, in okg's profile question format. |
 | `invariants` | | File holding an `invariants:` list. The pack owns them. |
@@ -84,8 +84,9 @@ Besides the schema, `validate` refuses:
   declares;
 - a `freshness` key that is not one of the pack's own sources;
 - a bundle that names an unknown pack or bundle, extends itself in a cycle,
-  or has no credential-free default context pack (taking inherited defaults
-  into account), because a bundle with nothing configured must publish.
+  or has no credential-free default context pack with sources (taking
+  inherited defaults into account), because a bundle with nothing configured
+  must publish.
 
 It prints every problem it finds and exits 1 if there is any.
 
