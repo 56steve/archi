@@ -76,6 +76,10 @@ class Instance:
     profile: str = ""
     okg_version: str = ""
     admin_email: str = ""
+    #: Per-automation settings, `{<name>: {level: L0|L1|L2}}`. The level an
+    #: automation runs at; the bundle and the pack only bound it (ADR 0002
+    #: section 7.3). L3 and unknown levels are refused when archi.yaml loads.
+    automations: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @property
     def deployment_dir(self) -> Path:
@@ -102,6 +106,8 @@ class Instance:
         data = asdict(self)
         data.pop("dir")
         data["data_root"] = str(self.data_root)
+        if not data["automations"]:
+            del data["automations"]
         return {"instance_version": INSTANCE_VERSION, **data}
 
     def save(self) -> Path:
@@ -123,7 +129,12 @@ class Instance:
                 f"{path} does not exist; run `archi init <name>` first, or pass "
                 "--instance <dir> pointing at an instance"
             )
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        from archi.bundles.manifest import load_unique_yaml
+
+        try:
+            data = load_unique_yaml(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            raise InstanceError(f"{path}: {exc}") from exc
         if data.get("instance_version") != INSTANCE_VERSION:
             raise InstanceError(f"{path}: not an archi.yaml version {INSTANCE_VERSION}")
         return cls(
@@ -138,7 +149,17 @@ class Instance:
             profile=data.get("profile") or "",
             okg_version=data.get("okg_version") or "",
             admin_email=data.get("admin_email") or "",
+            automations=_automation_settings(path, data.get("automations")),
         )
+
+
+def _automation_settings(path: Path, raw: Any) -> dict[str, dict[str, str]]:
+    from archi.ops.levels import settings_problems
+
+    problems = settings_problems(raw, "level", "automations")
+    if problems:
+        raise InstanceError(f"{path}: " + "; ".join(problems))
+    return {name: dict(body) for name, body in (raw or {}).items()}
 
 
 def default_data_root(name: str) -> Path:

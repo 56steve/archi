@@ -36,6 +36,7 @@ from archi.bundles.manifest import (
     ManifestError,
     read_bundle,
     validate_bundle,
+    validate_pack,
 )
 
 
@@ -57,7 +58,7 @@ class Catalog:
 
     def add_pack_dir(self, directory: Path, provider: str = "") -> None:
         try:
-            pack = load_pack(directory)
+            pack = load_pack(directory, defer_requires=True)
         except ManifestError as exc:
             self.problems.extend(exc.problems)
             return
@@ -83,6 +84,18 @@ class Catalog:
             return
         self.bundles[bundle.name] = bundle
         self.providers[f"bundle:{bundle.name}"] = provider or str(directory.parent)
+
+    def check_packs(self) -> None:
+        """Check what needs the other packs: an automation's mediators resolve
+        against the live tools of the packs it requires, in any root."""
+        for name in sorted(self.packs):
+            pack = self.packs[name]
+            if pack.kind != "automation":
+                continue
+            problems = validate_pack(pack.dir, packs=self.packs)
+            if problems:
+                self.problems.extend(problems)
+                del self.packs[name]
 
     def check_bundles(self) -> None:
         """Check each bundle's references now that every pack is known."""
@@ -125,6 +138,7 @@ def from_roots(pack_roots: Iterable = (), bundle_roots: Iterable = ()) -> Catalo
             for directory in sorted(root.iterdir()):
                 if (directory / LEGACY_PROFILE).is_file() and not (directory / BUNDLE_FILE).is_file():
                     catalog.legacy_profiles.setdefault(directory.name, directory)
+    catalog.check_packs()
     catalog.check_bundles()
     return catalog
 

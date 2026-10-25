@@ -33,6 +33,7 @@ import yaml
 
 from archi.bundles.compose import digest
 from archi.bundles.discovery import Catalog
+from archi.bundles.manifest import load_unique_yaml
 from archi.bundles.render import PROFILES_DIR, Rendered
 from archi.bundles.resolve import Resolution, resolve
 from archi.bundles.versions import canonical
@@ -132,6 +133,7 @@ def build_lock(
             "freshness": comp.freshness,
             "live_tools": comp.live_tools,
             "action_classes": comp.action_classes,
+            "automations": comp.automations,
         },
         "deployment": str(deployment) if deployment is not None else None,
     }
@@ -148,7 +150,10 @@ def read_lock(instance_dir: Path) -> dict[str, Any]:
     path = Path(instance_dir) / LOCK_FILE
     if not path.is_file():
         raise LockError(f"{path} does not exist; run `archi render` in this instance first")
-    lock = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        lock = load_unique_yaml(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise LockError(f"{path}: {exc}") from exc
     if not isinstance(lock, dict) or lock.get("lock_version") != LOCK_VERSION:
         raise LockError(f"{path}: not an archi.lock version {LOCK_VERSION}")
     return lock
@@ -179,7 +184,7 @@ def render_and_lock(
 
 
 def _load_yaml(path: Path) -> Any:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    return load_unique_yaml(path.read_text(encoding="utf-8"))
 
 
 def _dump_yaml(path: Path, data: Any) -> None:

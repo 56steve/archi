@@ -253,7 +253,7 @@ def test_invalid_pack_is_rejected(case, catalog_copy):
 INVALID_BUNDLES = {
     "unknown key": (
         "base-bundle",
-        lambda d: d.update(automations=["x"]),
+        lambda d: d.update(schedules=["x"]),
         "Additional properties are not allowed",
     ),
     "unknown chat key": (
