@@ -1,9 +1,8 @@
-# AKMON asks from the operations runtime (drafts)
+# AKMON asks from the operations runtime
 
-Status: **drafts, not filed.** Jason files them on `mitdbg/akmon`. After
-filing, open one `upstream-ask` issue on `archi-physics/archi` per ask that
-links it (ADR 0002 §9), and record the links as `manual` evidence on
-`req.r3-ops-runtime.upstream` in PACT `r3-ops-runtime`.
+Status: **filed 2026-10-25** on `mitdbg/akmon` as #14–#26, one per ask, each
+tracked here by an `upstream-ask` issue (#814–#826). The links are under each
+heading.
 
 Asks O1–O6 are the six ADR 0002 §9 item 7 names. O7–O13 were found while
 building the loop on okg v0.2.0. Each says whether it was **proven** by
@@ -18,6 +17,8 @@ pause and cancel (ADR 0002 §9).
 ---
 
 ## O1. Expiry on admission envelopes
+
+Filed: [mitdbg/akmon#14](https://github.com/mitdbg/akmon/issues/14), tracked in #814.
 
 **Problem (read).** An admission envelope has no expiry: there is no
 `expires` or `ttl` in `okg/substrate/admission.py` or
@@ -36,6 +37,8 @@ timeouts plus its own deadline re-check (O8).
 
 ## O2. Approve with edits
 
+Filed: [mitdbg/akmon#15](https://github.com/mitdbg/akmon/issues/15), tracked in #815.
+
 **Problem (read).** An approver can only approve or reject. An operator
 who would approve "restart the door, but on the other host" must reject,
 and the automation must propose again.
@@ -51,6 +54,8 @@ help. The loop already validates a payload against the action class's
 schema, so an edited payload goes through the same check.
 
 ## O3. A mounted, authenticated proposal API
+
+Filed: [mitdbg/akmon#16](https://github.com/mitdbg/akmon/issues/16), tracked in #816.
 
 **Problem (proven and read).** Escalations can only be listed and answered
 from a shell on the deployment's host:
@@ -71,6 +76,8 @@ default for `decided_by` in `archi ops approve` and `reject`.
 
 ## O4. Per-actor cost attribution on `llm_calls` and `mcp_call_log`
 
+Filed: [mitdbg/akmon#17](https://github.com/mitdbg/akmon/issues/17), tracked in #817.
+
 **Problem (read).** `llm_calls` has a `caller` field and an `extras` JSON
 column, but no actor column, and the SDK's `llm_call` does not write
 `llm_calls` at all. `deployment_cost_ledger` has a `workflow_id`. An
@@ -85,6 +92,8 @@ workflow's actor; a per-actor sum over a day matches the cost ledger.
 **archi deletes.** The cost fields archi copies onto its own ops records.
 
 ## O5. A first-class kill switch
+
+Filed: [mitdbg/akmon#18](https://github.com/mitdbg/akmon/issues/18), tracked in #818.
 
 **Problem (proven).** okg has no single "stop everything" for a
 deployment's workflows:
@@ -114,19 +123,23 @@ leaves:
 cancel sequence; and the halt check at the top of the mediator step,
 once cancel is synchronous.
 
-## O6. A retraction-size guard (okg#3307)
+## O6. A retraction-size guard
+
+Filed: [mitdbg/akmon#19](https://github.com/mitdbg/akmon/issues/19), tracked in #819.
 
 **Problem (read).** Admission refuses retractions outright; a source that
 needs to retract many records has no guarded path.
 
-**Ask.** As okg#3307: retractions allowed up to a declared size, with a
+**Ask.** Retractions allowed up to a declared size, with a
 guard that refuses a retraction larger than the bound.
 
-**Acceptance.** As written in okg#3307.
+**Acceptance.** A retraction within the declared size is admitted; a larger one is refused with a distinct status.
 
 **archi deletes.** Nothing; ops records do not retract today.
 
 ## O7. Bug: `okg runtime escalation respond` always fails
+
+Filed: [mitdbg/akmon#20](https://github.com/mitdbg/akmon/issues/20), tracked in #820.
 
 **Problem (proven).** Every call raises `ImportError`.
 `okg/substrate/cli/runtime.py:1154` imports `_current_user` from
@@ -143,6 +156,8 @@ answers a pending escalation.
 `archi ops approve` and `reject`.
 
 ## O8. `respond_to_escalation` accepts a decision after the deadline
+
+Filed: [mitdbg/akmon#21](https://github.com/mitdbg/akmon/issues/21), tracked in #821.
 
 **Problem (proven).** With the worker stopped past an escalation's
 `timeout_at`, `respond_to_escalation` accepted an approval 14 s late.
@@ -161,6 +176,8 @@ defence.
 
 ## O9. A public way to bind a workflow's deployment context
 
+Filed: [mitdbg/akmon#22](https://github.com/mitdbg/akmon/issues/22), tracked in #822.
+
 **Problem (proven).** A plain `@deployment_workflow` has no deployment
 context or connection, so `request_escalation` and `cost_budget` fail.
 They work after `bind_sdk_context(deployment=, conn=)` from
@@ -177,6 +194,8 @@ and step, or make a binding function public and documented.
 
 ## O10. `on_escalation_decided` never fires
 
+Filed: [mitdbg/akmon#23](https://github.com/mitdbg/akmon/issues/23), tracked in #823.
+
 **Problem (read; checked twice, not run).** okg exports an
 `@on_escalation_decided` decorator and defines the `escalation_decided`
 hook event (`okg/substrate/runtime/hooks.py:71`). But the only caller of
@@ -191,6 +210,8 @@ for generation events. Nothing enqueues the escalation event.
 approver's ticket.
 
 ## O11. Changing `runtime:` after install blocks publishing
+
+Filed: [mitdbg/akmon#24](https://github.com/mitdbg/akmon/issues/24), tracked in #824.
 
 **Problem (proven).** Adding `runtime: {enabled: true, workflows: [...]}`
 to `deployment.yaml` after `okg install` makes every publisher cycle
@@ -209,6 +230,8 @@ automation pack.
 
 ## O12. Install fails at ingest when the runtime is enabled
 
+Filed: [mitdbg/akmon#25](https://github.com/mitdbg/akmon/issues/25), tracked in #825.
+
 **Problem (proven).** `okg install` with `runtime: {enabled: true}` in the
 profile finishes every stage but the last, then stops with `ingest_failed`
 (`relation dbos.workflow_status does not exist`). The DBOS schema is not
@@ -224,6 +247,8 @@ a published generation with no manual step.
 `archi init` and the scratch run add after a failed install ingest.
 
 ## O13. A queued admission with no application version blocks the worker
+
+Filed: [mitdbg/akmon#26](https://github.com/mitdbg/akmon/issues/26), tracked in #826.
 
 **Problem (proven).** An `okg admission submit` made while no worker runs
 leaves an ENQUEUED `okg_admission_submit` workflow with
