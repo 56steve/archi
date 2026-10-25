@@ -21,6 +21,9 @@ this does instead:
    -> `okg install --no-publish`, commit, `okg provision`;
 7. set role passwords after the migration
    -> `okg db role-passwords --apply`, into the instance's .secrets/.
+8. with an automation pack selected, `runtime.enabled` is in deployment.yaml from the start and
+   provision stops at its ingest stage (the DBOS schema does not exist yet; upstream ask O12)
+   -> `okg runtime bootstrap`, then provision again (`provision`, below).
 """
 from __future__ import annotations
 
@@ -225,6 +228,66 @@ def profile_questions(profile_dir: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def has_automations(instance_dir: Path) -> bool:
+    """Does the rendered instance select an automation pack? (archi.lock `composed.automations`.)"""
+    from archi.bundles.lock import read_lock
+
+    try:
+        return bool(read_lock(Path(instance_dir)).get("composed", {}).get("automations"))
+    except Exception:  # no lock yet: nothing was rendered, so there is no automation
+        return False
+
+
+def provision(okg: Okg, name: str, *, runtime: bool, echo: Callable[[str], None]):
+    """`okg provision`, and with an automation pack (runtime enabled from the start) the one hand step.
+
+    With `runtime.enabled` in deployment.yaml, provision's ingest stage enqueues a DBOS workflow and
+    stops because the DBOS schema does not exist yet (relation dbos.workflow_status; upstream ask O12).
+    Every stage before it has finished, so `okg runtime bootstrap` is next, then provision again.
+    Any other failure is raised as it is.
+    """
+    result = okg.run("provision", "--deployment", name, ok_codes=range(256) if runtime else (0, 8))
+    if runtime and result.returncode not in (0, 8):
+        text = (result.stderr or "") + (result.stdout or "")
+        if "dbos" not in text.lower():
+            raise OkgError(f"`okg provision --deployment {name}` failed ({result.returncode}):\n{text[-2500:]}", result)
+        echo("provision stopped before the DBOS schema existed (the ops runtime is enabled); "
+             "bootstrapping the runtime and provisioning again")
+        okg.run("runtime", "bootstrap", "--deployment", name)
+        result = okg.run("provision", "--deployment", name, ok_codes=(0, 8))
+    return result
+
+
+def install_and_publish(
+    instance: Instance, secrets: Mapping[str, str], okg: Okg, profile: str, resolved: Mapping[str, str],
+    echo: Callable[[str], None] = print,
+) -> dict[str, str]:
+    """okg install, commit, provision (with the runtime bootstrap when an automation is selected), role
+    passwords. Returns the secrets with the MCP role password filled in (also written to .env)."""
+    name, instance_dir = instance.name, instance.dir
+    okg.run(
+        "install", "--profile", profile, "--deployment-name", name,
+        # Stored verbatim; okg interpolates it from the environment at command
+        # time, so no password is written into the deployment.
+        "--postgres-dsn", "${OKG_DSN}",
+        "--deployments-root", str(instance_dir / DEPLOYMENTS_DIR),
+        "--non-interactive", "--no-publish",
+        *answer_flags(resolved),
+    )
+    # okg publishes only from committed configuration; the install just wrote it.
+    stack_compose.write_stack_files(instance)
+    commit_all(instance_dir, f"archi init: okg deployment {name}")
+    result = provision(okg, name, runtime=has_automations(instance_dir), echo=echo)
+    if result.returncode == 8:
+        echo("note: published, but the publish held the publisher lock past okg's capacity "
+             "bar (okg provision exit 8, capacity_warning); the generation is published")
+    okg.run("db", "role-passwords", "--deployment", name, "--apply")
+    secrets = dict(secrets)
+    secrets["ARCHI_OKG_MCP_PASSWORD"] = role_password(instance.role_secrets_path, "okg_mcp")
+    write_env(instance.env_path, secrets)
+    return secrets
+
+
 def init(
     name: str,
     *,
@@ -303,26 +366,7 @@ def init(
         wait_db(dsn)
 
     okg = Okg(instance, secrets, runner=okg_runner, echo=echo)
-    okg.run(
-        "install", "--profile", profile, "--deployment-name", name,
-        # Stored verbatim; okg interpolates it from the environment at command
-        # time, so no password is written into the deployment.
-        "--postgres-dsn", "${OKG_DSN}",
-        "--deployments-root", str(instance_dir / DEPLOYMENTS_DIR),
-        "--non-interactive", "--no-publish",
-        *answer_flags(resolved),
-    )
-    # okg publishes only from committed configuration; the install just wrote it.
-    stack_compose.write_stack_files(instance)
-    commit_all(instance_dir, f"archi init: okg deployment {name}")
-    result = okg.run("provision", "--deployment", name, ok_codes=(0, 8))
-    if result.returncode == 8:
-        echo("note: published, but the publish held the publisher lock past okg's capacity "
-             "bar (okg provision exit 8, capacity_warning); the generation is published")
-    okg.run("db", "role-passwords", "--deployment", name, "--apply")
-    secrets = dict(secrets)
-    secrets["ARCHI_OKG_MCP_PASSWORD"] = role_password(instance.role_secrets_path, "okg_mcp")
-    write_env(instance.env_path, secrets)
+    install_and_publish(instance, secrets, okg, profile, resolved, echo)
     echo(f"published {name}. Next: `archi up` in {instance_dir}")
     return instance
 
