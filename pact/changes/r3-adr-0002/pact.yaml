@@ -13,7 +13,7 @@ affected_code:
 requirements:
 - id: req.r3-adr-0002.adr
   statement: 'docs/adr/0002-archi-3.0-release.md records D1-D9 (release home, PyPI name archi-kb,
-    composable packs and bundles, the five 3.0 bundles, MCP as the client surface, one-command
+    composable packs and bundles, the four 3.0 bundles, MCP as the client surface, one-command
     setup, a thin CLI, Langfuse deferred, PACT+issues planning) D10-D13 (operations automation
     as the purpose, agents propose / mediators act, automations gated on measured context,
     3.0 stops at L2), the composition rules, the context-layer properties (§6) and the autonomy

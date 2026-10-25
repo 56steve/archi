@@ -1,13 +1,15 @@
 pact_version: 5
 id: r3-bundle-cms-kb
-title: cms-kb bundle from the cms-kb prototype
+title: 'cms-kb scope: fold it into cms-physics'
 tier: 2
 why: archi-physics/cms-kb is the prototype for a CMS knowledge-base instance and a source
-  of the decoupled-stack defaults. Its scope relative to cms-physics is not yet written down
-  (ADR 0002 §5 open item), so this PACT starts with a survey and a decision before any bundle
-  code.
+  of the decoupled-stack defaults. ADR 0002 §5 left its scope relative to cms-physics open.
+  The survey (survey.md beside this file) found that cms-kb already is a CMS physics knowledge
+  base and holds nothing operations-specific, so the two names cover one bundle. This PACT
+  records that decision; the bundle and the rebuild are r3-bundle-cms-physics.
 affected_code:
-- bundles/cms-kb/
+- pact/changes/r3-bundle-cms-kb/survey.md
+- docs/adr/0002-archi-3.0-release.md
 requirements:
 - id: req.r3-bundle-cms-kb.scope
   statement: 'A survey of cms-kb lists its sources, schemas, playbooks, setup steps and local
@@ -15,20 +17,17 @@ requirements:
     The cms-kb / cms-physics boundary is recorded as a decision in this PACT.
 
 
+    Decision (option A of the survey): there is no cms-kb bundle. 3.0 ships one physics
+    bundle, cms-physics. cms-kb''s sources move into archi as the analysis-notes pack (analysis
+    notes) and the cms-analyses pack (PAG/POG vocabulary, physics entities, cross-link rules),
+    and the cms-kb deployment becomes the validation instance of cms-physics. The cms-kb repo
+    becomes an instance repo plus its research tooling (golden-set mining, entity candidates).
+    ADR 0002 D4 and §5 say so.
+
+
     Acceptance:
 
     - acc.r3-bundle-cms-kb.decision: decision recorded and approved. [evidence: manual]'
-- id: req.r3-bundle-cms-kb.bundle
-  statement: 'bundles/cms-kb exists per that decision, and the cms-kb deployment is rebuilt
-    from it with no local copy of an archi connector.
-
-
-    Acceptance:
-
-    - acc.r3-bundle-cms-kb.install: bundle installs green; smoke eval passes. [evidence: executed_test]
-
-    - acc.r3-bundle-cms-kb.rebuild: cms-kb deployment rebuilt from the bundle. [evidence:
-    executed_test]'
 tasks:
 - id: task.r3-bundle-cms-kb.survey
   requirement: req.r3-bundle-cms-kb.scope
@@ -38,21 +37,5 @@ tasks:
     Test plan:
 
     - survey doc [evidence: manual]'
-- id: task.r3-bundle-cms-kb.bundle
-  requirement: req.r3-bundle-cms-kb.bundle
-  verification: 'Write the bundle and any new packs.
-
-
-    Test plan:
-
-    - bundle CI job [evidence: executed_test]'
-- id: task.r3-bundle-cms-kb.instance
-  requirement: req.r3-bundle-cms-kb.bundle
-  verification: 'Rebuild the deployment.
-
-
-    Test plan:
-
-    - rebuild run [evidence: executed_test]'
 evidence: []
 decisions: []

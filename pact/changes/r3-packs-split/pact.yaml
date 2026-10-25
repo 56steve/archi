@@ -2,7 +2,7 @@ pact_version: 5
 id: r3-packs-split
 title: Split the connectors, schemas, invariants and playbooks into packs
 tier: 2
-why: The five bundles share sources (docsite, indico, twiki, jira, git-code) and differ in
+why: The four bundles share sources (docsite, indico, twiki, jira, git-code) and differ in
   the CMS and cluster ones. Each source family becomes one pack carrying its own source templates,
   schema slice, invariant, playbooks and init questions, so a bundle is a list and not a copy.
   ADR 0002 §3.1, §5.

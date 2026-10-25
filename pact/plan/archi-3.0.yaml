@@ -19,7 +19,6 @@ labels:
   needs-decision: {color: "fbca04", description: "Blocked on a maintainer decision"}
   "bundle:cern-team": {color: "0e8a16"}
   "bundle:cms-comp-ops": {color: "0e8a16"}
-  "bundle:cms-kb": {color: "0e8a16"}
   "bundle:cms-physics": {color: "0e8a16"}
   "bundle:cluster-manager": {color: "0e8a16"}
   "layer:context": {color: "1d76db", description: "Context layer: sources, quality, operational memory"}
@@ -37,7 +36,7 @@ milestones:
   - title: "3.0 · M4 Operations layer"
     description: "The loop (signal, context, proposal, decision, action, outcome) runs at L0-L2 (no L3 in 3.0) with context gates, shadow scoring and halt."
   - title: "3.0 · M5 Bundles & automations"
-    description: "Five bundles green with evals; ticket-triage in shadow at SubMIT and comp-ops with a four-week report."
+    description: "Four bundles green with evals; ticket-triage in shadow at SubMIT and comp-ops with a four-week report."
   - title: "3.0 · M6 Bring your own agent"
     description: "Any MCP client works; external packs and MCP servers plug in."
   - title: "3.0 · M7 Docs & release"
@@ -143,18 +142,18 @@ pacts:
 
   r3-bundle-cms-kb:
     milestone: "3.0 · M5 Bundles & automations"
-    labels: ["bundle:cms-kb", "needs-decision"]
+    labels: ["bundle:cms-physics"]
     tasks:
       task.r3-bundle-cms-kb.survey: "Survey cms-kb; decide its scope vs cms-physics"
-      task.r3-bundle-cms-kb.bundle: "cms-kb bundle from the cms-kb prototype"
-      task.r3-bundle-cms-kb.instance: "Rebuild the cms-kb deployment from the bundle"
 
   r3-bundle-cms-physics:
     milestone: "3.0 · M5 Bundles & automations"
     labels: ["bundle:cms-physics"]
     tasks:
       task.r3-bundle-cms-physics.analyses-pack: "cms-analyses pack (analysis ids, notes, publications)"
+      task.r3-bundle-cms-physics.notes-pack: "analysis-notes pack, lifted from cms-kb"
       task.r3-bundle-cms-physics.bundle: "cms-physics bundle extending cern-team"
+      task.r3-bundle-cms-physics.instance: "Rebuild the cms-kb deployment from cms-physics"
 
   r3-bundle-cluster-manager:
     milestone: "3.0 · M5 Bundles & automations"

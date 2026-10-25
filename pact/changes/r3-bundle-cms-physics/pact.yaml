@@ -3,30 +3,58 @@ id: r3-bundle-cms-physics
 title: 'cms-physics bundle: analyses, notes, publications'
 tier: 2
 why: Physics knowledge (analysis notes, publications, physics TWikis, analysis code) is a
-  different audience from operations. The connectors exist (cds, twiki with physics_filter
-  and analysis ids); the bundle that assembles them for analysers does not. ADR 0002 §5.
+  different audience from operations. archi-physics/cms-kb has run this as a prototype, with
+  archi's twiki (physics filter), cds and cmssw-releases sources plus its own analysis-note,
+  physics-vocabulary, physics-entity and cross-link code. r3-bundle-cms-kb decided that cms-kb
+  is this bundle, not a second one, so this PACT lifts that code into archi packs and rebuilds
+  the cms-kb deployment from the bundle. ADR 0002 §5.
 affected_code:
 - bundles/cms-physics/
 - bundles/packs/cms-analyses/
+- bundles/packs/analysis-notes/
 - python/archi/sources/
 requirements:
 - id: req.r3-bundle-cms-physics.pack
-  statement: 'A cms-analyses pack links analysis ids across CDS records, TWiki pages and code,
-    with a schema slice and playbook for analysis lookup.
+  statement: 'A cms-analyses pack links analysis ids across CDS records, TWiki pages, analysis
+    notes and code, with a schema slice and playbook for analysis lookup. It carries the PAG/POG
+    vocabulary, the alias-matched physics entities and the declarative cross-link rules lifted
+    from cms-kb (cms_kb.physics_vocabulary, cms_kb.physics_entities, cms_kb.cross_links and
+    their cms_kb_* schema slices).
 
 
     Acceptance:
 
     - acc.r3-bundle-cms-physics.links: fixture corpus yields linked analysis records. [evidence:
     pytest]'
+- id: req.r3-bundle-cms-physics.notes
+  statement: 'An analysis-notes pack ingests CMS analysis notes from a mirror of gitlab.cern.ch/tdr/notes:
+    notes, sections, figures, bibliography and the bibliography-to-TWiki bridge, lifted from
+    cms-kb''s cms_kb.analysis_notes, with its note-count floor as a pack invariant and the
+    mirror fetch documented with the pack.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cms-physics.notes: fixture note trees yield notes, sections, figures and
+    references. [evidence: pytest]'
 - id: req.r3-bundle-cms-physics.bundle
-  statement: 'bundles/cms-physics extends cern-team, defaults to cds, twiki (physics filter)
-    and cms-analyses, and installs green with a passing smoke eval.
+  statement: 'bundles/cms-physics extends cern-team, defaults to twiki (physics filter), cds,
+    cmssw-releases, analysis-notes and cms-analyses, and installs green with a passing smoke
+    eval seeded from cms-kb''s reviewed golden set.
 
 
     Acceptance:
 
     - acc.r3-bundle-cms-physics.install: bundle CI job green. [evidence: executed_test]'
+- id: req.r3-bundle-cms-physics.instance
+  statement: 'The cms-kb deployment, the validation instance of cms-physics, is rebuilt from
+    the bundle with no local copy of an archi connector and no cms_kb source package.
+
+
+    Acceptance:
+
+    - acc.r3-bundle-cms-physics.rebuild: cms-kb deployment rebuilt from the bundle; its page
+    and note floors pass. [evidence: executed_test]'
 tasks:
 - id: task.r3-bundle-cms-physics.analyses-pack
   requirement: req.r3-bundle-cms-physics.pack
@@ -36,6 +64,14 @@ tasks:
     Test plan:
 
     - python/tests/packs/test_cms_analyses.py [evidence: pytest]'
+- id: task.r3-bundle-cms-physics.notes-pack
+  requirement: req.r3-bundle-cms-physics.notes
+  verification: 'Lift the analysis-note source into the analysis-notes pack.
+
+
+    Test plan:
+
+    - python/tests/packs/test_analysis_notes.py [evidence: pytest]'
 - id: task.r3-bundle-cms-physics.bundle
   requirement: req.r3-bundle-cms-physics.bundle
   verification: 'Write the bundle.
@@ -44,5 +80,13 @@ tasks:
     Test plan:
 
     - bundle CI job [evidence: executed_test]'
+- id: task.r3-bundle-cms-physics.instance
+  requirement: req.r3-bundle-cms-physics.instance
+  verification: 'Rebuild the cms-kb deployment from the bundle.
+
+
+    Test plan:
+
+    - rebuild run [evidence: executed_test]'
 evidence: []
 decisions: []

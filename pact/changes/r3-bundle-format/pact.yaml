@@ -4,7 +4,7 @@ title: 'Composable bundles: pack and bundle manifests, resolver, renderer, disco
 tier: 2
 why: 'Today a bundle is one okg profile directory: sources opt in by renaming *.yaml.example,
   invariants are bundle-wide so dropping a source breaks the floor, skills and schemas are
-  symlinks that only work from a checkout, and OKG_PROFILES_DIR must be set by hand. Five
+  symlinks that only work from a checkout, and OKG_PROFILES_DIR must be set by hand. Four
   bundles that share most of their sources need a unit smaller than a bundle and a way to
   combine them. ADR 0002 §3; okg has no profile composition, so archi renders and files the
   ask (D7).'
