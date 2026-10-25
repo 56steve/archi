@@ -1,7 +1,7 @@
 # AKMON asks from the operations runtime
 
-Status: **filed 2026-10-25** on `mitdbg/akmon` as #14–#26, one per ask, each
-tracked here by an `upstream-ask` issue (#814–#826). The links are under each
+Status: **filed 2026-10-25** on `mitdbg/akmon` as #14–#26 (O14 as #27), one per ask, each
+tracked here by an `upstream-ask` issue (#814–#826, #829). The links are under each
 heading.
 
 Asks O1–O6 are the six ADR 0002 §9 item 7 names. O7–O14 were found while
@@ -268,6 +268,8 @@ the cancellation of its own queued admission when they are not confirmed,
 which today means halt records are lost when the worker is down.
 
 ## O14. `request_escalation` fails on replay once the decision is applied
+
+Filed: [mitdbg/akmon#27](https://github.com/mitdbg/akmon/issues/27), tracked in #829.
 
 **Problem (proven, and checked in source).** After a decision arrives,
 `request_escalation` marks the escalation `applied`
