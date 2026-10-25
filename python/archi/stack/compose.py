@@ -37,7 +37,7 @@ CHAT_DB_IMAGE = "docker.io/library/postgres:16"
 #: Upstream Open WebUI at the version okg's chat code is measured against
 #: (okg.substrate.chat.instance.PINNED_VERSION). okg v0.2.0 pins a patched
 #: image under a placeholder registry (`your-registry.invalid/...`) that is
-#: not published; since okg#3059 every okg tool result is plain text, which
+#: not published; every okg tool result is plain text now, which
 #: the upstream image reads too. See docs/golden-path-footguns.md.
 WEBUI_IMAGE = "ghcr.io/open-webui/open-webui:v0.11.4"
 #: Where the MCP server listens inside the network.

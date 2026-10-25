@@ -13,12 +13,12 @@ The Archi v3 assembly milestone: install the `cern-team` bundle
 connectors, publish, and read back. Every command below was executed
 on 2026-08-21 on submit82 (okg dev editable checkout, archi wheel
 3.0.0a1 built from the working tree); this document is the
-reproducible sequence the okg#1185 conformance harness consumes. The
+reproducible sequence the external-distribution conformance harness consumes. The
 actual run results live in
 `pact/changes/w2-consolidate-hep-sources/cern-team-demo-evidence.md`.
 
-Steps tagged **[#1179]** are manual because the okg profile-installer
-contract has no channel for them yet — each is input to the okg#1179
+Steps tagged **[manual]** are manual because the okg profile-installer
+contract has no channel for them yet — each is input to the okg
 bundle-contract work.
 
 Terminology: the *bundle* (`bundles/cern-team/`) installs an
@@ -100,7 +100,7 @@ injects all of it through the installer's deployment-defaults merge
 (**no** manual step; the task brief listed this as potentially
 manual, it is not).
 
-## 2. [#1179] Copy the archi schema slices from the wheel
+## 2. [manual] Copy the archi schema slices from the wheel
 
 The profile installer has no schema-asset channel, and the connector
 subtypes (`jira_issue`, `documentation_page`, `software_repository`,
@@ -198,7 +198,7 @@ okg migrate --deployment cern-team-demo --apply --json
 # idempotent_second_run true
 ```
 
-**[#1179] Role passwords** (known friction): migrate creates the
+**[manual] Role passwords** (known friction): migrate creates the
 loopback roles without passwords on password-authenticated servers;
 `okg catalog load` fails on them until set (values are the fixed
 loopback-only passwords from okg `local_database_roles.py`):
@@ -268,7 +268,7 @@ Note on bare SQL: `psql` reads of `okg.v_nodes`/`v_edges` are refused
 by design (`okg graph read requires a Chronos checkout`); use
 `okg search` / `okg trace` / `okg status` as above.
 
-## Friction log (chronological, each recorded for okg#1179 / substrate)
+## Friction log (chronological, each recorded for the okg bundle contract / substrate)
 
 1. **`extension_missing` on standalone migrate** against a fresh
    database on the bundled Postgres stack (extensions exist only in

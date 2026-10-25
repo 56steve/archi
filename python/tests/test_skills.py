@@ -130,9 +130,9 @@ def test_retrieval_skills_teach_named_record_text_read():
             "before answering or concluding",
             "continuation_token",
             "`complete` is false",
-            # Older okg refuses kind "text"; the skill must name the okg
-            # change it needs and the SQL fallback.
-            "mitdbg/okg#2697",
+            # Older okg refuses kind "text"; the skill must say so and name
+            # the SQL fallback.
+            "an older okg refuses it",
             "Parent To Ordered Chunks",
         ):
             if needle not in text:

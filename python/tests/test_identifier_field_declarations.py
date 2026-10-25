@@ -1,6 +1,6 @@
 """Record types declare the fields that hold an id a person types.
 
-okg#3959: an exact-id search ranks the record that bears the id first, using
+An exact-id search ranks the record that bears the id first, using
 the class annotation `okg_identifier_fields` (comma-separated fields). okg
 refuses a declaration whose field is not also in `okg_searchable_text_fields`,
 and refuses `text`, `okg_producer_text` and any `okg_*` name.
