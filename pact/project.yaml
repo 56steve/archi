@@ -13,7 +13,7 @@
 #
 # The `review_policy` and `decide/merge gate` wording below describes the v4
 # lifecycle. v5 replaces that whole flow with one `check` gate plus a
-# `Pact-Approved` git commit trailer. See CLAUDE.md's overrides section.
+# `Pact-Approved` git commit trailer. See AGENTS.md's PACT section.
 pact_version: 4
 project: archi
 default_change_status: proposal
@@ -32,8 +32,9 @@ command_authority:
 pr_policy:
   base: archi_v3
   rationale: >-
-    All v3 work lands on archi_v3 (ADR 0001 invariant 2). main serves live
-    v2 deployments and receives only v2 bugfixes until cutover.
+    All v3 work lands on archi_v3 (ADR 0002 D1; AGENTS.md "Where work
+    lands"). main serves live v2 deployments and receives only v2 bugfixes
+    until cutover.
 agent_install_targets:
   - claude-code
 graph_projection:
