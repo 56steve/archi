@@ -60,9 +60,11 @@ def test_a_source_okg_never_ran_or_does_not_list_is_not_ok():
     assert "does not list" in rows["monit-live.monit_sam"]["reason"]
 
 
-def test_a_bare_source_name_in_okgs_registry_matches():
-    [row] = evaluate({"docsite.docsite": {"max_staleness": "7d"}}, [okg_source("docsite", 1)], NOW)
-    assert row["ok"] is True
+def test_another_packs_source_with_the_same_short_name_does_not_match():
+    """git-code.repo must not pass on the strength of some other pack's `repo`."""
+    [row] = evaluate({"git-code.repo": {"max_staleness": "7d"}}, [okg_source("repo", 1)], NOW)
+    assert row["ok"] is False
+    assert "does not list" in row["reason"]
 
 
 @pytest.mark.parametrize("text,seconds", [("90s", 90), ("5m", 300), ("36h", 129600), ("7d", 604800), ("2w", 1209600)])

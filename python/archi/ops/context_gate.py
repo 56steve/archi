@@ -31,7 +31,13 @@ from typing import Any, Iterable, Mapping, Optional
 
 from archi.bundles.duration import format_age, parse_duration
 
-PASSING = frozenset({True, "pass", "passed", "ok"})
+# The results that mean an invariant holds. Compared by type as well as value,
+# so 1 (equal to True) and unhashable values never count as a pass.
+PASSING = frozenset({"pass", "passed", "ok"})
+
+
+def _holds(result: Any) -> bool:
+    return result is True or (isinstance(result, str) and result in PASSING)
 SPEC_KEYS = frozenset({"sources", "max_staleness", "min_context_eval_score", "invariants"})
 
 
@@ -182,7 +188,7 @@ def evaluate_gate(spec: GateSpec, facts: GateFacts) -> GateResult:
         label = f"invariant:{name}"
         if name not in facts.invariants:
             checks.append(GateCheck(label, False, "no result recorded for this generation"))
-        elif facts.invariants[name] in PASSING:
+        elif _holds(facts.invariants[name]):
             checks.append(GateCheck(label, True, "holds"))
         else:
             checks.append(GateCheck(label, False, f"does not hold ({facts.invariants[name]})"))

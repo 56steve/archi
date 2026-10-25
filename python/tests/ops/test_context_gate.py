@@ -84,7 +84,7 @@ def test_no_minimum_score_means_no_score_is_needed():
     assert evaluate_gate(spec, healthy(context_eval_score=None)).ok
 
 
-@pytest.mark.parametrize("value", [False, "fail", "error", "warn"])
+@pytest.mark.parametrize("value", [False, "fail", "error", "warn", 1, 0, ["pass"], None])
 def test_a_violated_invariant_fails_and_is_named(value):
     invariants = {"cms_catalogs_coverage": value, "cms_catalogs_link_site_config_site": "pass"}
     assert evaluate_gate(SPEC, healthy(invariants=invariants)).failing == ("invariant:cms_catalogs_coverage",)

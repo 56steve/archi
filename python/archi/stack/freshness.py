@@ -31,13 +31,12 @@ def _find(rows: Sequence[Mapping[str, Any]], source_id: str) -> Optional[Mapping
     """The okg source row for a rendered source id (`<pack>.<source>`).
 
     okg names a registry entry by the template's top-level key, which is the
-    rendered id. A bare `<source>` name is accepted for registries written by hand.
+    rendered id. No looser match: a bare `<source>` name could belong to
+    another pack's source and pass for this one.
     """
-    short = source_id.split(".", 1)[-1]
-    for wanted in (source_id, short):
-        for row in rows:
-            if wanted in (row.get("name"), row.get("ownership_id")):
-                return row
+    for row in rows:
+        if row.get("name") == source_id:
+            return row
     return None
 
 

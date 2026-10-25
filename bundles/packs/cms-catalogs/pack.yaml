@@ -10,13 +10,15 @@ init_questions: questions.yaml
 invariants: invariants.yaml
 # No template here sets a schedule (triggers are manual and reconcile), so each
 # value is how old the catalog may get before an answer is likely wrong.
-# CRIC, SITECONF, GOCDB and WMStats move within a day and operators ask about
-# downtimes and workflows now: 24h. DBS and the CondDB global tags only grow
-# by new entries, and their caches need a grid certificate to refresh: 7d.
+# GOCDB downtimes and WMStats workflows move within a day and operators ask
+# about them now: 24h. CRIC, CRIC core and SITECONF describe sites, which
+# change over weeks, and are refreshed by hand: 7d. DBS and the CondDB global
+# tags only grow by new entries, and their caches need a grid certificate to
+# refresh: 7d.
 freshness:
-  cms-catalogs.cric: {max_staleness: 24h}
-  cms-catalogs.cric_core: {max_staleness: 24h}
-  cms-catalogs.siteconf: {max_staleness: 24h}
+  cms-catalogs.cric: {max_staleness: 7d}
+  cms-catalogs.cric_core: {max_staleness: 7d}
+  cms-catalogs.siteconf: {max_staleness: 7d}
   cms-catalogs.gocdb_downtimes: {max_staleness: 24h}
   cms-catalogs.wmstats_workflows: {max_staleness: 24h}
   cms-catalogs.dbs_datasets: {max_staleness: 7d}
