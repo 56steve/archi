@@ -1,0 +1,9 @@
+name: ops-record
+kind: context
+version: 0.1.0
+description: Operational memory, the incidents, proposals, decisions, actions and outcomes automations record through okg admission (ADR 0002 section 6.2).
+# No sources: records arrive through okg admission from automations
+# (archi.ops.record) and, as ticket resolutions, from the ticket packs.
+schemas: schemas/
+search_subtypes: [ops_incident, ops_outcome]
+needs_credentials: false

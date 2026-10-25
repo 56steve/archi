@@ -1,0 +1,13 @@
+name: docsite
+kind: context
+version: 0.1.0
+description: Documentation sites, read from the records cache the static-docs downloader writes.
+requires:
+  modules: [document_starter, person, extraction]
+schemas: schemas/
+sources: sources/
+invariants: invariants.yaml
+search_subtypes: [documentation_page, software_repository, document_chunk]
+prompt_fragment: prompt.md
+# The downloader fetches public pages; no credential is read.
+needs_credentials: false

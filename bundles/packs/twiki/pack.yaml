@@ -1,0 +1,15 @@
+name: twiki
+kind: context
+version: 0.1.0
+description: TWiki topics, read from an EOS dump of the wiki's raw markup.
+requires:
+  modules: [document_starter, person, extraction]
+schemas: schemas/
+sources: sources/
+init_questions: questions.yaml
+invariants: invariants.yaml
+search_subtypes: [documentation_page, document_chunk]
+prompt_fragment: prompt.md
+# The dump lives on CERN EOS, which only a CERN account can read; with no
+# dump the source blocks the publish.
+needs_credentials: true

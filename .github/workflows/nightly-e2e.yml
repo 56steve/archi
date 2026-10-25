@@ -1,0 +1,115 @@
+# The golden path, end to end (PACT r3-golden-path, req.r3-golden-path.nightly;
+# ADR 0002 section 8): an empty runner to a cited answer over MCP with the
+# cern-team bundle, in at most 5 user commands and 15 minutes.
+#
+# The five steps named "user command N" are exactly what an operator types.
+# Everything else here is runner housekeeping (disk space, timing, logs,
+# teardown), not part of the path.
+#
+# No secret is involved: the run selects the cmssw-releases pack (the public
+# CMSSW release catalog) in place of cern-team's docsite and indico defaults,
+# which need a records cache and an event scope that a bare runner lacks
+# (choosing defaults that publish with no input is PACT r3-bundle-cern-team).
+# The answer is read over MCP, so no model provider is needed. It also runs on pushes and pull requests that touch the stack,
+# so a change to it is proven the same way before it merges.
+name: nightly-e2e
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "python/archi/cli/**"
+      - "python/archi/stack/**"
+      - "python/archi/bundles/**"
+      - "bundles/**"
+      - "python/tests/cli/golden_path_run.sh"
+      - "python/tests/cli/mcp_cited_answer.py"
+      - ".github/workflows/nightly-e2e.yml"
+  push:
+    branches: [archi_v3]
+    paths:
+      - "python/archi/cli/**"
+      - "python/archi/stack/**"
+      - "python/archi/bundles/**"
+      - "bundles/**"
+      - "python/tests/cli/golden_path_run.sh"
+      - "python/tests/cli/mcp_cited_answer.py"
+      - ".github/workflows/nightly-e2e.yml"
+
+concurrency:
+  group: nightly-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  golden-path:
+    name: empty runner to a cited answer
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      OKG_WHEEL: "okg @ https://github.com/mitdbg/akmon/releases/download/v0.2.0/okg-0.2.0-py3-none-any.whl#sha256=72bac3b67cf29cccd27e77e58ad309104f19fcce255a04a4a6f23b8318b88e12"
+      QUESTION: "Which CMSSW_14_0 releases are in the graph?"
+    steps:
+      # The AKMON Postgres image is 6.3 GB and Open WebUI about 4 GB; the
+      # runner's free disk does not hold both without this.
+      - name: Free disk space (housekeeping)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start the clock (housekeeping)
+        run: echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: "user command 1: install okg and archi"
+        run: pip install "$OKG_WHEEL" ./python
+
+      - name: "user command 2: archi init"
+        working-directory: ${{ runner.temp }}
+        run: archi init gp --bundle cern-team --without docsite,indico --with cmssw-releases
+
+      - name: "user command 3: archi up"
+        working-directory: ${{ runner.temp }}/gp
+        run: archi up
+
+      - name: "user command 4: archi doctor"
+        working-directory: ${{ runner.temp }}/gp
+        run: archi doctor --json | tee "$RUNNER_TEMP/doctor.json"
+
+      - name: "user command 5: ask over MCP"
+        working-directory: ${{ runner.temp }}/gp
+        run: python "$GITHUB_WORKSPACE/python/tests/cli/mcp_cited_answer.py" "$QUESTION" | tee "$RUNNER_TEMP/answer.json"
+
+      - name: Within 15 minutes (housekeeping)
+        run: |
+          elapsed=$(( $(date +%s) - STARTED ))
+          echo "user commands took ${elapsed}s"
+          echo "### golden path: ${elapsed}s, 5 user commands" >> "$GITHUB_STEP_SUMMARY"
+          python - "$RUNNER_TEMP/answer.json" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json, sys
+          a = json.load(open(sys.argv[1]))
+          print(f"\n**{a['question']}** (source `{a['source']}`)\n")
+          for c in a["citations"][:5]:
+              print(f"- `{c['node_id']}` ({c['subtype']})")
+          EOF
+          test "$elapsed" -le 900
+
+      - name: Diagnostics on failure (housekeeping)
+        if: failure()
+        working-directory: ${{ runner.temp }}
+        run: |
+          [ -d gp ] || exit 0
+          archi doctor --instance gp || true
+          docker compose -p archi-gp -f gp/compose.yaml --env-file gp/.env logs --tail 200 || true
+
+      - name: Tear down (housekeeping)
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          [ -f gp/archi.yaml ] && archi down --instance gp --purge --yes || true

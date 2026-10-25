@@ -1,0 +1,14 @@
+name: dqm
+kind: context
+version: 0.1.0
+description: CMS DQM data-quality certifications, with the runs and datasets they cover.
+requires:
+  modules: [document_starter, person, extraction, dataset]
+schemas: schemas/
+sources: sources/
+invariants: invariants.yaml
+search_subtypes: [data_certification, run, dataset]
+prompt_fragment: prompt.md
+# The certification files are published behind CERN SSO; nothing in archi
+# downloads them yet.
+needs_credentials: true

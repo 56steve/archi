@@ -46,7 +46,7 @@ IMAGES OF ATTACHMENTS (option `attachment_images`, off by default, needs
 agent can open them with okg's `inspect(kind="image")`. Nothing is fetched
 here: okg fetches the URL at read time, only from hosts the deployment
 allowlists under `agent_surface.images.url.prefixes`. Slide decks and other
-types stay names and URLs. See `indico_live.yaml.example`.
+types stay names and URLs. See the indico pack's `sources/indico_live.yaml`.
 
 Attachment text extraction (v2's MarkItDown slide conversion) is NOT
 ported here: it pulls a document-conversion dependency into the

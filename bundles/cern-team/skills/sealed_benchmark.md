@@ -1,1 +1,0 @@
-../../../skills/sealed_benchmark.md

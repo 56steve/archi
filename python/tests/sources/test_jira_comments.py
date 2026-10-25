@@ -22,7 +22,7 @@ from archi.sources.jira import JiraIssueSource, comment_ids
 
 REPO = Path(__file__).resolve().parents[3]
 SCHEMAS = REPO / "python" / "archi" / "schemas"
-BUNDLE_SCHEMAS = REPO / "bundles" / "cern-team" / "schemas"
+BUNDLE_SCHEMAS = REPO / "bundles" / "packs" / "jira" / "schemas"
 
 ADA = {"displayName": "Ada Lovelace"}
 LINUS = {"displayName": "Linus Pauling"}

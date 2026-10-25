@@ -1,0 +1,21 @@
+name: monit-live
+kind: context
+version: 0.1.0
+description: CERN MONIT monitoring snapshots (SAM, HTCondor, Rucio) and the live MONIT query tools.
+requires:
+  modules: [document_starter, person, extraction, dataset]
+  # Every edge these sources emit starts at a CRIC site or storage endpoint.
+  packs: [cms-catalogs]
+schemas: schemas/
+sources: sources/
+invariants: invariants.yaml
+search_subtypes: [monitoring_snapshot, transfer_job]
+live_tools:
+  - archi.tools.monit:archi_monit_rucio_search
+  - archi.tools.monit:archi_monit_rucio_aggregate
+  - archi.tools.monit:archi_monit_condor_search
+  - archi.tools.monit:archi_monit_condor_aggregate
+prompt_fragment: prompt.md
+credentials: [MONIT_GRAFANA_TOKEN]
+# The snapshots and the live tools both query MONIT with a Grafana token.
+needs_credentials: true

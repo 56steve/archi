@@ -1,0 +1,25 @@
+name: cms-catalogs
+kind: context
+version: 0.1.0
+description: CMS computing catalogs - CRIC, CRIC core, SITECONF, DBS, WMStats, GOCDB and CondDB.
+requires:
+  modules: [document_starter, person, extraction, dataset]
+schemas: schemas/
+sources: sources/
+init_questions: questions.yaml
+invariants: invariants.yaml
+search_subtypes:
+  - site
+  - storage_endpoint
+  - compute_endpoint
+  - infrastructure_service
+  - site_config
+  - dataset
+  - workflow
+  - downtime
+  - global_tag
+prompt_fragment: prompt.md
+credentials: [CERN_GITLAB_TOKEN]
+# SITECONF reads GitLab with a token, and the CRIC, DBS and WMStats caches
+# can only be fetched with a CERN grid certificate or SSO.
+needs_credentials: true

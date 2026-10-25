@@ -1,0 +1,15 @@
+name: code-symbols
+kind: context
+version: 0.1.0
+description: Functions, classes, imports and calls in git-code's repository.
+requires:
+  # code_graph composes with agent_sessions, ci, compute_env and openspec.
+  modules: [document_starter, person, extraction, git_graph, code_graph, agent_sessions, ci, compute_env, openspec]
+  packs: [git-code]
+schemas: schemas/
+sources: sources/
+invariants: invariants.yaml
+search_subtypes: [code_symbol]
+prompt_fragment: prompt.md
+# It reads git-code's checkout and fetches nothing itself.
+needs_credentials: false

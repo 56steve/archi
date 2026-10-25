@@ -1,25 +1,26 @@
 """Locate the payload the wheel carries.
 
-`okg install --profile cern-team` needs a directory containing
-`<profile>/profile.yaml`. Before this module that directory only existed
-in an authoring checkout of this repo, so an install required cloning
-archi even though the code arrived as a wheel. The wheel now carries the
-bundles and playbooks (see `[tool.hatch.build.targets.wheel.force-include]`
-in pyproject.toml), and these helpers point at them wherever pip put them:
+The wheel carries the bundles, packs and playbooks (see
+`[tool.hatch.build.targets.wheel.force-include]` in pyproject.toml), and these
+helpers point at them wherever pip put them. Before that the files only
+existed in an authoring checkout of this repo, so an install required cloning
+archi even though the code arrived as a wheel.
 
-    OKG_PROFILES_DIR="$(archi-profiles-dir)" okg install --profile cern-team
-
-The env var is still required because okg's profile resolver has no
-installed-distribution discovery — its cascade is explicit override,
-`OKG_PROFILES_DIR`, `./profiles/`, the substrate's own library, then the
-`okg fetch-deployments` cache (`profile_init.py`). Closing that last step
-is the okg#1179 half of artifact-only install; shipping the payload is
-ours, and it is what removes the checkout.
+`archi render --bundle cern-team --instance DIR` composes a bundle's packs
+into `DIR/profiles/cern-team/`, where okg finds it with no OKG_PROFILES_DIR.
+`archi-profiles-dir` still prints the payload's `bundles/` directory for a
+bundle shipped as a plain okg profile (`<name>/profile.yaml`), which okg
+can read through OKG_PROFILES_DIR.
 """
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+
+
+#: Where the wheel puts the repo-root `bundles/` and `skills/` trees. Not
+#: `archi/bundles/`, which is the `archi.bundles` code package.
+PAYLOAD = "_payload"
 
 
 def _package_root() -> Path:
@@ -29,12 +30,12 @@ def _package_root() -> Path:
 def _resolve(name: str) -> Path:
     """The packaged copy, or the checkout's copy when running from source.
 
-    An editable install has no `archi/bundles/` — the payload only lands there
+    An editable install has no `archi/_payload/` — the payload only lands there
     when the wheel is built. Falling back to the repo root keeps the helper
     honest in a development tree instead of returning a path that does not
     exist; the packaged copy always wins when present.
     """
-    packaged = _package_root() / name
+    packaged = _package_root() / PAYLOAD / name
     if packaged.is_dir():
         return packaged
     checkout = _package_root().parents[1] / name
@@ -44,8 +45,13 @@ def _resolve(name: str) -> Path:
 
 
 def profiles_dir() -> Path:
-    """Directory to hand to `OKG_PROFILES_DIR` (contains `<bundle>/profile.yaml`)."""
+    """The payload's `bundles/`: `<bundle>/bundle.yaml`, `packs/<pack>/pack.yaml`."""
     return _resolve("bundles")
+
+
+def packs_dir() -> Path:
+    """Directory of archi's own packs (`<name>/pack.yaml`)."""
+    return profiles_dir() / "packs"
 
 
 def playbooks_dir() -> Path:
@@ -54,11 +60,19 @@ def playbooks_dir() -> Path:
 
 
 def bundle_dir(name: str) -> Path:
-    """One bundle by name, e.g. `bundle_dir("cern-team")`."""
+    """One bundle by name, e.g. `bundle_dir("cern-team")`.
+
+    A bundle directory holds a `bundle.yaml`, or an okg `profile.yaml` for a
+    bundle not yet expressed as packs.
+    """
+
+    def is_bundle(path: Path) -> bool:
+        return (path / "bundle.yaml").is_file() or (path / "profile.yaml").is_file()
+
     candidate = profiles_dir() / name
-    if not (candidate / "profile.yaml").is_file():
+    if not is_bundle(candidate):
         available = sorted(
-            p.name for p in profiles_dir().iterdir() if (p / "profile.yaml").is_file()
+            p.name for p in profiles_dir().iterdir() if is_bundle(p)
         ) if profiles_dir().is_dir() else []
         raise FileNotFoundError(
             f"no bundle {name!r} in {profiles_dir()}; available: {available or 'none'}"

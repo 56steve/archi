@@ -20,6 +20,16 @@ reimplementation of OKG services.
 
 ## Current state (update this section when it changes)
 
+**archi composes bundles itself and reads okg's profile planner (2026-10-25).**
+okg has no profile composition (ADR 0002 §9 ask 3), so `archi render` writes one
+ordinary profile into the instance's `./profiles/`, which okg's discovery
+cascade already searches; no step sets `OKG_PROFILES_DIR`. `archi diff` and
+`archi add` import okg's planner (`build_plan`, `discover_profile`,
+`planned_writes`, `source_default_entries`) to see what a profile produces for a
+deployment's answers, and `archi add` runs the claim → load → ingest → publish
+commands. Tested against the v0.2.0 release (no pin change). PACT
+`r3-bundle-format`.
+
 **The distribution is now `archi-kb` (2026-10-25).** ADR 0002 D2: the name
 `archi` on PyPI belongs to an unrelated package. The import name is still
 `archi`, and nothing on the okg side changes. The wheel is now
@@ -206,7 +216,9 @@ environment, sealed packages and lifecycle receipts that would make an
 acknowledgement outlive the day it is issued.
 
 **The bundle now ships the assistant's system prompt (2026-09-08, PR #632).**
-`bundles/cern-team/skills/chat-system-prompt.md`, declared as
+`skills/chat-system-prompt.md` (since PACT r3-packs-split the renderer writes it
+into the rendered profile from `python/archi/bundles/base/` and each pack's
+`prompt_fragment`), declared as
 `chat.preset.system_prompt_ref`. This is required, not decorative: `okg chat sync`
 refuses a deployment that declares neither `mcp_instructions` nor a
 `system_prompt_ref`, because Open WebUI never shows the model the MCP server's own
@@ -422,15 +434,24 @@ okg.substrate.enrichers.derived_edges:
 okg.substrate.library.linkers:    _chronos
 okg.substrate.library.linkers.declarative: DeclarativeLinker
 okg.substrate.alias.protocol:     AliasMatch
+okg.substrate.deployment_bootstrap.profile_init:
+    build_plan, discover_profile, planned_writes, source_default_entries
 ```
+
+**The bundle tooling reads okg's profile planner (2026-10-25).** `archi diff`
+and `archi add` (`python/archi/bundles/lock.py`, PACT `r3-bundle-format`) ask
+okg what a rendered profile produces for a deployment's answers, so they compare
+and extend a registry with okg's own interpolation rather than a copy of it.
+These four names are the profile installer's planner; profile composition in
+okg (ADR 0002 §9 ask 3) would replace both the renderer and this use.
 
 **The dropped fields are read by the substrate, not by us (2026-09-16).** Archi
 never referenced `next_cursor`, but the runner does, on the result of whatever
 class a source registry names. So a reader that returns `ConnectorRun` cannot be
 registered directly: every run raised `AttributeError: 'ConnectorRun' object has
 no attribute 'next_cursor'` from the connector migration until this was fixed.
-`ConnectorAdapter` is the framework's bridge, and `bundles/cern-team/source-defaults`
-now names one `<Reader>Adapter` per reader. The readers themselves are unchanged.
+`ConnectorAdapter` is the framework's bridge, and the shipped source templates
+(now `bundles/packs/*/sources/`) name one `<Reader>Adapter` per reader. The readers themselves are unchanged.
 
 **An adapter's authority must be a string literal (2026-09-20).** The substrate
 reads a source's `profile` and `change_probe_kind` off the class *before* it
@@ -466,14 +487,15 @@ policy with `output_signature` + `output_scope_summary`, `sync:` block); deploym
 manifest keys (`modules:`, `schema_dir`, `nomos.rollout` deferral); the
 edit → `catalog ownership claim` → `catalog load --apply` → `ingest` sequence;
 `okg deployment lint` codes; LinkML deployment schemas + `schemas/bridges/`
-narrowings; install profiles (`OKG_PROFILES_DIR` cascade) for bundles; the closed
+narrowings; install profiles (the `./profiles/` step of the discovery cascade,
+which `archi render` writes into) for bundles; the closed
 `SourceHealth`/preflight status vocabulary; MCP read surface for validation.
 
 ## Mapping: #1178 sub-issues ↔ Archi needs and evidence
 
 | OKG issue | Archi's stake | Evidence we already have for you |
 |---|---|---|
-| #1179 external schemas/bundles | **The wheel now carries the bundle and its materialised playbooks** (force-include; the repo's playbook symlinks are dereferenced at build), so an install needs no authoring checkout — `archi-profiles-dir` prints the installed payload path. What remains on your side: the profile resolver has **no installed-distribution discovery**, so `OKG_PROFILES_DIR` is still mandatory (cascade = explicit override → env var → `./profiles/` → substrate library → fetch cache, `profile_init.py`). Also still open: shared ontology *modules* (`load_modules_root()` is package-locked) and a versioned distribution contract | ADR §7 ask 2; deployment-scoped schema slices shipping in the wheel (`python/archi/schemas/`) |
+| #1179 external schemas/bundles | **The wheel now carries the bundle and its materialised playbooks** (force-include; the repo's playbook symlinks are dereferenced at build), so an install needs no authoring checkout — `archi-profiles-dir` prints the installed payload path. What remains on your side: the profile resolver has **no installed-distribution discovery** (cascade = explicit override → env var → `./profiles/` → substrate library → fetch cache, `profile_init.py`). archi works around it without the env var: `archi render` writes the profile into the instance's `./profiles/` and okg is run from there (PACT `r3-bundle-format`); entry-point discovery is ADR 0002 §9 ask 2. Also still open: shared ontology *modules* (`load_modules_root()` is package-locked) and a versioned distribution contract | ADR §7 ask 2; deployment-scoped schema slices shipping in the wheel (`python/archi/schemas/`) |
 | #1180 per-user MCP | Blocks multi-user instances (cms-knowledge-base bundle) | ADR D12 |
 | #1181 connector/enricher SDK | Replaces the import surface above; please treat that list as the minimum viable SDK | W1 friction log `pact/changes/w1-prove-the-seam/FRICTION.md` (6 items: scaffold nomos gap, ownership-claim discoverability, role passwords, --json purity, path-vs-name resolution); wheel + scratch-deployment reproduction in the same dir |
 | #1182 external review | Unblocks the queue-bot (Redmine/JIRA reply) — our W8, same first consumer you named. Approve-with-edits + expiry confirmed in your scope: exactly what we needed | ADR §5.3, §7 ask 3 |

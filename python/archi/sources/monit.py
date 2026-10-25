@@ -98,7 +98,7 @@ specific to this family:
 
     monit_sam:
       module: archi.sources.monit
-      class: MONITSAMSource
+      class: MONITSAMAdapter
       ownership_id: <instance>.monit-sam
       admission_policy:
         producer_id: <instance>.monit-sam
@@ -144,7 +144,7 @@ specific to this family:
 
     monit_condor:
       module: archi.sources.monit
-      class: MONITCondorSource
+      class: MONITCondorAdapter
       ownership_id: <instance>.monit-condor
       admission_policy:
         producer_id: <instance>.monit-condor
@@ -189,7 +189,7 @@ specific to this family:
 
     monit_rucio_transfer:
       module: archi.sources.monit
-      class: MONITRucioTransferSource
+      class: MONITRucioTransferAdapter
       ownership_id: <instance>.monit-rucio-transfer
       admission_policy:
         producer_id: <instance>.monit-rucio-transfer
@@ -237,7 +237,7 @@ specific to this family:
 
     monit_rucio_datasets:
       module: archi.sources.monit
-      class: MONITRucioDatasetSource
+      class: MONITRucioDatasetAdapter
       ownership_id: <instance>.monit-rucio-datasets
       admission_policy:
         producer_id: <instance>.monit-rucio-datasets
@@ -316,6 +316,7 @@ from okg.deployment import (
     ConnectorRun,
 )
 
+from archi.sources._sdk_adapter import ReaderAdapter
 from archi.auth.cache import (
     cache_or_forced_live_change_probe,
     load_json,
@@ -2608,3 +2609,75 @@ def _dataset_label(dataset: str, *, budget: int = 120) -> str:
             middle = middle[:middle_room] + "..."
         return f"/{primary}/{middle}/{tier}"
     return dataset[: budget - 3] + "..."
+
+
+class MONITSAMAdapter(ReaderAdapter):
+    """Registry adapter for :class:`MONITSAMSource`.
+
+    The monit-live pack's `monit_sam` source names this class. The reader's
+    behavior is unchanged; this class only drives it through the
+    substrate's adapter contract, which a bare reader cannot satisfy (its
+    ``ConnectorRun`` has no ``next_cursor``).
+
+    ``profile`` and ``change_probe_kind`` must be string literals; see
+    ``ReaderAdapter``. ``test_bundle_source_adapters.py`` parses this
+    file and holds them equal to the reader's own values.
+    """
+
+    reader_class = MONITSAMSource
+    profile = "mutable_api"
+    change_probe_kind = "mutable_api"
+
+
+class MONITCondorAdapter(ReaderAdapter):
+    """Registry adapter for :class:`MONITCondorSource`.
+
+    The monit-live pack's `monit_condor` source names this class. The reader's
+    behavior is unchanged; this class only drives it through the
+    substrate's adapter contract, which a bare reader cannot satisfy (its
+    ``ConnectorRun`` has no ``next_cursor``).
+
+    ``profile`` and ``change_probe_kind`` must be string literals; see
+    ``ReaderAdapter``. ``test_bundle_source_adapters.py`` parses this
+    file and holds them equal to the reader's own values.
+    """
+
+    reader_class = MONITCondorSource
+    profile = "mutable_api"
+    change_probe_kind = "mutable_api"
+
+
+class MONITRucioTransferAdapter(ReaderAdapter):
+    """Registry adapter for :class:`MONITRucioTransferSource`.
+
+    The monit-live pack's `monit_rucio_transfer` source names this class. The reader's
+    behavior is unchanged; this class only drives it through the
+    substrate's adapter contract, which a bare reader cannot satisfy (its
+    ``ConnectorRun`` has no ``next_cursor``).
+
+    ``profile`` and ``change_probe_kind`` must be string literals; see
+    ``ReaderAdapter``. ``test_bundle_source_adapters.py`` parses this
+    file and holds them equal to the reader's own values.
+    """
+
+    reader_class = MONITRucioTransferSource
+    profile = "mutable_api"
+    change_probe_kind = "mutable_api"
+
+
+class MONITRucioDatasetAdapter(ReaderAdapter):
+    """Registry adapter for :class:`MONITRucioDatasetSource`.
+
+    The monit-live pack's `monit_rucio_datasets` source names this class. The reader's
+    behavior is unchanged; this class only drives it through the
+    substrate's adapter contract, which a bare reader cannot satisfy (its
+    ``ConnectorRun`` has no ``next_cursor``).
+
+    ``profile`` and ``change_probe_kind`` must be string literals; see
+    ``ReaderAdapter``. ``test_bundle_source_adapters.py`` parses this
+    file and holds them equal to the reader's own values.
+    """
+
+    reader_class = MONITRucioDatasetSource
+    profile = "mutable_api"
+    change_probe_kind = "mutable_api"

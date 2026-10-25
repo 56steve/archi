@@ -1,0 +1,15 @@
+name: jira
+kind: context
+version: 0.1.0
+description: JIRA issues and their participants, read from the cache the JIRA downloader writes.
+requires:
+  modules: [document_starter, person, extraction]
+schemas: schemas/
+sources: sources/
+invariants: invariants.yaml
+search_subtypes: [jira_issue, document_chunk]
+prompt_fragment: prompt.md
+credentials: [CERN_JIRA_TOKEN]
+# The downloader runs anonymously for public projects; the token only
+# widens what it can read.
+needs_credentials: false
