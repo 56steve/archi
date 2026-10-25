@@ -244,14 +244,14 @@ def cmd_tamper(a: argparse.Namespace) -> None:
 
 
 def cmd_day_fill(a: argparse.Namespace) -> None:
-    """Bring today's spend for the automation up to `target` (a ledger row; lab only)."""
+    """Set today's recorded spend for the automation to `target` (lab only: the ledger takes no negative row,
+    so the day's rows are replaced by one)."""
     spent, cap = io().day_spend(AUTOMATION)
-    day = datetime.now(timezone.utc).date().isoformat()
-    scope = f"day:{AUTOMATION}:{day}"
-    spent = spent or 0.0
+    scope = f"day:{AUTOMATION}:{datetime.now(timezone.utc).date().isoformat()}"
     with psycopg.connect(os.environ["OKG_DSN"], autocommit=True) as conn:
+        conn.execute("DELETE FROM okg.deployment_cost_ledger WHERE scope = %s", (scope,))
         conn.execute("INSERT INTO okg.deployment_cost_ledger (scope, consumption_id, usd_consumed, workflow_id) "
-                     "VALUES (%s, %s, %s, 'lab-day-fill')", (scope, f"lab-fill-{time.time_ns()}", a.target - spent))
+                     "VALUES (%s, %s, %s, 'lab-day-fill')", (scope, f"lab-fill-{time.time_ns()}", a.target))
     print(json.dumps({"scope": scope, "was": spent, "now": a.target, "cap": cap}))
 
 
