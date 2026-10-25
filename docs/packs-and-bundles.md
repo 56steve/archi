@@ -44,6 +44,7 @@ not leave that directory (`..`, absolute paths and `~` are refused).
 | `search_profiles` | | Named okg search profiles, `{<name>: {description, subtypes}}`, added to the instance's `search.profiles`. Not `content`. |
 | `live_tools` | | `archi.tools.*` entries for the MCP server. |
 | `action_classes` | | File holding an `action_classes:` mapping keyed by id (automation packs). |
+| `automation` | automation packs | The automation: trigger, context gate, playbook, action classes, proposal schema, budget, levels. See [Automation packs](#automation-packs). |
 | `files` | | Files installed at the same path in the deployment root (okg's `files:` allow-list applies). |
 | `prompt_fragment` | | Markdown appended to the chat system prompt. |
 | `credentials` | | Environment-variable **names** the pack reads. |
@@ -93,6 +94,7 @@ Besides the schema, `validate` refuses:
   not a duration, or a context pack source with no `freshness` entry;
 - a `link_coverage` target whose edge (`from -[edge]-> to`, or the reverse for
   `direction: in`) no source of the pack declares in its `output_signature`;
+- an automation pack that breaks the rules in [Automation packs](#automation-packs), including any level above L2;
 - a bundle that names an unknown pack or bundle, extends itself in a cycle,
   or has no credential-free default context pack with sources (taking
   inherited defaults into account), because a bundle with nothing configured
@@ -272,3 +274,89 @@ current generation's facts and returns pass, or fail with each failing check
 named (`freshness:<source>`, `context_eval`, `invariant:<name>`). Facts come
 from `archi doctor --json` (`facts_from_doctor`), plus invariant results and the
 context-eval score from the caller. A missing score or result is a failure.
+
+## Automation packs
+
+An automation pack (`kind: automation`) declares one automation and the typed
+actions it may propose (ADR 0002 sections 7.2 and 7.3). The pack holds the
+declaration only. The runtime that runs it is PACT `r3-ops-runtime`.
+
+One pack declares one automation, in an `automation:` block of `pack.yaml`.
+The action classes live in the pack's `action_classes` file, which the
+composer already merges by id across packs; the block lists the ids this
+automation may propose.
+
+```yaml
+name: ticket-triage
+kind: automation
+version: 0.1.0
+description: Reads new tickets and drafts or proposes a response.
+requires: {packs: [redmine]}          # packs whose live tools act as mediators
+playbooks: playbooks/
+action_classes: action_classes.yaml
+needs_credentials: false
+automation:
+  trigger: {type: ticket_queue, system: redmine, queue: cms-comp-ops}
+  context_gate:                       # the keys of archi.ops.context_gate.GateSpec
+    sources: [redmine.tickets]
+    max_staleness: 24h
+    min_context_eval_score: 0.8
+    invariants: [redmine_link_ticket_site]
+  playbook: triage.md                 # under playbooks/
+  action_classes: [draft_reply, set_ticket_status]
+  proposal_schema:                    # JSON Schema; see below
+    type: object
+    required: [summary, evidence_ids, action_class, payload, confidence, rollback]
+    properties:
+      summary: {type: string}
+      evidence_ids: {type: array, minItems: 1, items: {type: string}}
+      action_class: {type: string}
+      payload: {type: object}
+      confidence: {type: number, minimum: 0, maximum: 1}
+      rollback: {type: string}
+  budget: {cost_per_run: 0.5, cost_per_day: 10, runs_per_hour: 20}   # USD
+  default_level: L1
+  max_level: L2
+```
+
+```yaml
+# action_classes.yaml
+action_classes:
+  set_ticket_status:
+    payload_schema: {type: object, required: [ticket_key, status], properties: {...}}
+    mediator: archi.tools.redmine:set_status   # a live tool, or a workflow step name
+    reversible: true
+    blast_radius: One ticket's status field.
+    max_level: L2
+```
+
+Choices worth knowing:
+
+- **Trigger.** `schedule` needs `cron` (five fields). `ticket_queue` needs
+  `system` (`redmine`, `jira` or `servicenow`) and `queue`. `signal` needs
+  `source` (a rendered source id) and `condition` (text).
+- **Context gate.** The same keys and the same parser as the runtime gate
+  (`archi.ops.context_gate.GateSpec`). The gate must name at least one check,
+  because a gate that checks nothing cannot make the automation depend on
+  measured context (D12).
+- **Mediator.** `archi.tools.x:fn` must appear in `live_tools` of this pack or
+  of a pack in `requires.packs`. Any other value must be a known workflow step
+  (`record_finding`, `draft_reply`, `update_ticket`).
+- **Proposal schema.** The proposal is the `ops_proposal` record of
+  `ops-record`. The schema must be a valid JSON Schema, must require `summary`,
+  `evidence_ids`, `action_class`, `payload`, `confidence` and `rollback`, and
+  may not name other properties. It may add constraints such as
+  `minItems: 1` on the evidence. The runtime fills the other record fields
+  (generation read, mode, level).
+- **Levels.** `default_level` is where the automation starts when an instance
+  sets nothing. `max_level` is the bundle's upper bound; the instance sets the
+  actual level in its own `archi.yaml`. Each action class has its own
+  `max_level`. Valid values are `L0`, `L1` and `L2`. **L3 and any unknown level
+  are refused**, citing ADR 0002 D13. `default_level` may not exceed `max_level`.
+- **Budget.** `cost_per_run`, `cost_per_day` and `runs_per_hour` must be
+  greater than zero, and a run may not cost more than a day.
+
+`archi bundles validate` also refuses: a missing `automation:` block (or one on a
+pack of another kind), a missing playbook file, an action class id that is
+repeated, listed twice or not defined, an invalid `payload_schema`, and a
+mediator that resolves to neither a declared live tool nor a workflow step.
