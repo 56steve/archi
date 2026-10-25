@@ -1,6 +1,6 @@
 """Shared fixtures for the pack/bundle tests.
 
-`catalog_copy` hands each test its own copy of `fixtures/catalog/`, so a test
+`catalog_copy` hands each test its own copy of `fixtures/library/`, so a test
 can break a manifest without touching the others.
 """
 import shutil

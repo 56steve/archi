@@ -4,7 +4,7 @@ from pathlib import Path
 import yaml
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-CATALOG = FIXTURES / "catalog"
+CATALOG = FIXTURES / "library"
 
 
 def edit_yaml(path: Path, change) -> None:
