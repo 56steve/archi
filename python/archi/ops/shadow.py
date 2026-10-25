@@ -5,69 +5,96 @@ In shadow mode an automation proposes but nothing runs. This module reads the
 ops records of one automation over a window and says how its proposals
 compare with the people who handled the same incidents. It never writes.
 
-Reading. Through the same reader seam as `archi.ops.precedents`
-(`reader(subtype, attr, value) -> rows`), so tests use a fake reader and live
-use is `okg filter` pinned to the published generation. Proposals come from
-`ops_proposal.automation`; per proposal the walk reads its incident, the
-decisions on it, the incident's proposals and outcomes, and the actions they
-name.
+Reading. Each ops subtype is read once, whole (5 `okg filter` calls through
+`archi.ops.record.read_nodes`, pinned to the published generation), and
+joined in memory. The seam is a `source(subtype) -> rows` function with rows
+shaped `{"node_id", "subtype", "attrs"}`; `okg_source` is the live one and
+tests pass a fake.
 
-Scope. A proposal is scored when its `mode` is `shadow` and its `proposed_at`
-lies in [since, until]. Proposals in other modes are counted as
-`ignored_non_shadow` and left out of every rate.
+Unit of scoring: the incident. An incident with several shadow proposals from
+the automation counts once, through its first proposal in the window (by
+`proposed_at`, then record id). `proposals` reports the per-proposal count as
+context.
 
-Human response. Anything a person (`actor_kind` = `person`) recorded on the
-incident, with its time:
-  - an `ops_action` (time `executed_at`) reached through an outcome's
-    `action_id`, through a person-authored proposal on the incident, or
-    through the automation proposal itself;
-  - an `ops_decision` on the proposal (time `decided_at`);
-  - an `ops_outcome` with a person actor, such as a ticket resolution (time
-    `checked_at`). It shows a person acted, but not what they did.
+Scope. A proposal is in the window when its `proposed_at` lies in
+[since, until] (inclusive). In the window it is scored when its `mode` is
+`shadow`; other modes are counted in `ignored_non_shadow`. `as_of` is `until`
+when given, else now (UTC). Records after `as_of` are not read for scoring.
+Times may carry any UTC offset; a time without one is UTC.
 
-Horizon. `horizon_hours` (default 72) after `proposed_at`. A response is
-"in horizon" when it is at or after `proposed_at` and no later than the
-horizon. Responses before the proposal count only for time-to-first-response.
-`as_of` is `until`, else the latest time seen in the records. A proposal whose
-horizon ends after `as_of` is not yet final.
+Dropped records are counted in `dropped`, never silently skipped: a proposal
+with no `record_id`, no usable `proposed_at`, no `incident_id`, or whose
+incident row is missing; and person records with no usable time
+(`undated_human_records`).
 
-Classes, tested in this order (each proposal gets exactly one):
+Human response. A record a person (`actor_kind` = `person`) wrote on the
+incident:
+  - an `ops_action` (time `executed_at`) on any proposal of the incident, or
+    named by an outcome's `action_id`;
+  - an `ops_decision` (time `decided_at`) on any proposal of the incident;
+  - a person-authored `ops_proposal` (time `proposed_at`).
+A person `ops_outcome` is not a first response: it shows a ticket was
+closed, not what a person did. It feeds time-to-resolution and
+`no_action_needed` only.
+
+Horizon. `horizon_hours` (default 72) after the first proposal's time t0. In
+horizon means t0 <= time <= t0 + horizon.
+
+Classes, tested in this order (each incident gets exactly one):
+  preempted    a person action happened before t0. The person was first, so
+               the proposal cannot be judged against a "later" action. Out of
+               every rate.
   agree        an in-horizon person action has the proposal's `action_class`
-               and equals the proposal's payload on its key fields (all of the
-               proposal's payload fields unless `key_fields[action_class]`
-               names fewer; extra fields on the human side are ignored), or a
-               person approved the proposal in an `ops_decision`.
-  disagree     (horizon not ended) an in-horizon person action of another
-               class or payload, or a person rejection.
-  pending      (horizon not ended) nothing else. Left out of every rate.
-  false        (horizon ended) the incident's evidence says no action was
-               needed: incident status `false_alarm` or `no_action_needed`, or
-               its latest outcome (by `checked_at`) has result
-               `no_action_needed`. Only these explicit signals count. A
-               resolved incident does not.
-  disagree     (horizon ended, not false) as above.
-  late         no in-horizon response, but a person responded after the
-               horizon (action, decision or outcome), and not false.
-  undecidable  the rest: nobody acted in horizon, or only an outcome shows a
-               person acted without saying what, and nothing says whether
+               and equals its payload on the key fields: all payload fields,
+               or `key_fields[action_class]` if given (extra human-side
+               fields are ignored). A proposal whose payload is empty or
+               unparseable agrees on action class only; those are also
+               counted in `agree_class_only` (included in `agree`).
+  disagree     an in-horizon person action of another class or payload, or a
+               person rejected the proposal (decision, in horizon).
+  approved     a person approved the proposal and nothing above applies. In
+               shadow mode an approval can be an operator clicking OK, so it
+               is not agreement. Counted on its own and scored.
+  pending      the horizon ends after `as_of` and nothing above applies. Out
+               of every rate and out of the automation's response time.
+  false        the horizon has ended, nothing above applies, and a person
+               said no action was needed: the latest person outcome checked
+               at or after t0 (and by `as_of`) has result `no_action_needed`,
+               or the incident row is `false_alarm`, last written by a person
+               at or after t0 (`actor_kind` person, `resolved_at` >= t0). A
+               resolved incident does not count. Checked before disagree and
+               approved when the horizon has ended.
+  late         no in-horizon response, but a person response (action,
+               decision or person proposal) came after the horizon.
+  undecidable  the rest: nothing was done in horizon and nothing says whether
                action was needed. We do not guess.
+(While the horizon is open, a disagree or approved response is final; with no
+such response the incident is pending. `false` waits for the horizon to end.)
 
 Metrics.
-  scored = proposals - pending.
-  agreement_rate = agree / (agree + disagree): of proposals a person answered
-    in horizon, how many matched. None when nobody answered.
-  response_coverage = (agree + disagree) / scored.
+  incidents = scored units; scored = incidents - pending - preempted.
+  agreement_rate = agree / (agree + disagree). Approved is left out.
+  answered = agree + disagree + false.
+  response_coverage = answered / scored.
   false_proposal_rate = false / (scored - undecidable); None when that is 0.
   false_proposal_rate_upper = (false + undecidable) / scored: counts every
-    undecidable proposal as false. Readiness checks this one.
-  time_to_first_response, per incident, in seconds. `automation`: the
-    earliest scored proposal's `proposed_at` minus the incident's
-    `detected_at`. `human`: the earliest human response at or after
-    `detected_at`, minus `detected_at` (late responses count). Each has n,
-    median and p90 (nearest rank). `median_lead_seconds` is the median of
-    human minus automation over incidents with both (negative: the person
-    was first). Incidents with no `detected_at`, or a proposal before it,
-    are left out and counted in `excluded`.
+    undecidable incident as false. Readiness checks this one.
+  time_to_first_response, seconds. `automation`: t0 minus the incident's
+    `detected_at`, for every incident except pending ones. `human`: the
+    earliest human response at or after `detected_at`, minus `detected_at`;
+    a response after the horizon (late) is left out. `median_lead_seconds` is
+    the median of human minus automation over incidents with both (negative:
+    the person was first). Incidents with no `detected_at`, or t0 before it,
+    are left out of both and counted in `excluded`.
+  time_to_resolution_human: seconds from `detected_at` to the earliest person
+    outcome with result `resolved`.
+  Each time summary has n and median. p90 (nearest rank) is given only when
+  n >= 10; otherwise it is null and `p90_note` says so.
+
+Known gap. Today nothing writes `no_action_needed`, and nothing records what
+an operator did on a ticket without a proposal (`link-tickets` writes only
+`resolved` or `unknown` outcomes). Live false-proposal rates will therefore
+be mostly undecidable until ticket-triage records operator actions.
 
     python -m archi.ops.shadow --deployment D --automation A [--since T] [--until T]
 """
@@ -78,18 +105,35 @@ import json
 import math
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
-from archi.ops.precedents import Reader, okg_reader
-from archi.ops.record import RecordError
+from archi.ops.record import RecordError, read_nodes
+
+#: Reads every row of one subtype: subtype -> [{"node_id", "subtype", "attrs"}, ...]
+Source = Callable[[str], list]
 
 DEFAULT_HORIZON_HOURS = 72.0
-NO_ACTION_STATUSES = frozenset({"false_alarm", "no_action_needed"})
+MIN_N_FOR_P90 = 10
+NO_ACTION_STATUS = "false_alarm"
 NO_ACTION_RESULT = "no_action_needed"
-CLASSES = ("agree", "disagree", "false", "late", "undecidable", "pending")
+CLASSES = ("agree", "disagree", "false", "approved", "preempted", "late", "undecidable", "pending")
+SUBTYPES = ("ops_proposal", "ops_incident", "ops_decision", "ops_action", "ops_outcome")
+
+
+def okg_source(deployment: str, *, dsn: Optional[str] = None, okg: Optional[str] = None) -> Source:
+    """Live source: each subtype is read once, by `okg filter`, then kept."""
+    cache: dict[str, list] = {}
+
+    def read(subtype: str) -> list:
+        if subtype not in cache:
+            cache[subtype] = read_nodes(deployment, subtype, dsn=dsn, okg=okg)
+        return cache[subtype]
+
+    return read
 
 
 def parse_time(value: Any) -> Optional[datetime]:
+    """An ISO 8601 time as UTC; None when missing or unparseable."""
     if not value:
         return None
     text = str(value).strip()
@@ -97,7 +141,13 @@ def parse_time(value: Any) -> Optional[datetime]:
         moment = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
     except ValueError:
         return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
 
 
 def _attrs(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -135,179 +185,214 @@ def _ratio(num: int, den: int) -> Optional[float]:
     return round(num / den, 4) if den else None
 
 
-def _matches(proposal: Mapping[str, Any], action: Mapping[str, Any],
-             key_fields: Mapping[str, Sequence[str]]) -> bool:
-    if action.get("action_class") != proposal.get("action_class"):
-        return False
+def _summary(values: Sequence[float]) -> dict[str, Any]:
+    out: dict[str, Any] = {"n": len(values), "median": _median(values)}
+    if len(values) >= MIN_N_FOR_P90:
+        out["p90"] = _percentile(values, 0.9)
+    else:
+        out["p90"] = None
+        out["p90_note"] = f"p90 needs n >= {MIN_N_FOR_P90}"
+    return out
+
+
+def _wanted(proposal: Mapping[str, Any], key_fields: Mapping[str, Sequence[str]]) -> dict[str, Any]:
     wanted = _payload(proposal.get("payload"))
     fields = key_fields.get(proposal.get("action_class") or "")
     if fields is not None:
         wanted = {k: wanted[k] for k in fields if k in wanted}
-    got = _payload(action.get("payload"))
-    return all(k in got and got[k] == v for k, v in wanted.items())
+    return wanted
 
 
-def _human_responses(read: Reader, proposal: Mapping[str, Any], incident_id: str,
-                     decisions: list, outcomes: list) -> list[dict[str, Any]]:
-    """Every person response on the incident: kind, time, and the row's attrs."""
-    responses: list[dict[str, Any]] = []
-    seen_actions: set = set()
-
-    def add_action(row: Mapping[str, Any]) -> None:
-        attrs = _attrs(row)
-        rid = attrs.get("record_id")
-        if attrs.get("actor_kind") != "person" or rid in seen_actions:
-            return
-        seen_actions.add(rid)
-        responses.append({"kind": "action", "at": parse_time(attrs.get("executed_at")), "attrs": attrs})
-
-    for row in read("ops_action", "proposal_id", proposal["record_id"]):
-        add_action(row)
-    for other in read("ops_proposal", "incident_id", incident_id):
-        oattrs = _attrs(other)
-        if oattrs.get("actor_kind") == "person":
-            for row in read("ops_action", "proposal_id", oattrs["record_id"]):
-                add_action(row)
-    for outcome in outcomes:
-        if outcome.get("action_id"):
-            for row in read("ops_action", "record_id", outcome["action_id"]):
-                add_action(row)
-        if outcome.get("actor_kind") == "person":
-            responses.append({"kind": "outcome", "at": parse_time(outcome.get("checked_at")),
-                              "attrs": outcome})
-    for decision in decisions:
-        if decision.get("actor_kind") == "person":
-            responses.append({"kind": "decision", "at": parse_time(decision.get("decided_at")),
-                              "attrs": decision})
-    return [r for r in responses if r["at"] is not None]
-
-
-def _no_action_needed(incident: Mapping[str, Any], outcomes: list) -> bool:
-    if (incident.get("status") or "").lower() in NO_ACTION_STATUSES:
-        return True
-    dated = [o for o in outcomes if parse_time(o.get("checked_at"))]
-    if not dated:
+def _matches(proposal: Mapping[str, Any], action: Mapping[str, Any],
+             key_fields: Mapping[str, Sequence[str]]) -> bool:
+    if action.get("action_class") != proposal.get("action_class"):
         return False
-    latest = max(dated, key=lambda o: parse_time(o["checked_at"]))
-    return (latest.get("result") or "").lower() == NO_ACTION_RESULT
+    got = _payload(action.get("payload"))
+    return all(k in got and got[k] == v for k, v in _wanted(proposal, key_fields).items())
 
 
-def classify(proposal: Mapping[str, Any], responses: list, incident: Mapping[str, Any],
-             outcomes: list, *, as_of: datetime, horizon: timedelta,
+def classify(proposal: Mapping[str, Any], t0: datetime, responses: list, outcomes: list,
+             incident: Mapping[str, Any], *, as_of: datetime, horizon: timedelta,
              key_fields: Mapping[str, Sequence[str]]) -> str:
-    start = parse_time(proposal.get("proposed_at"))
-    end = start + horizon
-    inside = [r for r in responses if start <= r["at"] <= end]
-    for r in inside:
-        if r["kind"] == "action" and _matches(proposal, r["attrs"], key_fields):
-            return "agree"
-        if r["kind"] == "decision" and r["attrs"].get("verdict") == "approved":
-            return "agree"
-    differing = [r for r in inside if r["kind"] == "action"
-                 or (r["kind"] == "decision" and r["attrs"].get("verdict") == "rejected")]
+    """The class of one incident's first proposal. `responses` and `outcomes`
+    are already limited to records at or before `as_of`."""
+    end = t0 + horizon
+    me = proposal["record_id"]
+    if any(r["kind"] == "action" and r["at"] < t0 for r in responses):
+        return "preempted"
+    inside = [r for r in responses if t0 <= r["at"] <= end]
+    if any(r["kind"] == "action" and _matches(proposal, r["attrs"], key_fields) for r in inside):
+        return "agree"
+    differing = any(r["kind"] == "action"
+                    or (r["kind"] == "decision" and r["attrs"].get("proposal_id") == me
+                        and r["attrs"].get("verdict") == "rejected") for r in inside)
+    approved = any(r["kind"] == "decision" and r["attrs"].get("proposal_id") == me
+                   and r["attrs"].get("verdict") == "approved" for r in inside)
     if end > as_of:
-        return "disagree" if differing else "pending"
-    if _no_action_needed(incident, outcomes):
+        return "disagree" if differing else "approved" if approved else "pending"
+    if _no_action_needed(incident, outcomes, t0):
         return "false"
     if differing:
         return "disagree"
+    if approved:
+        return "approved"
     if any(r["at"] > end for r in responses):
         return "late"
     return "undecidable"
 
 
-def _summary(values: Sequence[float]) -> dict[str, Any]:
-    return {"n": len(values), "median": _median(values), "p90": _percentile(values, 0.9)}
+def _no_action_needed(incident: Mapping[str, Any], outcomes: list, t0: datetime) -> bool:
+    mine = [(parse_time(o.get("checked_at")), o) for o in outcomes if o.get("actor_kind") == "person"]
+    mine = [(at, o) for at, o in mine if at is not None and at >= t0]
+    if mine and max(mine, key=lambda pair: pair[0])[1].get("result") == NO_ACTION_RESULT:
+        return True
+    written = parse_time(incident.get("resolved_at"))
+    return (incident.get("status") == NO_ACTION_STATUS and incident.get("actor_kind") == "person"
+            and written is not None and written >= t0)
 
 
 def score_automation(
-    read: Reader,
+    source: Source,
     automation: str,
     *,
     since: Optional[str] = None,
     until: Optional[str] = None,
     horizon_hours: float = DEFAULT_HORIZON_HOURS,
     key_fields: Optional[Mapping[str, Sequence[str]]] = None,
+    now: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """The shadow report for `automation` over [since, until] (JSON-ready)."""
     lo, hi = parse_time(since), parse_time(until)
     if (since and lo is None) or (until and hi is None):
         raise RecordError("since and until must be ISO 8601 timestamps")
+    as_of = hi or (now.astimezone(timezone.utc) if now else datetime.now(timezone.utc))
     horizon = timedelta(hours=horizon_hours)
     key_fields = key_fields or {}
 
+    rows = {subtype: [_attrs(r) for r in source(subtype)] for subtype in SUBTYPES}
+    dropped = {"proposal_no_record_id": 0, "proposal_bad_proposed_at": 0, "proposal_no_incident_id": 0,
+               "proposal_incident_missing": 0, "undated_human_records": 0}
+    incidents = {a["record_id"]: a for a in rows["ops_incident"] if a.get("record_id")}
+    proposals_by_incident: dict[str, list] = {}
+    for a in rows["ops_proposal"]:
+        if a.get("incident_id") and a.get("record_id"):
+            proposals_by_incident.setdefault(a["incident_id"], []).append(a)
+    actions_by_proposal: dict[str, list] = {}
+    actions_by_id: dict[str, dict] = {}
+    for a in rows["ops_action"]:
+        actions_by_proposal.setdefault(a.get("proposal_id"), []).append(a)
+        actions_by_id[a.get("record_id")] = a
+    decisions_by_proposal: dict[str, list] = {}
+    for a in rows["ops_decision"]:
+        decisions_by_proposal.setdefault(a.get("proposal_id"), []).append(a)
+    outcomes_by_incident: dict[str, list] = {}
+    for a in rows["ops_outcome"]:
+        outcomes_by_incident.setdefault(a.get("incident_id"), []).append(a)
+
+    # The automation's shadow proposals in the window, first per incident.
     ignored = 0
-    proposals = []
-    for row in read("ops_proposal", "automation", automation):
-        attrs = _attrs(row)
-        moment = parse_time(attrs.get("proposed_at"))
-        if attrs.get("mode") != "shadow":
+    kept = 0
+    first: dict[str, tuple] = {}
+    for a in rows["ops_proposal"]:
+        if a.get("automation") != automation:
+            continue
+        if not a.get("record_id"):
+            dropped["proposal_no_record_id"] += 1
+            continue
+        moment = parse_time(a.get("proposed_at"))
+        if moment is None:
+            dropped["proposal_bad_proposed_at"] += 1
+            continue
+        if (lo and moment < lo) or moment > as_of:
+            continue
+        if a.get("mode") != "shadow":
             ignored += 1
             continue
-        if moment is None or (lo and moment < lo) or (hi and moment > hi):
+        if not a.get("incident_id"):
+            dropped["proposal_no_incident_id"] += 1
             continue
-        proposals.append(attrs)
-    proposals.sort(key=lambda p: (parse_time(p["proposed_at"]), p["record_id"]))
-
-    incidents: dict[str, tuple] = {}
-    gathered = []
-    times = [parse_time(p["proposed_at"]) for p in proposals]
-    for p in proposals:
-        iid = p["incident_id"]
-        if iid not in incidents:
-            rows = read("ops_incident", "record_id", iid)
-            incidents[iid] = (_attrs(rows[0]) if rows else {},
-                              [_attrs(o) for o in read("ops_outcome", "incident_id", iid)])
-        incident, outcomes = incidents[iid]
-        decisions = [_attrs(d) for d in read("ops_decision", "proposal_id", p["record_id"])]
-        responses = _human_responses(read, p, iid, decisions, outcomes)
-        times += [r["at"] for r in responses]
-        gathered.append((p, responses))
-    as_of = hi or max(times, default=datetime.now(timezone.utc))
+        if a["incident_id"] not in incidents:
+            dropped["proposal_incident_missing"] += 1
+            continue
+        kept += 1
+        key = (moment, a["record_id"])
+        if a["incident_id"] not in first or key < first[a["incident_id"]][0]:
+            first[a["incident_id"]] = (key, a)
 
     counts = {name: 0 for name in CLASSES}
+    class_only = 0
     details = []
-    incident_responses: dict[str, list] = {}
-    for p, responses in gathered:
-        incident, outcomes = incidents[p["incident_id"]]
-        label = classify(p, responses, incident, outcomes, as_of=as_of, horizon=horizon,
-                         key_fields=key_fields)
+    auto_ttfr, human_ttfr, lead, ttr, excluded = [], [], [], [], 0
+    for iid, ((t0, _), proposal) in sorted(first.items(), key=lambda kv: kv[1][0]):
+        incident = incidents[iid]
+        outcomes = [o for o in outcomes_by_incident.get(iid, [])
+                    if (parse_time(o.get("checked_at")) or as_of) <= as_of]
+        responses, seen = [], set()
+
+        def respond(kind: str, at_value: Any, attrs: dict) -> None:
+            at = parse_time(at_value)
+            if at is None:
+                dropped["undated_human_records"] += 1
+            elif at <= as_of:
+                responses.append({"kind": kind, "at": at, "attrs": attrs})
+
+        def add_action(a: dict) -> None:
+            if a.get("actor_kind") == "person" and a.get("record_id") not in seen:
+                seen.add(a.get("record_id"))
+                respond("action", a.get("executed_at"), a)
+
+        for q in proposals_by_incident.get(iid, []):
+            if q.get("actor_kind") == "person":
+                respond("proposal", q.get("proposed_at"), q)
+            for a in actions_by_proposal.get(q["record_id"], []):
+                add_action(a)
+            for d in decisions_by_proposal.get(q["record_id"], []):
+                if d.get("actor_kind") == "person":
+                    respond("decision", d.get("decided_at"), d)
+        for o in outcomes:
+            if o.get("action_id") in actions_by_id:
+                add_action(actions_by_id[o["action_id"]])
+
+        label = classify(proposal, t0, responses, outcomes, incident, as_of=as_of,
+                         horizon=horizon, key_fields=key_fields)
         counts[label] += 1
-        incident_responses.setdefault(p["incident_id"], []).extend(responses)
-        details.append({"proposal_id": p["record_id"], "incident_id": p["incident_id"],
-                        "action_class": p.get("action_class"), "proposed_at": p["proposed_at"],
+        if label == "agree" and not _wanted(proposal, key_fields):
+            class_only += 1
+        details.append({"incident_id": iid, "proposal_id": proposal["record_id"],
+                        "action_class": proposal.get("action_class"), "proposed_at": _iso(t0),
                         "class": label})
 
-    total = len(proposals)
-    scored = total - counts["pending"]
-    answered = counts["agree"] + counts["disagree"]
-
-    auto_ttfr, human_ttfr, lead, excluded = [], [], [], 0
-    first_proposal: dict[str, datetime] = {}
-    for p in proposals:
-        first_proposal.setdefault(p["incident_id"], parse_time(p["proposed_at"]))
-    for iid, proposed in first_proposal.items():
-        detected = parse_time(incidents[iid][0].get("detected_at"))
-        if detected is None or proposed < detected:
+        detected = parse_time(incident.get("detected_at"))
+        if detected is None or t0 < detected:
             excluded += 1
             continue
-        a = (proposed - detected).total_seconds()
-        auto_ttfr.append(a)
-        later = [r["at"] for r in incident_responses.get(iid, []) if r["at"] >= detected]
-        if later:
-            h = (min(later) - detected).total_seconds()
-            human_ttfr.append(h)
-            lead.append(h - a)
+        if label != "pending":
+            auto_ttfr.append((t0 - detected).total_seconds())
+        times = [r["at"] for r in responses if r["at"] >= detected]
+        if times and min(times) <= t0 + horizon and label != "pending":
+            human_ttfr.append((min(times) - detected).total_seconds())
+            lead.append((min(times) - t0).total_seconds())
+        resolved = [at for o in outcomes if o.get("actor_kind") == "person" and o.get("result") == "resolved"
+                    for at in [parse_time(o.get("checked_at"))] if at is not None and at >= detected]
+        if resolved:
+            ttr.append((min(resolved) - detected).total_seconds())
 
+    total = len(first)
+    scored = total - counts["pending"] - counts["preempted"]
+    answered = counts["agree"] + counts["disagree"] + counts["false"]
     return {
         "automation": automation,
-        "window": {"since": since, "until": until, "as_of": as_of.isoformat().replace("+00:00", "Z")},
+        "window": {"since": since, "until": until, "as_of": _iso(as_of)},
         "horizon_hours": horizon_hours,
-        "proposals": total,
+        "incidents": total,
+        "proposals": kept,
         "ignored_non_shadow": ignored,
+        "dropped": dropped,
         "scored": scored,
         "counts": counts,
-        "agreement_rate": _ratio(counts["agree"], answered),
+        "agree_class_only": class_only,
+        "answered": answered,
+        "agreement_rate": _ratio(counts["agree"], counts["agree"] + counts["disagree"]),
         "response_coverage": _ratio(answered, scored),
         "false_proposal_rate": _ratio(counts["false"], scored - counts["undecidable"]),
         "false_proposal_rate_upper": _ratio(counts["false"] + counts["undecidable"], scored),
@@ -317,21 +402,34 @@ def score_automation(
             "median_lead_seconds": _median(lead),
             "excluded": excluded,
         },
+        "time_to_resolution_human": _summary(ttr),
         "details": details,
     }
 
 
-def promotion_readiness(report: Mapping[str, Any], *, min_proposals: int = 30,
-                        min_agreement: float = 0.8, max_false_rate: float = 0.1) -> dict[str, Any]:
+def promotion_readiness(report: Mapping[str, Any], *, min_proposals: int = 30, min_answered: int = 20,
+                        min_response_coverage: float = 0.5, min_agreement: float = 0.8,
+                        max_false_rate: float = 0.1) -> dict[str, Any]:
     """Is the report good enough to ask an operator to promote? Advice only.
 
     Promotion itself is a PACT decision recorded in the instance repo.
-    Checks scored proposals, agreement_rate, and false_proposal_rate_upper
-    (the one that counts undecidable proposals as false). A missing rate fails.
+    Checks scored incidents (`min_proposals`), answered incidents (agree +
+    disagree + false), response coverage, agreement_rate, and
+    false_proposal_rate_upper (undecidable counted as false). A missing rate
+    fails.
     """
     reasons = []
-    if report.get("scored", 0) < min_proposals:
-        reasons.append(f"only {report.get('scored', 0)} scored proposals; need {min_proposals}")
+    scored = report.get("scored", 0)
+    if scored < min_proposals:
+        reasons.append(f"only {scored} scored incidents; need {min_proposals}")
+    answered = report.get("answered", 0)
+    if answered < min_answered:
+        reasons.append(f"only {answered} answered incidents (agree, disagree or false); need {min_answered}")
+    coverage = report.get("response_coverage")
+    if coverage is None:
+        reasons.append("no response coverage: nothing was scored")
+    elif coverage < min_response_coverage:
+        reasons.append(f"response coverage {coverage:.2f} is below {min_response_coverage:.2f}")
     agreement = report.get("agreement_rate")
     if agreement is None:
         reasons.append("no agreement rate: no person answered a proposal in horizon")
@@ -354,30 +452,42 @@ def _hours(seconds: Any) -> str:
     return "n/a" if seconds is None else f"{seconds / 3600:.1f} h"
 
 
+def _row(label: str, s: Mapping[str, Any]) -> str:
+    p90 = _hours(s["p90"]) if s["p90"] is not None else f"n/a (n < {MIN_N_FOR_P90})"
+    return f"| {label} | {s['n']} | {_hours(s['median'])} | {p90} |"
+
+
 def render_markdown(report: Mapping[str, Any]) -> str:
     c, t, w = report["counts"], report["time_to_first_response"], report["window"]
+    dropped = {k: v for k, v in report["dropped"].items() if v}
     lines = [
         f"# Shadow report: {report['automation']}",
         "",
         f"Window {_fmt(w['since'])} to {_fmt(w['until'])}, as of {w['as_of']}; "
-        f"horizon {report['horizon_hours']:g} h.",
+        f"horizon {report['horizon_hours']:g} h. Scored per incident, through its first proposal.",
         "",
-        f"- Proposals: {report['proposals']} ({report['scored']} scored, {c['pending']} pending, "
-        f"{report['ignored_non_shadow']} non-shadow ignored)",
+        f"- Incidents: {report['incidents']} ({report['scored']} scored, {c['pending']} pending, "
+        f"{c['preempted']} preempted by a person); {report['proposals']} proposals, "
+        f"{report['ignored_non_shadow']} non-shadow ignored",
         f"- Agreement: {_fmt(report['agreement_rate'])} "
-        f"({c['agree']} agree, {c['disagree']} disagree; coverage {_fmt(report['response_coverage'])})",
+        f"({c['agree']} agree, of which {report['agree_class_only']} on action class only; "
+        f"{c['disagree']} disagree). Approved without agreement: {c['approved']}",
+        f"- Response coverage: {_fmt(report['response_coverage'])} "
+        f"({report['answered']} answered: agree, disagree or false)",
         f"- False proposals: {c['false']} (rate {_fmt(report['false_proposal_rate'])}; "
         f"upper bound {_fmt(report['false_proposal_rate_upper'])})",
         f"- Late human response: {c['late']}; undecidable: {c['undecidable']}",
+        f"- Dropped records: {dropped if dropped else 'none'}",
         "",
-        "| Time to first response | n | median | p90 |",
+        "| Time | n | median | p90 |",
         "|---|---|---|---|",
+        _row("first response, automation", t["automation"]),
+        _row("first response, human", t["human"]),
+        _row("resolution, human", report["time_to_resolution_human"]),
+        "",
+        f"Median lead of automation over human: {_hours(t['median_lead_seconds'])} "
+        f"({t['excluded']} incidents excluded). Late responses are left out of the human figures.",
     ]
-    for who in ("automation", "human"):
-        s = t[who]
-        lines.append(f"| {who} | {s['n']} | {_hours(s['median'])} | {_hours(s['p90'])} |")
-    lines += ["", f"Median lead of automation over human: {_hours(t['median_lead_seconds'])} "
-              f"({t['excluded']} incidents excluded)."]
     return "\n".join(lines) + "\n"
 
 
@@ -393,7 +503,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--dsn")
     args = parser.parse_args(argv)
     try:
-        report = score_automation(okg_reader(args.deployment, dsn=args.dsn), args.automation,
+        report = score_automation(okg_source(args.deployment, dsn=args.dsn), args.automation,
                                   since=args.since, until=args.until,
                                   horizon_hours=args.horizon_hours)
     except RecordError as exc:
