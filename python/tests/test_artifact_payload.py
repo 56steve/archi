@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BUNDLE_PREFIX = "archi/bundles/cern-team/"
+BUNDLE_PREFIX = "archi/_payload/bundles/cern-team/"
 
 
 @pytest.fixture(scope="module")
@@ -63,7 +63,7 @@ def test_wheel_ships_playbooks_dereferenced(wheel_names):
 
 def test_wheel_ships_the_distribution_playbooks(wheel_names):
     names, _ = wheel_names
-    assert sum(1 for n in names if n.startswith("archi/skills/") and n.endswith(".md")) >= 15
+    assert sum(1 for n in names if n.startswith("archi/_payload/skills/") and n.endswith(".md")) >= 15
 
 
 def test_paths_helpers_resolve_to_a_real_directory():
@@ -99,9 +99,9 @@ def test_wheel_carries_the_bundle_schema_slices(wheel_names):
     """
     names, _ = wheel_names
     expected = {
-        "archi/bundles/cern-team/schemas/operations.yaml",
-        "archi/bundles/cern-team/schemas/sources.yaml",
-        "archi/bundles/cern-team/schemas/bridges/operations.yaml",
-        "archi/bundles/cern-team/schemas/bridges/sources.yaml",
+        "archi/_payload/bundles/cern-team/schemas/operations.yaml",
+        "archi/_payload/bundles/cern-team/schemas/sources.yaml",
+        "archi/_payload/bundles/cern-team/schemas/bridges/operations.yaml",
+        "archi/_payload/bundles/cern-team/schemas/bridges/sources.yaml",
     }
     assert expected <= set(names), f"wheel is missing: {sorted(expected - set(names))}"

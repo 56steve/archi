@@ -22,6 +22,11 @@ import argparse
 from pathlib import Path
 
 
+#: Where the wheel puts the repo-root `bundles/` and `skills/` trees. Not
+#: `archi/bundles/`, which is the `archi.bundles` code package.
+PAYLOAD = "_payload"
+
+
 def _package_root() -> Path:
     return Path(__file__).resolve().parent
 
@@ -29,12 +34,12 @@ def _package_root() -> Path:
 def _resolve(name: str) -> Path:
     """The packaged copy, or the checkout's copy when running from source.
 
-    An editable install has no `archi/bundles/` — the payload only lands there
+    An editable install has no `archi/_payload/` — the payload only lands there
     when the wheel is built. Falling back to the repo root keeps the helper
     honest in a development tree instead of returning a path that does not
     exist; the packaged copy always wins when present.
     """
-    packaged = _package_root() / name
+    packaged = _package_root() / PAYLOAD / name
     if packaged.is_dir():
         return packaged
     checkout = _package_root().parents[1] / name
@@ -46,6 +51,11 @@ def _resolve(name: str) -> Path:
 def profiles_dir() -> Path:
     """Directory to hand to `OKG_PROFILES_DIR` (contains `<bundle>/profile.yaml`)."""
     return _resolve("bundles")
+
+
+def packs_dir() -> Path:
+    """Directory of archi's own packs (`<name>/pack.yaml`)."""
+    return profiles_dir() / "packs"
 
 
 def playbooks_dir() -> Path:

@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/archi-physics/archi/blob/archi_v3/python/archi/bundles/schema/pack.schema.json",
+  "title": "Archi pack manifest (pack.yaml)",
+  "description": "The smallest installable capability (ADR 0002 section 3.1). Every path is relative to the directory holding pack.yaml and must stay inside it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "kind", "version", "description", "needs_credentials"],
+  "properties": {
+    "name": {
+      "description": "Pack name. Must equal the directory name. Source ids render as <name>.<source>; init-question flags as --<name>-<id>.",
+      "$ref": "#/$defs/name"
+    },
+    "kind": {
+      "description": "context packs bring sources, tool packs bring live tools, automation packs bring automations (ADR 0002 section 7.2).",
+      "enum": ["context", "tool", "automation"]
+    },
+    "version": {"$ref": "#/$defs/version"},
+    "description": {"type": "string", "minLength": 1},
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "modules": {
+          "description": "okg ontology modules this pack needs.",
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "uniqueItems": true
+        },
+        "packs": {
+          "description": "Other packs this pack needs; resolved transitively.",
+          "type": "array",
+          "items": {"$ref": "#/$defs/name"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "schemas": {
+      "description": "Directory of LinkML schema slices, merged into the instance by relative path.",
+      "$ref": "#/$defs/relpath"
+    },
+    "sources": {
+      "description": "Directory of source-registry templates, one <source>.yaml per source, whose single top-level key is <source>.",
+      "$ref": "#/$defs/relpath"
+    },
+    "init_questions": {
+      "description": "YAML file with a top-level init_questions list, in okg's profile question format.",
+      "$ref": "#/$defs/relpath"
+    },
+    "invariants": {
+      "description": "YAML file with a top-level invariants list. Owned by this pack: dropping the pack drops them.",
+      "$ref": "#/$defs/relpath"
+    },
+    "freshness": {
+      "description": "Freshness SLOs keyed by rendered source id (<pack>.<source>).",
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9_]*$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["max_staleness"],
+        "properties": {
+          "max_staleness": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*[smhdw]$"
+          }
+        }
+      }
+    },
+    "playbooks": {
+      "description": "Directory of playbooks, installed into the instance's skills/ directory.",
+      "$ref": "#/$defs/relpath"
+    },
+    "skill_triggers": {
+      "description": "YAML file of skill triggers (version + intents), merged by intent id.",
+      "$ref": "#/$defs/relpath"
+    },
+    "search_subtypes": {
+      "description": "Subtypes added to the instance's `content` search profile.",
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+      "uniqueItems": true
+    },
+    "live_tools": {
+      "description": "archi.tools.* entries exposed on the instance MCP server.",
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.]*(:[A-Za-z_][A-Za-z0-9_]*)?$"},
+      "uniqueItems": true
+    },
+    "action_classes": {
+      "description": "YAML file with a top-level action_classes mapping keyed by action-class id (ADR 0002 section 7.2). Merged by id.",
+      "$ref": "#/$defs/relpath"
+    },
+    "files": {
+      "description": "Files installed byte for byte at the same path in the deployment root (okg's profile `files:` allow-list applies).",
+      "type": "array",
+      "items": {"$ref": "#/$defs/relpath"},
+      "uniqueItems": true
+    },
+    "prompt_fragment": {
+      "description": "Markdown appended to the chat system prompt, in resolution order.",
+      "$ref": "#/$defs/relpath"
+    },
+    "credentials": {
+      "description": "Environment-variable NAMES the pack reads. Never values.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/env_name"},
+      "uniqueItems": true
+    },
+    "needs_credentials": {
+      "description": "true when the pack cannot publish without a credential; such a pack cannot be a bundle's only default context pack.",
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"},
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"
+    },
+    "relpath": {
+      "type": "string",
+      "minLength": 1,
+      "not": {"pattern": "(^/|^~|(^|/)\\.\\.(/|$)|\\\\)"}
+    },
+    "env_name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}
+  }
+}

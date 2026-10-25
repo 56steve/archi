@@ -10,9 +10,12 @@ requires-python = ">=3.12"
 dependencies = [
     "requests>=2.31",
     "pyyaml>=6.0",
+    "jsonschema>=4.18",
+    "packaging>=23.0",
 ]
 
 [project.scripts]
+archi = "archi.bundles.cli:main"
 archi-profiles-dir = "archi.paths:main"
 
 [project.optional-dependencies]
@@ -61,7 +64,8 @@ packages = ["archi"]
 # The distribution must be installable *as an artifact*: `okg install
 # --profile cern-team` has to work from the wheel alone, with no
 # authoring checkout of this repo. bundles/ and skills/ live at the repo
-# root (outside python/), so force-include maps them into the package.
+# root (outside python/), so force-include maps them into the package,
+# under archi/_payload/ (archi/bundles/ is the archi.bundles code package).
 #
 # The playbooks under bundles/cern-team/skills/ are relative symlinks
 # escaping bundles/; hatchling reads file *contents*, so they land in the
@@ -69,5 +73,5 @@ packages = ["archi"]
 # what a plain directory copy would get wrong. tests/test_artifact_payload.py
 # asserts that on the built wheel, not on the working tree.
 [tool.hatch.build.targets.wheel.force-include]
-"../bundles" = "archi/bundles"
-"../skills" = "archi/skills"
+"../bundles" = "archi/_payload/bundles"
+"../skills" = "archi/_payload/skills"
