@@ -90,19 +90,19 @@ classes:
       okg_alias_fields: issue_key
       okg_searchable_text_fields: issue_key,summary,description,status,priority,text
       # The issue key (ABC-123) is the id a person types; okg ranks the
-      # record that bears it first (okg#3959). Every identifier field must
+      # record that bears it first. Every identifier field must
       # also be a searchable text field.
       okg_identifier_fields: issue_key
       # An issue's body lives on its chunks (jira_issue contains
       # document_chunk, archi.sources.jira). Declaring the relation lets
       # a passage name this issue as its parent and lets passage-ranked
-      # search roll chunk scores up to the issue (okg#2914).
+      # search roll chunk scores up to the issue.
       okg_passage_rollup:
         edge_type: contains
         child_subtype: DocumentChunk
       # A text read of an issue that carries comment_count is built from
       # its own fields, its description and its jira_comment records in
-      # order, never from its chunks (okg#3666). Chunks stay the search
+      # order, never from its chunks. Chunks stay the search
       # index. An okg without this annotation ignores it.
       okg_record_parts:
         edge_type: has_comment
@@ -189,13 +189,13 @@ classes:
       # TWiki titles are WikiWords (CMSDataTransfers) and docs-site titles
       # often paths; the BM25 index lexes either as one token. Declaring
       # `title` here adds its component words (separators on current okg;
-      # CamelCase too once okg#2925 lands).
+      # CamelCase too on a newer okg).
       okg_searchable_text_path_fields: title
       # A page's body lives on its chunks (documentation_page contains
       # document_chunk, archi.sources.twiki / archi.sources.docs).
       # Declaring the relation lets a passage name this page as its
       # parent and lets passage-ranked search roll chunk scores up to
-      # the page (okg#2914).
+      # the page.
       okg_passage_rollup:
         edge_type: contains
         child_subtype: DocumentChunk

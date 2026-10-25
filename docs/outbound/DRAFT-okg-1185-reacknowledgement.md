@@ -1,13 +1,13 @@
 Re-acknowledgement of the external-distribution conformance wire schema, replacing
 the one that named branch `f4081329`. This supersedes
-https://github.com/mitdbg/okg/issues/1178#issuecomment-5440260363.
+the earlier acknowledgement.
 
 **The values**, for transcription into `trusted_external_review`:
 
 ```json
 {
   "consumer_id": "archi-physics/archi:cern-team",
-  "review_reference": "https://github.com/mitdbg/okg/issues/1185#issuecomment-5591114065",
+  "review_reference": "<link to the OKG-side review comment>",
   "acknowledged_interface_revision": "1475c87d5d7fc60083bb0c87a9f9f3467a1a647a",
   "acknowledged_schema_digest": "sha256:db38e9bbbe571dbb9efec29192f786d851095ca412f5a5fda17d1af81f62e662",
   "source_revision": "0aec65f9b219672f7d2d5b6c120f93e34f719e52",

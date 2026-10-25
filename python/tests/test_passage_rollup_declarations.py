@@ -7,7 +7,7 @@ declarations fix the read side:
 
 - `okg_passage_rollup` on DocumentationPage and JiraIssue, so a passage names
   its page or issue as parent and passage-ranked search rolls chunk scores up
-  to it (okg#2914 resolves the parent by the subtype the edge comes from);
+  to it (okg resolves the parent by the subtype the edge comes from);
 - `okg_searchable_text_path_fields: title` on DocumentationPage, so the title
   also contributes its component words.
 

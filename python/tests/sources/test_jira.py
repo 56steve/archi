@@ -690,7 +690,7 @@ def test_git_account_kept_and_next_address_still_removed(tmp_path):
     assert "Clone git@gitlab.cern.ch:cms/y.git" in chunk_text
 
 
-# --- issue links as edges (okg#3649) ----------------------------------------
+# --- issue links as edges ---------------------------------------------------
 
 def _link(key, link_type, direction):
     return {"key": key, "type": link_type, "direction": direction}

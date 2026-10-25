@@ -15,7 +15,7 @@ think are yours to weigh in on. Nothing is being merged while we wait.
 - **Archi v3 is a pip package installed onto OKG**, not an application: it ships
   connectors, enrichers, schemas, playbooks, bundles and the evaluation suite,
   and holds "no credentials, no site config, no running services" (ADR 0001).
-  Chat belongs to OKG now (okg#1183/#1275).
+  Chat belongs to OKG now.
 - ADR 0001 §W5 planned for your engine to be kept and its runtime adapter
   re-pointed from the in-process v2 agent to MCP-client agents, and it planned
   for the browser console to "die with the chat app… a console is revisited
@@ -79,8 +79,8 @@ accounting, with line references: `docs/eval-transition-audit.md`.
    + UI, we own arms + the OKG-MCP integration), or you tell us to carry on.
 2. **Where the console lives in v3**, given the no-running-services rule: a
    self-contained static HTML report; a local operator-run `archi eval serve`
-   (needs an ADR amendment); OKG's operator console (OKG-side work, would go on
-   okg#1178); or CLI + `report.md` as the ADR currently says.
+   (needs an ADR amendment); OKG's operator console (OKG-side work, would go upstream);
+   or CLI + `report.md` as the ADR currently says.
 3. **The MCP oracle.** Your `oracle_config.py` has transports, four auth modes,
    timeouts, tool discovery and secret redaction. Ours has an injected invoker
    and none of that. Should `mcp`/`anyio`/`httpx` become dependencies of an

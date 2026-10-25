@@ -1,7 +1,7 @@
 """Policy guard: docs/okg-alignment.md must not drift from reality.
 
 The alignment page is the OKG-side program's window into Archi
-(okg#1178 coordination). Its documented substrate-import surface must
+(cross-repo coordination). Its documented substrate-import surface must
 exactly match what python/archi actually imports — if you add, remove,
 or move an okg import, update the page's import block in the same
 change. The page must also carry a parseable "Last updated" line.
@@ -62,7 +62,7 @@ def test_documented_import_surface_matches_code():
         f"In code but not on the page: {missing_from_page}\n"
         f"On the page but not in code: {stale_on_page}\n"
         "Update the page's 'exact substrate surface' block in this "
-        "same change (okg#1178 coordination policy)."
+        "same change (cross-repo coordination policy)."
     )
 
 

@@ -6,8 +6,8 @@ has been sent.
 **Subject:** let an install profile ship its own schema files, the way it
 already ships its own playbooks
 
-**Relates to:** okg#1179 (external schemas and bundles), okg#1185
-(end-to-end external-distribution proof), okg#1178 (Archi ↔ OKG channel)
+**Relates to:** external schemas and bundles; the end-to-end
+external-distribution proof; the Archi ↔ OKG channel
 
 ---
 
@@ -78,7 +78,7 @@ fill manually. Worth fixing alongside, though it is independent.
 **Ship the vocabulary as an ontology module.** This is the architecturally
 cleaner answer and we would prefer it. It is blocked: `load_modules_root()`
 is package-locked, so OKG cannot compose modules that live in our wheel.
-That is the larger half of okg#1179 and we assume it lands on its own
+That is the larger half of the external-schemas work and we assume it lands on its own
 schedule. The `schemas:` slot is the small thing that unblocks external
 distributions *now*, independent of the module work.
 
@@ -113,6 +113,6 @@ We are a live external consumer with a working end-to-end install, so we
 can validate this quickly. If a `schemas:` slot lands, we will re-run the
 full cern-team install without `--no-publish` and report whether the
 one-command path holds for an external distribution — which is most of
-what okg#1185 is asking for anyway.
+what the external-distribution proof is asking for anyway.
 
 Happy to send a patch if that is easier than a request.
