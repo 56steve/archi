@@ -206,3 +206,37 @@ works without a separate catalog load.
 **archi deletes.** The rule that archi's renderer writes `runtime:` before
 `okg install`, and the claim step `archi add` runs when it adds an
 automation pack.
+
+## O12. Bootstrap the DBOS schema before install's ingest when the runtime is enabled
+
+**Problem (proven, submit76, okg 0.2.0, 2026-10-25).** With `runtime.enabled: true` in
+`deployment.yaml` from the start, `okg install` and `okg provision` stop at their last stage
+(`ingest_failed`): the ingest enqueues a DBOS workflow, and `dbos.workflow_status` does not exist
+until `okg runtime bootstrap` has run. Every earlier stage has finished. After the bootstrap the
+ingest still waits for a running worker (`runtime.enabled` makes ingest default to DBOS-enqueue),
+which `archi init` does not have, so it has to pass `--inline`.
+
+**Ask.** `install` and `provision` bootstrap the runtime schema before the ingest stage, and run the
+ingest in-process when no worker is up.
+
+**Acceptance.** `okg install` on a profile whose deployment defaults enable the runtime finishes
+without a hand step and without a worker.
+
+**archi deletes.** `archi.cli.init.provision`'s recovery (`okg runtime bootstrap`, `okg ingest
+--inline`, `okg run --once --apply`) and the matching call in `archi up`.
+
+## O13. A queued admission must not block the next worker start
+
+**Problem (proven).** An `okg admission submit` made while no worker runs leaves an `ENQUEUED`
+`okg_admission_submit` workflow with no application version. The next `okg runtime worker` then
+refuses to start: `RuntimeCutoverBlocked: DBOS application-version cutover is blocked by active
+workflow history that is not safely replaceable`.
+
+**Ask.** Stamp a client-enqueued admission with the version the worker will run it under, or let a
+worker adopt it.
+
+**Acceptance.** Submit an admission with the worker down, start the worker: the admission runs and
+the worker is ready.
+
+**archi deletes.** `OpsIO.cancel_unconfirmed_admission` and the halt path that cancels its own
+unconfirmed admission (the halted record is not written when the worker is down).

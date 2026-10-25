@@ -251,7 +251,10 @@ classes:
         description: The live tool or workflow step that ran it.
       payload:
       status:
-        description: succeeded | failed
+        description: >-
+          succeeded | failed | unknown. `unknown` means a replay found that the mediator
+          had been called and no end was recorded, so it was not called again; check
+          the external system.
         annotations:
           filterable: 'true'
           value_type: text

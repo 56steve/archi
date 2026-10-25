@@ -33,12 +33,13 @@ class Okg:
         return result
 
 
-def test_provision_bootstraps_the_runtime_and_provisions_again_when_dbos_is_missing():
+def test_provision_bootstraps_the_runtime_then_ingests_in_process_and_publishes_when_dbos_is_missing():
     okg, said = Okg(), []
     result = init_mod.provision(okg, "dep", runtime=True, echo=said.append)
     assert result.returncode == 0
     assert okg.calls == [("provision", "--deployment", "dep"), ("runtime", "bootstrap", "--deployment", "dep"),
-                         ("provision", "--deployment", "dep")]
+                         ("ingest", "--deployment", "dep", "--inline"),
+                         ("run", "--once", "--deployment", "dep", "--apply")]
     assert any("bootstrapping the runtime" in line for line in said)
 
 

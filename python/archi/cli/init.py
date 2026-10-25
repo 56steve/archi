@@ -241,20 +241,22 @@ def has_automations(instance_dir: Path) -> bool:
 def provision(okg: Okg, name: str, *, runtime: bool, echo: Callable[[str], None]):
     """`okg provision`, and with an automation pack (runtime enabled from the start) the one hand step.
 
-    With `runtime.enabled` in deployment.yaml, provision's ingest stage enqueues a DBOS workflow and
-    stops because the DBOS schema does not exist yet (relation dbos.workflow_status; upstream ask O12).
-    Every stage before it has finished, so `okg runtime bootstrap` is next, then provision again.
-    Any other failure is raised as it is.
+    With `runtime.enabled` in deployment.yaml, provision's ingest stage enqueues a DBOS workflow, which
+    needs the DBOS schema (it does not exist yet: relation dbos.workflow_status) and a running worker
+    (there is none during `archi init`); upstream ask O12. Every stage before ingest has finished, so:
+    `okg runtime bootstrap`, then the stages that remain, with the ingest run in-process (`--inline`):
+    `okg ingest --inline`, `okg run --once --apply` (the publish). Any other failure is raised as it is.
     """
     result = okg.run("provision", "--deployment", name, ok_codes=range(256) if runtime else (0, 8))
     if runtime and result.returncode not in (0, 8):
         text = (result.stderr or "") + (result.stdout or "")
         if "dbos" not in text.lower():
             raise OkgError(f"`okg provision --deployment {name}` failed ({result.returncode}):\n{text[-2500:]}", result)
-        echo("provision stopped before the DBOS schema existed (the ops runtime is enabled); "
-             "bootstrapping the runtime and provisioning again")
+        echo("provision stopped before the DBOS schema existed (the ops runtime is enabled); bootstrapping the "
+             "runtime, then ingesting in-process and publishing")
         okg.run("runtime", "bootstrap", "--deployment", name)
-        result = okg.run("provision", "--deployment", name, ok_codes=(0, 8))
+        okg.run("ingest", "--deployment", name, "--inline")
+        result = okg.run("run", "--once", "--deployment", name, "--apply", ok_codes=(0, 8))
     return result
 
 
