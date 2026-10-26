@@ -415,7 +415,11 @@ def _merge_into_deployment(plan, deployment_dir: Path, new_sources: list[str],
     return changed
 
 
-def _git_commit(deployment_dir: Path, message: str) -> Optional[list[str]]:
+def _git_commit(deployment_dir: Path, message: str, instance_dir: Optional[Path] = None) -> Optional[list[str]]:
+    """Commit the deployment change. When the deployment is inside the instance repository, the
+    files `archi add` rewrote beside it (archi.lock, profiles/) go in the same commit: okg
+    refuses to publish while they are uncommitted ("repository provenance inputs are not
+    committed"). Nothing else in the instance is staged."""
     inside = subprocess.run(
         ["git", "-C", str(deployment_dir), "rev-parse", "--is-inside-work-tree"],
         capture_output=True, text=True,
@@ -423,6 +427,14 @@ def _git_commit(deployment_dir: Path, message: str) -> Optional[list[str]]:
     if inside.returncode != 0:
         return None
     subprocess.run(["git", "-C", str(deployment_dir), "add", "-A", "."], check=True)
+    if instance_dir is not None:
+        top = subprocess.run(["git", "-C", str(deployment_dir), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        instance = Path(instance_dir).resolve()
+        if Path(top).resolve() == instance:
+            wanted = [str(instance / n) for n in ("archi.lock", "profiles") if (instance / n).exists()]
+            if wanted:
+                subprocess.run(["git", "-C", top, "add", "-A", "--", *wanted], check=True)
     cmd = ["git", "-C", str(deployment_dir), "commit", "-m", message]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
     return cmd
@@ -495,7 +507,7 @@ def add(
     echo(f"added to {deployment_dir}: {', '.join(changed)}")
 
     commands: list[list[str]] = []
-    commit = _git_commit(deployment_dir, f"archi add {pack}")
+    commit = _git_commit(deployment_dir, f"archi add {pack}", instance_dir)
     if commit:
         commands.append(commit)
         echo("committed the deployment change")
