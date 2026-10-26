@@ -6,7 +6,8 @@ Runs `search` over the instance's streamable-HTTP MCP endpoint with its
 bearer token, the way any MCP client would (ADR 0002 D5: the MCP endpoint is
 the supported surface). Prints one JSON object with the rows' node ids and
 the source that wrote them, and exits 0 only when at least one row names a
-node id and the answer names its source and generation-pinned read.
+node id and every cited row names its source: in the result header when one
+source wrote them all, otherwise on each row.
 
 The nightly workflow's last user command (req.r3-golden-path.nightly).
 """
@@ -19,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-ROW = re.compile(r"^\[(\d+)\] (\S+:\S+) \(([^)]+)\)", re.M)
+ROW = re.compile(r"^\[(\d+)\] (\S+:\S+) \(([^)]+)\)(?:.*? · source (\S+))?.*$", re.M)
 HEADER = re.compile(r"^search ok · .*? · source (\S+)", re.M)
 
 
@@ -47,17 +48,19 @@ def main(argv=None) -> int:
     token = read_env(instance.env_path)["OKG_CHAT_MCP_TOKEN"]
     url = f"http://127.0.0.1:{instance.ports.mcp}/mcp"
     text = asyncio.run(ask(url, token, args.question))
-    rows = [{"rank": int(n), "node_id": nid, "subtype": sub} for n, nid, sub in ROW.findall(text)]
     header = HEADER.search(text)
+    rows = [{"rank": int(n), "node_id": nid, "subtype": sub,
+             "source": src or (header.group(1) if header else None)}
+            for n, nid, sub, src in ROW.findall(text)]
     answer = {
         "question": args.question,
         "endpoint": url,
-        "source": header.group(1) if header else None,
+        "sources": sorted({r["source"] for r in rows if r["source"]}),
         "citations": rows[:10],
         "excerpt": text[:1200],
     }
     print(json.dumps(answer, indent=2))
-    if not rows or not answer["source"]:
+    if not rows or any(not r["source"] for r in rows):
         print("no cited answer", file=sys.stderr)
         return 1
     return 0
