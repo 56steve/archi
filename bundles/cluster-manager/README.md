@@ -25,7 +25,9 @@ okg install --profile cluster-manager --deployment-name <slug> \
 ```
 
 Each context pack reads a cache under `archi-data/data/<name>/` and the cache must exist
-before the first ingest. The commands that write them, each run as the account the site gives it:
+before the first ingest: a missing cache blocks the publish rather than publishing less. `tickets`
+is a default but reads a Redmine you must point it at (`--tickets-base-url`); with no tracker, leave it out
+with `--without tickets`. The commands that write the caches, each run as the account the site gives it:
 
 ```bash
 python -m archi.downloaders.redmine --base-url https://redmine.example.org          # tickets
