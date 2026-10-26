@@ -53,6 +53,13 @@ def test_compose_graph_db_has_preload_cron_and_shm(instance):
     assert db["environment"]["POSTGRES_DB"] == "my_team"
 
 
+def test_graph_volume_holds_the_images_own_pgdata(instance):
+    """The AKMON image sets PGDATA=/home/postgres/pgdata/data; the volume must
+    cover it or the graph lives in the container layer and dies with it."""
+    db = render_compose(instance)["services"]["graph-db"]
+    assert db["volumes"] == ["graph-data:/home/postgres/pgdata"]
+
+
 def test_compose_services_reach_each_other_by_name(instance):
     services = render_compose(instance)["services"]
     mcp, webui_service = services["mcp"], services["webui"]

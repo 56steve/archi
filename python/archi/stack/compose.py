@@ -128,7 +128,10 @@ def render_compose(instance: Instance) -> dict[str, Any]:
                     "-c", "max_worker_processes=32",
                 ],
                 "ports": [f"127.0.0.1:{instance.ports.graph_db}:5432"],
-                "volumes": ["graph-data:/var/lib/postgresql/data"],
+                # The AKMON image keeps its cluster in PGDATA=/home/postgres/pgdata/data,
+                # not in the stock /var/lib/postgresql/data; a volume mounted there
+                # holds nothing, and the graph is lost when the container is recreated.
+                "volumes": ["graph-data:/home/postgres/pgdata"],
                 "healthcheck": {
                     "test": ["CMD-SHELL", f"pg_isready -U postgres -d {db}"],
                     "interval": "2s",
