@@ -41,13 +41,13 @@ The two default sources carry their own input:
   two small public CERN documentation sites, the FTS3 and Rucio docs, one
   record each (links are not followed).
 - **indico** reads one public event, 1716863 ("Knowledge Bases and Agents for
-  CERN"), live. It is a single named event, not a bounded walk of a
+  CERN"), live, when no event or category is given. It is a single named event, not a bounded walk of a
   category, so the run claims a complete scope of exactly that event, and an
   event that cannot be read fails the run rather than retracting anything.
 
 Answer `docsite_urls`, `indico_event_ids` or `indico_category_ids` to read
-your own; answer `indico_event_ids='[]'` to drop the default event when you
-give categories only. `cmssw-releases` is not part of this bundle; add it with
+your own. Any Indico event or category id you give replaces the default
+event; it is read only when you give neither. `cmssw-releases` is not part of this bundle; add it with
 `--with cmssw-releases` (existing instances: the
 [migration note](../../docs/cern-team-migration.md)).
 

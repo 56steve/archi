@@ -118,6 +118,7 @@ class IndicoLiveSource:
         base_url: str = DEFAULT_BASE_URL,
         event_ids: list[str] | tuple[str, ...] = (),
         category_ids: list[str] | tuple[str, ...] = (),
+        default_event_ids: list[str] | tuple[str, ...] = (),
         cookie_file_env: str | None = None,
         contributions: bool = False,
         attachment_images: bool = False,
@@ -131,6 +132,11 @@ class IndicoLiveSource:
         base: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        #: Events read only when the configuration gives neither event_ids
+        #: nor category_ids. A named scope of either kind replaces them, so a
+        #: category-only configuration does not also read the default event.
+        if not event_ids and not category_ids:
+            event_ids = default_event_ids
         self.event_ids = tuple(str(e) for e in event_ids)
         self.category_ids = tuple(str(c) for c in category_ids)
         if not self.event_ids and not self.category_ids and records is None:

@@ -249,9 +249,11 @@ class Compose:
     runner: Runner = subprocess.run
 
     def base(self) -> list[str]:
+        # No --project-directory: podman-compose 1.4 rejects it, and both
+        # runtimes default the project directory to the one holding the first
+        # -f file, which is the instance directory. run() also sets cwd to it.
         return [
             self.instance.runtime, "compose",
-            "--project-directory", str(self.instance.dir),
             "-f", str(self.instance.dir / COMPOSE_FILE),
             "--env-file", str(self.instance.dir / ENV_FILE),
             "-p", self.instance.project,

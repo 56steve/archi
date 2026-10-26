@@ -3,8 +3,8 @@
 # The scope comes from two install answers, `--indico-event-ids` and
 # `--indico-category-ids`, each a YAML list such as '["1716863"]'. Give at
 # least one: a source with neither is refused when it is built, rather than
-# harvesting nothing quietly. The event list defaults to one public event so
-# a bare install has a scope; answer it (`[]` to drop it) to read your own. Category walks expand to the events they hold.
+# harvesting nothing quietly, except that with neither, `default_event_ids`
+# (one public event) is read, so a bare install has a scope. Category walks expand to the events they hold.
 #
 # AUTHENTICATION. Public events and categories need nothing. For protected
 # ones the connector never logs in: it reads a Netscape cookie file whose
@@ -61,6 +61,9 @@ indico_live:
     # One or both (install answers; YAML lists).
     event_ids: ${event_ids}
     category_ids: ${category_ids}
+    # Read only when both lists above are empty (a bare install); any event
+    # or category id given replaces it. One public event, read in full.
+    default_event_ids: ["1716863"]
     # cookie_file_env: ARCHI_INDICO_COOKIES
     required: false
     # max_events bounds a category walk while trying it out. A bounded

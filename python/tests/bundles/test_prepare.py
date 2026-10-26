@@ -318,14 +318,35 @@ def test_every_bare_default_source_has_its_input(shipped, bare):
     written = steps[0].command[steps[0].command.index("--docsite-output") + 1]
     assert docsite["params"]["records_path"].replace("${archi_data_root}", "/d") == written
 
-    # indico: a default event, a public server, no category walk, no bound.
-    assert values["indico_event_ids"] == '["1716863"]'
-    assert values["indico_category_ids"] == "[]"
+    # indico: no answer needed; the source's own default event, a public
+    # server, no category walk, no bound.
+    assert values["indico_event_ids"] == "[]" and values["indico_category_ids"] == "[]"
     assert values["indico_base_url"] == "https://indico.cern.ch"
     indico = yaml.safe_load(bare.composition.sources["indico.indico_live"])["indico.indico_live"]
+    assert indico["params"]["default_event_ids"] == ["1716863"]
     assert "max_events" not in indico["params"] and "cookie_file_env" not in indico["params"]
 
 
 def test_cmssw_releases_stays_selectable(shipped, tmp_path):
     rendered = render(resolve(shipped, ["cern-team"], with_packs=["cmssw-releases"]), tmp_path)
     assert "cmssw-releases.cmssw_releases" in rendered.composition.sources
+
+
+@pytest.mark.parametrize("events, categories, read_events, read_categories", [
+    ("[]", "[]", ("1716863",), ()),                 # bare install: the default event
+    ("[]", '["100"]', (), ("100",)),                # categories only: no default event
+    ('["5"]', "[]", ("5",), ()),                    # events only: just those
+    ('["5"]', '["100"]', ("5",), ("100",)),
+])
+def test_the_indico_default_event_yields_to_any_named_scope(
+    bare, events, categories, read_events, read_categories
+):
+    from archi.sources.indico_live import IndicoLiveSource
+
+    text = bare.composition.sources["indico.indico_live"]
+    text = (text.replace("${indico_event_ids}", events)
+                .replace("${indico_category_ids}", categories)
+                .replace("${indico_base_url}", "https://indico.cern.ch"))
+    params = yaml.safe_load(text)["indico.indico_live"]["params"]
+    source = IndicoLiveSource(**{k: v for k, v in params.items() if k != "required"})
+    assert (source.event_ids, source.category_ids) == (read_events, read_categories)

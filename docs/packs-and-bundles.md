@@ -80,8 +80,12 @@ prepare:
   `validate` refuses a reference to anything else.
 - A step is `python -m <module> <args>` in archi's own Python, with no shell
   and `ARCHI_DATA_ROOT` set to the instance's data root. `module` must be a
-  dotted Python name, so a pack can name only code that is installed; it runs
-  as the operator, like any installed package.
+  dotted Python name, so a pack can name only code that is installed.
+  **A prepare step runs a Python module of the pack's choosing, at `archi init`
+  or `archi add` time, with your full environment and your privileges.** That
+  is the same trust as installing the pack, but it is used earlier: before
+  okg reads anything. Install packs only from sources you trust, and read a
+  third-party pack's `prepare` before you init or add it.
 - `archi init` runs every selected pack's steps, in resolution order, after
   rendering and before it starts the graph database or reads any source.
   `archi add` runs the new pack's steps before it edits the deployment. Neither

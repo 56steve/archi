@@ -12,18 +12,17 @@ init_questions:
     prompt: Indico event ids to read, as a YAML list (for example '["1716863"]')
     type: string
     required: false
-    default: '["1716863"]'
+    default: "[]"
     description: |
       Events read directly, by the numeric id in their URL
-      (indico.cern.ch/event/<id>/). Give event ids, category ids or both:
-      with neither, the source is refused when it is built and the publish
-      stops, rather than ingesting nothing quietly. The default is one
-      public event ("Knowledge Bases and Agents for CERN"), so a bare
-      install reads a real scope and needs no answer. It is a single named
-      event, not a bounded walk, so its scope is complete: if it cannot be
-      read the run claims no complete scope and nothing is retracted. To
-      read other events, answer with your own list; to read categories only,
-      answer `[]` here too.
+      (indico.cern.ch/event/<id>/). Give event ids, category ids or both.
+      With neither, the source reads one public event, 1716863 ("Knowledge
+      Bases and Agents for CERN"), so a bare install has a scope. That is
+      the source's `default_event_ids` parameter: any event or category id
+      you give replaces it, so answering only categories does not also read
+      this event. It is one named event, not a bounded walk, so its scope is
+      complete: if it cannot be read the run claims no complete scope and
+      nothing is retracted.
 
   - id: category_ids
     prompt: Indico category ids to read, as a YAML list (for example '["100"]')

@@ -81,12 +81,15 @@ def test_mcp_dockerfile_pins_the_host_okg_and_installs_git(instance):
 
 def _runner(results):
     calls = []
+    kwargs = []
 
     def run(cmd, **kw):
         calls.append(cmd)
+        kwargs.append(kw)
         return subprocess.CompletedProcess(cmd, results.get(tuple(cmd[:2]), 0), "", "")
 
     run.calls = calls
+    run.kwargs = kwargs
     return run
 
 
@@ -115,6 +118,25 @@ def test_compose_commands_name_the_project_and_env_file(instance):
     assert cmd[cmd.index("-p") + 1] == "archi-my-team"
     assert cmd[cmd.index("--env-file") + 1] == str(instance.dir / ".env")
     assert cmd[-3:] == ["up", "-d", "graph-db"]
+
+
+@pytest.mark.parametrize("runtime", ["docker", "podman"])
+def test_compose_argv_is_the_same_for_both_runtimes_and_has_no_project_directory(instance, runtime):
+    """podman-compose 1.4 rejects --project-directory; both runtimes default the
+    project directory to the first -f file's, so only -f, --env-file and -p are
+    passed, and the process runs in the instance directory."""
+    instance.runtime = runtime
+    run = _runner({})
+    Compose(instance, runner=run).up("graph-db")
+    assert run.calls[-1] == [
+        runtime, "compose",
+        "-f", str(instance.dir / "compose.yaml"),
+        "--env-file", str(instance.dir / ".env"),
+        "-p", instance.project,
+        "up", "-d", "graph-db",
+    ]
+    assert "--project-directory" not in run.calls[-1]
+    assert run.kwargs[-1]["cwd"] == instance.dir
 
 
 def test_down_keeps_volumes_and_purge_deletes_them(instance):

@@ -491,7 +491,7 @@ def add(
             )
         except PrepareError as exc:
             raise LockError(f"preparing the new pack failed: {exc}") from exc
-    changed =_merge_into_deployment(plan, deployment_dir, new_sources, new_answers, echo)
+    changed = _merge_into_deployment(plan, deployment_dir, new_sources, new_answers, echo)
     echo(f"added to {deployment_dir}: {', '.join(changed)}")
 
     commands: list[list[str]] = []

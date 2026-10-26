@@ -10,7 +10,7 @@ answers (see the [quickstart](quickstart.md)).
 |---|---|
 | The only default source was `cmssw_releases` (the public CMSSW release catalog). | The default packs are `docsite`, `indico` and `core-playbooks`. `cmssw-releases` is not in the bundle. |
 | A bare `archi init` of the pack-based bundle stopped: docsite had no records cache and indico had no event. The quickstart said `--without docsite,indico --with cmssw-releases`. | docsite downloads two small public documentation sites (FTS3 and Rucio) before the first ingest. indico reads one public event (1716863). Both are credential-free, and the workaround is gone. |
-| `indico_event_ids` defaulted to `[]`. | `indico_event_ids` defaults to `["1716863"]`. A new pack question, `docsite_urls`, names the pages docsite downloads. |
+| An indico source with no event or category was refused when built. | With no event or category answered, indico reads event 1716863 (`default_event_ids`); before, that was an error. A new pack question, `docsite_urls`, names the pages docsite downloads. |
 | Packs `docsite` and `indico` at 0.1.0, bundle at 0.2.0. | docsite 0.2.0, indico 0.2.0, bundle 0.3.0. |
 
 Nothing about an instance that is already published changes by itself. The
@@ -76,10 +76,11 @@ archi add indico  --instance ./myteam
 `archi add docsite` downloads the pages of `docsite_urls` into
 `<data root>/docsite/records.json` first. If a page cannot be fetched it stops
 before it edits the deployment. Give your own pages with
-`--answer docsite_urls=<url>[,<url>...]`. `archi add indico` reads
-event 1716863 unless you answer `--answer indico_event_ids='["<id>"]'`
-(`--answer indico_event_ids='[]'` with `--answer indico_category_ids='["<id>"]'`
-for categories only).
+`--answer docsite_urls=<url>[,<url>...]`. `archi add <pack> --no-okg` skips the
+prepare step (it runs no okg command either), so the cache is not written;
+run `python -m archi.downloaders.static_docs` yourself before the first ingest. `archi add indico` reads
+event 1716863 unless you answer `--answer indico_event_ids='["<id>"]'` or
+`--answer indico_category_ids='["<id>"]'`; either replaces the default.
 
 An instance that already has docsite or indico is not touched: `archi add`
 refuses a pack that is already installed, and the new default event applies
