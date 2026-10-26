@@ -426,6 +426,42 @@ def _monit_live(data: Path, server: FixtureServer) -> dict:
     return {}
 
 
+def _servicenow(data: Path, server: FixtureServer) -> dict:
+    from packs.cluster_fixtures import write_servicenow_cache
+
+    write_servicenow_cache(data)
+    return {"instance_url": "https://example.service-now.com"}
+
+
+def _tickets(data: Path, server: FixtureServer) -> dict:
+    from packs.cluster_fixtures import write_tickets_cache
+
+    write_tickets_cache(data)
+    return {"base_url": "https://redmine.example.org"}
+
+
+def _slurm(data: Path, server: FixtureServer) -> dict:
+    from packs.cluster_fixtures import write_slurm_cache
+
+    # The cache the exporter writes from recorded command output (a fake runner; no Slurm command runs).
+    write_slurm_cache(data)
+    return {"cluster_name": "submit"}
+
+
+def _htcondor(data: Path, server: FixtureServer) -> dict:
+    from packs.cluster_fixtures import write_condor_cache
+
+    write_condor_cache(data)
+    return {"pool_name": "submit-pool"}
+
+
+def _node_health(data: Path, server: FixtureServer) -> dict:
+    from packs.cluster_fixtures import write_node_health_cache
+
+    write_node_health_cache(data)
+    return {"cluster_name": "submit"}
+
+
 FIXTURES: dict[str, Callable[[Path, FixtureServer], dict]] = {
     "docsite": _docsite,
     "indico": _indico,
@@ -447,6 +483,11 @@ FIXTURES: dict[str, Callable[[Path, FixtureServer], dict]] = {
     "dqm": _dqm,
     "hypernews": _hypernews,
     "monit-live": _monit_live,
+    "servicenow": _servicenow,
+    "tickets": _tickets,
+    "slurm": _slurm,
+    "htcondor": _htcondor,
+    "node-health": _node_health,
 }
 
 #: Credential variables a pack's sources read, set to dummy values so a
