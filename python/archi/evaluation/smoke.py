@@ -14,7 +14,7 @@
           subtypes: [t, ...]   # a cited node has one of these subtypes
           sources: [s, ...]    # a cited node was written by one of these sources
                                # (a source is `<deployment>.<name>`; `docsite` matches `gp.docsite`)
-        must_contain: [text]   # every string appears in the answer (case-insensitive)
+        must_contain: [text]   # every string appears in the answer (ignoring case, hyphens, extra spaces)
         must_contain_any: [text]   # at least one appears
 
 A node counts as cited when the answer names its id AND a tool result of the
@@ -233,6 +233,15 @@ def _from_source(source: Optional[str], wanted: tuple[str, ...]) -> bool:
     return bool(source) and any(source == w or source.endswith("." + w) for w in wanted)
 
 
+#: hyphens and dashes a model may write between words ("low-level", "low‑level")
+_DASHES = re.compile(r"[-‐‑‒–—]")
+
+
+def _plain(text: str) -> str:
+    """For `must_contain`: case, hyphens between words and runs of spaces do not count."""
+    return " ".join(_DASHES.sub(" ", text.lower()).split())
+
+
 def check_answer(question: Question, answer: str, seen: Mapping[str, NodeInfo]) -> Verdict:
     cited = cited_nodes(answer, seen)
     ids = {n.id for n in cited}
@@ -246,10 +255,10 @@ def check_answer(question: Question, answer: str, seen: Mapping[str, NodeInfo]) 
         reasons.append(f"cited no node of subtype {' or '.join(question.subtypes)}")
     if question.sources and not any(_from_source(n.source, question.sources) for n in cited):
         reasons.append(f"cited no node from source {' or '.join(question.sources)}")
-    low = answer.lower()
-    absent = [s for s in question.contains if s.lower() not in low]
+    low = _plain(answer)
+    absent = [s for s in question.contains if _plain(s) not in low]
     if absent:
         reasons.append(f"answer lacks: {', '.join(absent)}")
-    if question.contains_any and not any(s.lower() in low for s in question.contains_any):
+    if question.contains_any and not any(_plain(s) in low for s in question.contains_any):
         reasons.append(f"answer has none of: {', '.join(question.contains_any)}")
     return Verdict(passed=not reasons, cited=cited, reasons=reasons)

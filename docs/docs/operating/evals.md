@@ -79,7 +79,7 @@ The agent answers with the node ids it used. A question passes when:
 - the answer names a node that a tool returned in this run (an invented id
   does not count), and that node meets every `must_cite` key given: its id is
   one required, or its subtype or source is one listed; and
-- the answer holds every `must_contain` string, ignoring case.
+- the answer holds every `must_contain` string, ignoring case, hyphens between words and extra spaces ("low-level" matches "low level").
 
 There is no LLM judge. A wrong answer that cites the right source and uses the
 right words passes; the set is a smoke check, not a grade. Results depend on

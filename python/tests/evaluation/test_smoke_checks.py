@@ -82,6 +82,15 @@ def test_a_source_check_passes_on_a_node_read_with_inspect():
     assert verdict.passed, verdict.reasons
 
 
+def test_required_text_ignores_hyphens_case_and_spacing():
+    # GPT-6 Luna's answer to cern-team fts3-level in the 2026-10-26 lab run.
+    answer = ("FTS3 is a **low-level data-movement service**.\n"
+              "Sources: documentation_page:22")
+    assert check_answer(q(must_contain=["low level"]), answer, nodes_in(SEARCH_TEXT)).passed
+    assert check_answer(q(must_contain=["data movement"]), answer, nodes_in(SEARCH_TEXT)).passed
+    assert not check_answer(q(must_contain=["high level"]), answer, nodes_in(SEARCH_TEXT)).passed
+
+
 def test_merge_keeps_what_either_result_knew():
     seen = {"chunk:1": NodeInfo("chunk:1")}
     merge_nodes(seen, {"chunk:1": NodeInfo("chunk:1", "document_chunk", "gp.docsite")})
