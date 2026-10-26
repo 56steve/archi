@@ -441,8 +441,10 @@ def _git_commit(deployment_dir: Path, message: str, instance_dir: Optional[Path]
     git("-C", str(top), "add", "-A", *pathspec)
     if git("-C", str(top), "diff", "--cached", "--quiet", *pathspec, check=False).returncode == 0:
         return None  # nothing changed in archi's paths
+    from archi.cli.init import _git_identity_env  # lazy: archi.cli imports this module
+
     cmd = ["git", "-C", str(top), "commit", "-m", message, *pathspec]
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    subprocess.run(cmd, check=True, capture_output=True, text=True, env=_git_identity_env())
     return cmd
 
 
