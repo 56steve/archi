@@ -8,9 +8,10 @@ import argparse
 
 
 def register(sub, roots, load_ops: bool = True) -> None:
-    from archi.cli import doctor, init, up
+    from archi.cli import connect, doctor, init, up
 
     init.add_parser(sub, roots)
+    connect.add_parser(sub)
     up.add_parsers(sub)
     doctor.add_parser(sub)
     if load_ops:
