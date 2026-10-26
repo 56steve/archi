@@ -3,6 +3,7 @@
 The running stack is the executed test in the PACT (golden_path_run.sh).
 These cover what archi renders and decides without a container runtime.
 """
+import json
 import subprocess
 
 import pytest
@@ -144,6 +145,50 @@ def test_compose_argv_is_the_same_for_both_runtimes_and_has_no_project_directory
     ]
     assert "--project-directory" not in run.calls[-1]
     assert run.kwargs[-1]["cwd"] == instance.dir
+
+
+def _ps_runner(compose_out=None, runtime_out=None):
+    """compose ps answers compose_out (None: unsupported, exit 2); `<runtime> ps` runtime_out."""
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[1] == "compose":
+            return subprocess.CompletedProcess(cmd, 2 if compose_out is None else 0, compose_out or "", "")
+        return subprocess.CompletedProcess(cmd, 0, runtime_out or "", "")
+
+    run.calls = calls
+    return run
+
+
+def test_services_reads_compose_ps_json(instance):
+    out = json.dumps([{"Service": "graph-db", "State": "running", "Health": "healthy"}])
+    assert Compose(instance, runner=_ps_runner(out)).services() == {
+        "graph-db": {"state": "running", "health": "healthy"}
+    }
+
+
+def test_services_falls_back_to_the_runtime_when_compose_ps_has_no_json(instance):
+    """podman-compose 1.4 rejects `ps --format json`; podman lists labels as a dict."""
+    out = json.dumps([
+        {"State": "running", "Status": "Up 3 minutes (healthy)",
+         "Labels": {"com.docker.compose.service": "graph-db"}},
+        {"State": "running", "Status": "Up 3 minutes", "Labels": {"com.docker.compose.service": "mcp"}},
+    ])
+    run = _ps_runner(None, out)
+    assert Compose(instance, runner=run).services() == {
+        "graph-db": {"state": "running", "health": "healthy"},
+        "mcp": {"state": "running", "health": ""},
+    }
+    assert run.calls[-1][-2:] == ["--filter", f"label=com.docker.compose.project={instance.project}"]
+
+
+def test_services_fallback_reads_docker_label_strings(instance):
+    row = {"State": "running", "Status": "Up 1 second (unhealthy)",
+           "Labels": "a=b,com.docker.compose.service=webui"}
+    assert Compose(instance, runner=_ps_runner(None, json.dumps(row))).services() == {
+        "webui": {"state": "running", "health": "unhealthy"}
+    }
 
 
 def test_down_keeps_volumes_and_purge_deletes_them(instance):

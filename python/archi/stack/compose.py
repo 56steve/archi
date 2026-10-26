@@ -281,21 +281,37 @@ class Compose:
         self.run("down", *(["--volumes"] if volumes else []))
 
     def services(self) -> dict[str, dict[str, Any]]:
-        """Service name -> {state, health} for running containers."""
+        """Service name -> {state, health} for the project's containers.
+
+        `compose ps --format json` is asked first. podman-compose 1.4 has no
+        such option, so on failure the runtime itself lists the containers
+        carrying this project's compose label.
+        """
         result = self.run("ps", "--all", "--format", "json", check=False, capture=True)
         if result.returncode != 0:
-            return {}
+            result = self.runner(
+                [self.instance.runtime, "ps", "--all", "--format", "json",
+                 "--filter", f"label=com.docker.compose.project={self.instance.project}"],
+                cwd=self.instance.dir, text=True, capture_output=True,
+            )
+            if result.returncode != 0:
+                return {}
         text = (result.stdout or "").strip()
         if not text:
             return {}
         rows = json.loads(text) if text.startswith("[") else [json.loads(l) for l in text.splitlines()]
-        return {
-            row.get("Service", ""): {
-                "state": (row.get("State") or "").lower(),
-                "health": (row.get("Health") or "").lower(),
-            }
-            for row in rows
-        }
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            labels = row.get("Labels") or {}
+            if isinstance(labels, str):  # docker ps: "k=v,k=v"
+                labels = dict(item.partition("=")[::2] for item in labels.split(",") if item)
+            name = row.get("Service") or labels.get("com.docker.compose.service", "")
+            status = str(row.get("Status") or "").lower()
+            health = (row.get("Health") or "").lower() or next(
+                (h for h in ("unhealthy", "healthy", "starting") if f"({h}" in status), ""
+            )
+            out[name] = {"state": (row.get("State") or "").lower(), "health": health}
+        return out
 
 
 # ---------------------------------------------------------------------------
