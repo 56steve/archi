@@ -290,11 +290,14 @@ class OpsIO:
         with self.connect() as conn:
             conn.execute("DELETE FROM archi_ops.halts WHERE schedule = %s", (schedule,))
 
-    def add_signal(self, automation: str, signal_id: str, entity: str, title: str, *, summary: Optional[str] = None) -> None:
+    def add_signal(self, automation: str, signal_id: str, entity: str, title: str, *, summary: Optional[str] = None,
+                   source: str = "table") -> None:
+        """Add a signal; one that exists already (same automation and id) is left as it is."""
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO archi_ops.signals (automation, signal_id, entity, title, summary) "
-                "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (automation, signal_id, entity, title, summary))
+                "INSERT INTO archi_ops.signals (automation, signal_id, entity, title, summary, source) "
+                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (automation, signal_id, entity, title, summary, source))
 
     def new_signals(self, automation: str) -> list[dict]:
         with self.connect() as conn:

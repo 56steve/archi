@@ -184,7 +184,17 @@ def test_step_registry_is_pinned():
     assert {n: steps.get_step(n).max_level for n in steps.step_names()} == {
         "record_finding": "L0",
         "draft_reply": "L1",
+        # PACT r3-ops-self-monitoring: a draft issue file in the instance repository; no network, no forge
+        "draft_issue": "L1",
     }
+
+
+def test_only_steps_that_stay_inside_the_instance_repository_have_an_implementation():
+    """A step with an implementation runs at L1 with no escalation, so each one is a decision."""
+    assert {n for n in steps.step_names() if steps.get_step(n).impl} == {"draft_issue"}
+    assert steps.local_step("draft_issue").impl == "archi.health.steps:draft_issue"
+    assert steps.local_step("draft_reply") is None
+    assert steps.local_step("archi.tools.instance_health:sync_forge_issues") is None
 
 
 def test_registering_a_step_above_l1_is_refused():

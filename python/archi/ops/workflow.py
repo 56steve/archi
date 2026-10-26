@@ -96,9 +96,11 @@ from archi.ops.loop import (
     run_once,
 )
 from archi.ops.okg_io import OpsIO
-from archi.ops.proposers import Proposed, ProposeRequest, StubProposer
-from archi.ops.record import OpsRecords, submit
+from archi.ops.proposers import Proposed, ProposerError, ProposeRequest, build_proposer
+from archi.ops.record import OpsRecords, RecordError, submit
 from archi.ops.runtime_config import RUN_WORKFLOW, SCANNER, RuntimeConfig, load_runtime
+from archi.ops.schedule import latest_fire, tick_id
+from archi.ops.steps import local_step
 from archi.ops.stubs import marker_outcome, resolve_mediator
 
 log = logging.getLogger(__name__)
@@ -197,7 +199,14 @@ def _gate_step(automation: str) -> dict:
 
     rt = _runtime()
     spec: GateSpec = rt.automation(automation).gate
-    rows = {r.get("name"): r for r in _io(rt).doctor_sources()}
+    rows = {r.get("name"): r for r in _io(rt).doctor_sources()} if spec.sources else {}
+    published = None
+    if spec.published:
+        try:
+            _io(rt).pin_generation()
+            published = True
+        except RecordError:
+            published = False
     try:
         slos = read_lock(rt.instance_dir).get("composed", {}).get("freshness") or {}
     except Exception:  # no lock: sources are held to the gate's own max_staleness, or fail
@@ -216,7 +225,7 @@ def _gate_step(automation: str) -> dict:
             "max_staleness_seconds": parse_duration(slo) if slo else None,
             "reason": "" if stamp else "no completed run recorded in okg's watermarks",
         })
-    result = evaluate_gate(spec, GateFacts(None, tuple(freshness), {}, None))
+    result = evaluate_gate(spec, GateFacts(None, tuple(freshness), {}, None, published))
     return result.as_dict()
 
 
@@ -239,10 +248,13 @@ def _read_step(entity: str, generation: str) -> dict:
 
 @deployment_step(name="archi_ops_propose")
 def _propose_step(automation: str, request: dict) -> dict:
-    cfg = _runtime().settings[automation].proposer
-    if cfg.get("kind") != "stub":
-        raise RuntimeError(f"automation {automation!r}: proposer kind {cfg.get('kind')!r} is not available yet")
-    proposed = StubProposer(cfg.get("fixture") or {}).propose(ProposeRequest(**request))
+    rt = _runtime()
+    cfg = rt.settings[automation].proposer
+    try:
+        proposer = build_proposer(cfg, rt)
+    except ProposerError as exc:
+        raise RuntimeError(f"automation {automation!r}: {exc}") from exc
+    proposed = proposer.propose(ProposeRequest(**request))
     return {"proposal": dict(proposed.proposal), "cost": proposed.cost}
 
 
@@ -310,11 +322,13 @@ def run_mediation(
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     resolve: Callable[[str], Callable[..., Mapping[str, Any]]] = resolve_mediator,
     refused: Callable[[str, str], None] = log_refusal,
+    instance_dir: Optional[str] = None,
 ) -> dict:
     """The body of the mediator step: the only place an action happens.
 
     Order: (1) an earlier attempt for this idempotency key decides everything (a replay never
-    asks again); (2) halt; (3) the escalation row, read again, must pass `may_execute`; (4) the
+    asks again); (2) halt; (3) the escalation row, read again, must pass `may_execute` (a workflow step
+    with an implementation, which runs at L1, has no escalation: it has no external effect); (4) the
     attempt is recorded durably; (5) the mediator is called with the key. Any exception in
     1 to 3 is a refusal with verdict `error`, never a failed action. Returns `{"refused":
     [verdict, reason]}` or `{"status", "result"}` (`unknown` when an earlier attempt has no recorded end).
@@ -327,17 +341,18 @@ def run_mediation(
         if reason:
             refused("halted", reason)
             return {"refused": ["halted", reason]}
-        if esc is None:
-            refused("error", "no escalation was opened for this proposal")
-            return {"refused": ["error", "no escalation was opened for this proposal"]}
-        escalation = Escalation(esc["escalation_id"], esc["proposal_id"], _moment(esc["opened_at"]),
-                                _moment(esc["timeout_at"]))
-        allowed = may_execute(io.decision_for(escalation.escalation_id), escalation, now())
-        if not allowed:
-            verdict = "timed_out" if allowed.late else "error"
-            refused(verdict, allowed.reason)
-            return {"refused": [verdict, allowed.reason]}
         entry = mediator_entry()
+        if local_step(entry) is None:
+            if esc is None:
+                refused("error", "no escalation was opened for this proposal")
+                return {"refused": ["error", "no escalation was opened for this proposal"]}
+            escalation = Escalation(esc["escalation_id"], esc["proposal_id"], _moment(esc["opened_at"]),
+                                    _moment(esc["timeout_at"]))
+            allowed = may_execute(io.decision_for(escalation.escalation_id), escalation, now())
+            if not allowed:
+                verdict = "timed_out" if allowed.late else "error"
+                refused(verdict, allowed.reason)
+                return {"refused": [verdict, allowed.reason]}
     except Exception as exc:
         reason = f"the mediator step could not verify it may act ({type(exc).__name__}: {exc})"
         refused("error", reason)
@@ -346,9 +361,11 @@ def run_mediation(
     if earlier is not None:  # another attempt got in between
         return _earlier_attempt(earlier)
     try:
-        out = resolve(entry)(payload=dict(payload), context={
-            "dsn": dsn, "proposal_id": proposal_id, "idempotency_key": idempotency_key,
-            "workflow_id": workflow_id})
+        context = {"dsn": dsn, "proposal_id": proposal_id, "idempotency_key": idempotency_key,
+                   "workflow_id": workflow_id}
+        if instance_dir is not None:
+            context["instance_dir"] = instance_dir
+        out = resolve(entry)(payload=dict(payload), context=context)
         status, result = out["status"], str(out.get("result", ""))
     except Exception as exc:
         status, result = "failed", f"{type(exc).__name__}: {exc}"
@@ -370,7 +387,7 @@ def _mediate_step(automation: str, action_class: str, payload: dict, proposal_id
     return run_mediation(
         _io(rt), mediator_entry=lambda: rt.automation(automation).action_classes[action_class].mediator,
         action_class=action_class, payload=payload, proposal_id=proposal_id, idempotency_key=idempotency_key,
-        esc=esc, workflow_id=DBOS.workflow_id, dsn=rt.dsn)
+        esc=esc, workflow_id=DBOS.workflow_id, dsn=rt.dsn, instance_dir=str(rt.instance_dir))
 
 
 @deployment_step(name="archi_ops_decision")
@@ -618,8 +635,36 @@ def start_run(run_id: str, automation: str, signal: dict) -> None:
         DBOS.start_workflow(archi_ops_run, automation, signal)
 
 
+def add_schedule_ticks(rt: Any, io: Any, now: datetime, say: Callable[[str], None] = log.info) -> list[str]:
+    """For each automation with a `schedule` trigger, add the signal of its latest cron time.
+
+    The signal id is `tick-<time>`, so a scan that runs again within the same cron time adds nothing
+    new, and a worker that was down for a day adds one tick, not a backlog. Returns the ids added or
+    already present, as `<automation>/<id>`.
+    """
+    load = getattr(rt, "automation", None)
+    if load is None:
+        return []
+    ticks = []
+    for name in sorted(rt.settings):
+        try:
+            trigger = load(name).trigger
+            if trigger.get("type") != "schedule":
+                continue
+            fire = latest_fire(trigger["cron"], now)
+        except Exception as exc:  # a bad automation file or cron stops that automation's ticks, not the scan
+            say(f"archi_ops_scan: {name}: cannot work out its schedule ({type(exc).__name__}: {exc})")
+            continue
+        if fire is None:
+            continue
+        io.add_signal(name, tick_id(fire), rt.deployment, f"scheduled run {fire:%Y-%m-%d %H:%MZ}",
+                      source="schedule")
+        ticks.append(f"{name}/{tick_id(fire)}")
+    return ticks
+
+
 def scan_once(rt: RuntimeConfig, io: Any, start: Callable[[str, str, dict], None] = start_run,
-              say: Callable[[str], None] = log.info) -> list[str]:
+              say: Callable[[str], None] = log.info, now: Optional[datetime] = None) -> list[str]:
     """Start at most one run per automation, and only when that automation has none in flight.
 
     One at a time keeps an L2 automation's budget and escalations simple: a run waiting hours for a
@@ -631,6 +676,7 @@ def scan_once(rt: RuntimeConfig, io: Any, start: Callable[[str, str, dict], None
     if any(io.schedules().values()):
         say("archi_ops_scan: halted (schedule paused); starting nothing")
         return started
+    add_schedule_ticks(rt, io, now or datetime.now(timezone.utc), say)
     in_flight = {run.automation for run in io.runs()}
     for name in sorted(rt.settings):
         if name in in_flight:

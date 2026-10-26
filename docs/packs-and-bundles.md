@@ -272,9 +272,12 @@ pack already emits.
 **Context gate.** `archi.ops.context_gate` evaluates a gate (sources, maximum
 staleness, minimum context-eval score, required invariants) against the
 current generation's facts and returns pass, or fail with each failing check
-named (`freshness:<source>`, `context_eval`, `invariant:<name>`). Facts come
-from `archi doctor --json` (`facts_from_doctor`), plus invariant results and the
-context-eval score from the caller. A missing score or result is a failure.
+named (`freshness:<source>`, `context_eval`, `invariant:<name>`, `published`).
+Facts come from `archi doctor --json` (`facts_from_doctor`), plus invariant
+results and the context-eval score from the caller. A missing score or result
+is a failure. `published: true` asks only that the graph has a published
+generation; it is the gate of an automation that reports on the instance's own
+health, which must keep running while a source is stale.
 
 ## Automation packs
 
@@ -351,8 +354,14 @@ Choices worth knowing:
   shipped pack. Anything else must be a registered *workflow step*. Steps live
   in the registry `archi.ops.steps`, the one place the runtime registers them,
   and only steps with no external effect exist: `record_finding` (highest level
-  L0, writes a finding to the ops record) and `draft_reply` (L1, stores a draft,
-  never sends). An action class whose mediator is a step may not have a
+  L0, writes a finding to the ops record), `draft_reply` (L1, stores a draft,
+  never sends) and `draft_issue` (L1, writes issue files in the instance
+  repository and commits them there; see [Instance health](#instance-health)).
+  A step that has an implementation (`draft_issue`) runs at L1 with no
+  escalation: the halt check and the at-most-once record of a mediator still
+  apply, and it gets the instance directory in its context. A step without one
+  is recorded on the proposal and never runs. A live tool never runs at L1. An
+  action class whose mediator is a step may not have a
   `max_level` above the step's. An action that changes an external system
   (a ticket update, a restart) must be a live tool of a tool pack; an
   automation never calls an external system any other way (ADR 0002 section 7.2).
@@ -446,8 +455,15 @@ Settings that belong to the instance, not the pack:
   `timeout_seconds` (how long an L2 escalation waits; default 4 hours),
   `estimate_cost` (checked against the budget before each proposal; default
   the pack's `budget.cost_per_run`), `promotion` (the PACT change `archi ops
-  promote` opened; see below), and the `proposer` and `outcome` stubs used until the
-  model-backed ones land. `test_gate_seconds` is for tests only.
+  promote` opened; see below), and the `proposer` and `outcome`. The proposer's
+  `kind` is `stub` (fixed answers, until the model-backed proposer lands) or
+  `instance-health` (see [Instance health](#instance-health)). `test_gate_seconds`
+  is for tests only.
+
+An automation whose trigger is `schedule` gets a signal from the scanner for its latest cron time
+(`tick-<UTC time>`, source `schedule`, entity the instance name; `archi.ops.schedule`). A scan that runs
+again in the same cron time adds nothing, and a worker that was down adds one tick, not a backlog. No tick
+is added while the scanner is halted.
 
 One scanner (`archi_ops_scan`, a `@deployment_scheduled` workflow) starts the
 next run of each automation that has none in flight (one at a time: a run
@@ -510,3 +526,65 @@ API (docs/ops-runtime-akmon-asks.md, O3). Put `--instance`, `--deployment` and
 `--dsn` (default `$OKG_DSN`) before the subcommand: `archi ops --dsn ... pending`.
 `python/tests/ops/scratch_ops_runtime_run.sh` runs every case above on a scratch
 okg 0.2.0 instance.
+
+## Instance health
+
+The `instance-health` pack (ADR 0002 section 7.5, PACT `r3-ops-self-monitoring`) is the automation that
+watches an instance. It is an ordinary automation pack, hourly (`7 * * * *`), with no model call, and at most
+L1: L0 records what it finds, L1 drafts the issues. Select it with `ops-record`, which it writes to:
+
+```bash
+archi init myteam --bundle cern-team --with ops-record,instance-health
+```
+
+Then switch it on in the instance's `ops.yaml` (nothing runs for an automation `ops.yaml` does not name), and
+start the runtime worker as for any automation:
+
+```yaml
+automations:
+  instance-health:
+    mode: shadow                  # live only after `archi ops promote instance-health` is approved
+    proposer: {kind: instance-health}
+```
+
+**Signals.** Each run reads, and nothing else:
+
+| Signal | Read from | Problem key |
+|---|---|---|
+| doctor | `archi doctor --json`, every failing check (warnings with `include_warnings: true`) | `<check id>/instance`; `source-freshness/<source>` for each late source |
+| ingest | `okg sync frontier --json`: a source whose frontier is `blocked` (failed run, blocked publish) | `ingest/<source>` |
+| automation errors | the ops records, through the reader of `archi.ops.shadow`: an automation with at least `min_decisions` decisions in `window_hours` of which `max_rate` or more are `error`, `invalid_proposal` or `refused` | `automation-errors/<automation>` |
+| eval | `eval/reports/*.json` in the instance, if any: `{"finished_at", "score"}`; the latest score more than `min_drop` below the mean of the three before it. This format is provisional until `archi eval` exists. No report exists today, so the signal is skipped, and the proposal says so | `eval/score` |
+
+A signal that cannot be read (okg down, `archi doctor` crashing, a malformed eval report) is itself a
+problem, `monitor/<signal>`, and that signal's other issues are left as they are for the run: failing to
+look is not evidence of health.
+
+**Issues.** The key is the check plus its subject, never a time or a count, so the same problem is the same
+issue run after run. A run makes the tracker match what it found:
+
+- a new key opens an issue; a changed text updates it; an unchanged one writes nothing;
+- a key no longer found, in a signal that was read, marks its issue resolved (never deleted);
+- a resolved key that returns reopens the same issue.
+
+The text of an issue holds no age or run time (a late source shows its last reconcile time and its limit), so a
+lasting problem does not rewrite its issue every hour.
+
+**Trackers.** Set `proposer.tracker` in `ops.yaml`:
+
+| `kind` | Where the issues go | Credential | Runs as |
+|---|---|---|---|
+| `local` (default) | `.archi/issues/<check>--<subject>.md` in the instance repository, committed by the run (a commit limited to that path) | none | the step `draft_issue`, at L1 |
+| `gitlab` (`url`, `project`, `token_env`) | issues labelled `archi-health` on that project, through `/api/v4` | the variable `token_env` names | the live tool `archi.tools.instance_health:sync_forge_issues`, at L2 |
+| `github` (`repo`, `token_env`, optional `api_url`) | the same on a GitHub repository, through `/repos/<repo>/issues` | the variable `token_env` names | the same live tool, at L2 |
+
+Only the name of the token variable goes in the file; a value is refused. A forge issue is found by a marker
+comment at the end of its body, not by its title. Why the split: writing files under `.archi/issues/` in
+the instance's own repository has no external effect, so it is a workflow step and runs at L1 without an
+escalation. A forge is an external system, so ADR 0002 section 7.2 puts it in a live tool, and a live tool
+runs only after a person approves it (L2). The pack ships with maximum L1, so the forge tracker is available
+to an instance that raises the pack's `max_level` to L2 (and its own level in `archi.yaml`); each sync is then
+an escalation. A draft pull request for a mechanical fix is not built yet.
+
+`ops.yaml` can also set `ignore_checks: [services]`, `include_warnings`, `error_rate: {window_hours,
+min_decisions, max_rate}` and `eval: {min_drop}` under `proposer`.

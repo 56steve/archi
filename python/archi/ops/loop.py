@@ -15,7 +15,9 @@ recorded as `action_class_capped` and never executes.
 
     L0  record the incident, the proposal and an `observed` decision.
     L1  as L0, with the draft on the proposal and a `drafted` decision.
-        Nothing is sent.
+        Nothing is sent. When the action class's mediator is a workflow step with an
+        implementation (`archi.ops.steps`, e.g. `draft_issue`), the step runs: a step has no
+        external effect, so it needs no escalation. A live tool never runs at L1.
     L2  the Decider opens an escalation and later reports a decision. Only an
         approval bound to that escalation and proposal, by a named person,
         made between the escalation opening and its deadline, reaches the
@@ -69,6 +71,7 @@ from archi.ops.escalation import (
 )
 from archi.ops.levels import LevelError, level_problem, rank, resolve_level
 from archi.ops.proposers import Proposed, ProposeRequest, Proposer
+from archi.ops.steps import get_step
 
 MODES = ("shadow", "live")
 #: Proposal `mode_reason` prefix when `mode: live` was not honoured: no approved promotion.
@@ -117,6 +120,8 @@ class AutomationConfig:
     #: the PACT change `archi ops promote` opened (ops.yaml `promotion`). `mode: live` counts only while
     #: this change is approved.
     promotion_change: Optional[str] = None
+    #: the rendered trigger (`{type: schedule, cron: ...}`); the scanner makes a signal per cron time
+    trigger: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_block(
@@ -155,6 +160,7 @@ class AutomationConfig:
             timeout_seconds=timeout_seconds,
             promoted_at=promoted_at,
             promotion_change=promotion_change,
+            trigger=dict(block.get("trigger") or {}),
         )
 
 
@@ -685,8 +691,11 @@ class _Run:
         # propose, from the pinned generation only
         try:
             read = deps.reader.read(self.signal, self.generation)
+            # the incident this run just wrote is a record the proposer may cite: it holds the signal
+            # that started the run (a monitor's evidence is the instance's state, not a graph node)
             proposed = deps.proposer.propose(
-                ProposeRequest(a.name, self.signal.as_dict(), read.context, self.generation, level))
+                ProposeRequest(a.name, self.signal.as_dict(), {**read.context, "run_incident": self.incident_node},
+                               self.generation, level))
         except Exception as exc:
             return self.stop(ERROR, f"proposer failed: {type(exc).__name__}: {exc}")
         exceeded: Optional[BudgetExceeded] = None
@@ -697,7 +706,7 @@ class _Run:
                 exceeded = exc
                 exceeded_scope = scope
         try:
-            proposal = validate_proposal(proposed.proposal, a, self.level, read.node_ids)
+            proposal = validate_proposal(proposed.proposal, a, self.level, {*read.node_ids, self.incident_node})
         except ProposalError as exc:
             return self.stop("invalid_proposal", f"proposal refused: {exc}")
 
@@ -738,8 +747,33 @@ class _Run:
             return self.result("observed", "L0")
         if level == 1:
             self.decide("drafted", "L1: draft recorded for a person to send; nothing was sent")
-            return self.result("drafted", "L1")
+            return self.run_draft_step(proposal)
         return self.escalate(proposal)
+
+    def run_draft_step(self, proposal: Proposal) -> RunResult:
+        """At L1, run the action class's mediator when it is a workflow step with an implementation.
+
+        A step has no external effect (`archi.ops.steps`), so it needs no escalation: it stores the
+        draft (`draft_issue` writes a file in the instance repository). The halt check, the mediator
+        record and the at-most-once guard are the same as for a live tool. A class whose mediator is a
+        live tool, or a step with no implementation, is only recorded: nothing runs at L1.
+        """
+        cls = self.a.action_classes.get(proposal.action_class or "")
+        step = get_step(cls.mediator) if cls and cls.mediator else None
+        if step is None or step.impl is None:
+            return self.result("drafted", "L1")
+        mediated, why, refused = self._mediate(proposal, None)
+        if mediated is None:
+            self.decide(refused, f"{why}; the draft step did not run")  # supersedes "drafted" (same record id)
+            return self.result(refused, why)
+        self.write(
+            "action", f"act-{self.run_id}", proposal_id=self.proposal_id, decision_id=self.decision_id,
+            action_class=proposal.action_class, mediator=cls.mediator,
+            payload=json.dumps(dict(proposal.payload), sort_keys=True) if proposal.payload else None,
+            status=mediated.status, result=mediated.result, executed_at=self.now(),
+        )
+        self.flush()
+        return self.result("drafted", f"step {cls.mediator}: {mediated.status}", mediated=True)
 
     def budget_scopes(self, started: datetime) -> list[tuple[str, float]]:
         a = self.a

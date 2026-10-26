@@ -29,7 +29,12 @@ CREATE TABLE IF NOT EXISTS archi_scratch.marker (
 
 
 def resolve_mediator(entry: str) -> Callable[..., Mapping[str, Any]]:
-    """The callable a `module:function` mediator names."""
+    """The callable a mediator names: `module:function`, or a registered workflow step that has an implementation."""
+    from archi.ops.steps import local_step
+
+    step = local_step(entry)
+    if step is not None:
+        entry = step.impl
     module, _, name = entry.partition(":")
     if not module or not name:
         raise ValueError(f"mediator {entry!r} is not module:function")

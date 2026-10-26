@@ -8,6 +8,12 @@ validates the mapping; a proposer holds no execution credential.
 
 `StubProposer` returns fixed answers from a fixture, for tests and scratch
 runs. The model-backed proposer comes later.
+
+An instance names its proposer in `ops.yaml` (`automations.<name>.proposer.kind`). `PROPOSER_KINDS`
+maps each kind to the `module:function` that builds it (`build(config, runtime) -> Proposer`):
+
+    stub             fixed answers from `proposer.fixture`
+    instance-health  the algorithmic health monitor (archi.health.proposer); no model call
 """
 from __future__ import annotations
 
@@ -41,6 +47,29 @@ class Proposer(Protocol):
 
 class ProposerError(RuntimeError):
     """The proposer could not produce a proposal."""
+
+
+#: kind -> "module:function" of a builder `(config, runtime_config) -> Proposer`
+PROPOSER_KINDS = {
+    "stub": "archi.ops.proposers:build_stub",
+    "instance-health": "archi.health.proposer:build",
+}
+
+
+def build_proposer(config: Mapping[str, Any], runtime: Any) -> "Proposer":
+    """The proposer an automation's `ops.yaml` block names."""
+    import importlib
+
+    kind = config.get("kind")
+    entry = PROPOSER_KINDS.get(kind)
+    if entry is None:
+        raise ProposerError(f"proposer kind {kind!r} is not available (known: {sorted(PROPOSER_KINDS)})")
+    module, _, name = entry.partition(":")
+    return getattr(importlib.import_module(module), name)(config, runtime)
+
+
+def build_stub(config: Mapping[str, Any], runtime: Any) -> "Proposer":
+    return StubProposer(config.get("fixture") or {})
 
 
 @dataclass

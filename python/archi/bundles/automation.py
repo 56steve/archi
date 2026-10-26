@@ -305,9 +305,9 @@ def automation_problems(
     except GateSpecError as exc:
         messages.append(f"automation.context_gate: {exc}")
     else:
-        if not (gate.sources or gate.invariants or gate.min_context_eval_score is not None):
+        if not (gate.sources or gate.invariants or gate.published or gate.min_context_eval_score is not None):
             messages.append(
-                "automation.context_gate: declares no check; name at least one source, invariant or min_context_eval_score (ADR 0002 D12)"
+                "automation.context_gate: declares no check; name at least one source, invariant, min_context_eval_score or published (ADR 0002 D12)"
             )
 
     playbooks = data.get("playbooks")
