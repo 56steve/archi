@@ -229,7 +229,7 @@ unchanged. The full chain is verified end to end on a fresh database: install �
 publish 2,586 nodes → `chat-instance up` → `mcp-serve` on the port the bundle
 declares → `chat sync` exiting 0 with the graph tools bound and the prompt applied.
 
-**Three chat findings for OKG's chat work, drafted in `docs/outbound/`** and verified against
+**Three chat findings for OKG's chat work, drafted (outside this repository) and verified against
 `dev` @ `1475c87d5`. Worst first: a synced instance opens on a model with **no graph
 access**, because `chat.models.default` is both the preset's `base_model_id`
 (`sync.py:4937`) and the site default (`sync.py:4432`) while the vendor selects
