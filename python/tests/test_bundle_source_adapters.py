@@ -548,7 +548,7 @@ def test_twiki_in_the_bundle_is_the_eos_dump_reader_and_nothing_else():
 
     questions = yaml.safe_load((PACKS / "twiki" / "questions.yaml").read_text(encoding="utf-8"))
     ids = {q["id"] for q in questions["init_questions"]}
-    assert ids == {"eos_root"}
+    assert ids == {"eos_root", "physics_filter"}
 
 
 @pytest.mark.parametrize(
@@ -593,6 +593,11 @@ def test_the_twiki_eos_reader_refuses_a_missing_dump_instead_of_shrinking(tmp_pa
         tmp_path,
         extra={"${eos_root}": str(tmp_path / "no-such-dump")},
     )
+    # The install answer is YAML true/false once substituted; the reader
+    # refuses the raw placeholder (or any typo) instead of reading it as true.
+    with pytest.raises(ValueError, match="true or false"):
+        _adapter_class(entry)(**params)
+    params["physics_filter"] = False
     run = _adapter_class(entry)(**params).run("run-1", mode="scope_complete")
     assert list(run.facts) == []
     assert run.completed_scope is False

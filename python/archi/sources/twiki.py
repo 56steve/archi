@@ -462,7 +462,11 @@ class TwikiEOSSource:
         self.skip_patterns = tuple(skip_patterns)
         # Physics scoping is opt-in: a deployment that says nothing gets
         # the whole snapshot, exactly as before this option existed.
-        self.physics_filter = bool(physics_filter)
+        if not isinstance(physics_filter, bool):
+            raise ValueError(
+                f"physics_filter must be true or false, got {physics_filter!r}"
+            )
+        self.physics_filter = physics_filter
         # Where to write the page ids this run emitted, for a source
         # that links INTO them later in the same ingest. Opt-in for the
         # same reason as physics_filter: unset changes nothing.

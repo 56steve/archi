@@ -112,6 +112,7 @@ prepare:
 | `packs.optional` | | Packs offered for `--with`. |
 | `extends` | | Bundles whose default packs this one inherits. |
 | `chat` | | `site_name`, `default_model`, `description`, `suggestions`. |
+| `answers` | | Install-question defaults, `{<rendered question id>: value}` (for example `analysis_notes_min_notes: 2500`). A later bundle overrides an earlier one; an id no selected pack asks is refused. |
 | `automations` | | `{<automation pack>: {max_level}}`: an upper bound on that automation's level. See [Levels](#levels). |
 | `eval` | | Eval set (JSONL). |
 | `okg` | yes | Supported AKMON range, PEP 440 (`">=0.2.0,<0.3"`). |

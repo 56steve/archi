@@ -252,6 +252,10 @@ class Bundle:
         return tuple(self.manifest["packs"].get("optional", ()))
 
     @property
+    def answers(self) -> dict[str, Any]:
+        return dict(self.manifest.get("answers", {}))
+
+    @property
     def chat(self) -> dict[str, Any]:
         return dict(self.manifest.get("chat", {}))
 
