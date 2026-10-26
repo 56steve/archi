@@ -43,6 +43,9 @@ def add_parser(sub, roots) -> None:
                    help=f"OpenAI-compatible base URL (default: {DEFAULT_MODEL_URL}, a local Ollama)")
     p.add_argument("--out", type=Path, help="report directory (default: <data root>/eval/<bundle>, outside the instance repository)")
     p.add_argument("--mcp-url", help="MCP endpoint (default: the instance's, http://127.0.0.1:<port>/mcp)")
+    p.add_argument("--chat-prompt", type=Path,
+                   help="the chat system prompt to give the agent (default: the instance deployment's "
+                        "skills/chat-system-prompt.md, the one `archi up` gives the chat)")
     p.add_argument("--max-steps", type=int, default=8, help="tool-call rounds allowed per question")
     p.add_argument("--no-think", action="store_true",
                    help="ask a reasoning model to skip its thinking pass (reasoning_effort: none)")
@@ -67,6 +70,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     bundles = list(args.bundle)
     mcp_url = args.mcp_url
     report_root = Path("eval-reports")
+    chat_prompt_file = args.chat_prompt
     try:
         instance = Instance.load(args.instance)
     except InstanceError as exc:
@@ -77,6 +81,9 @@ def cmd_eval(args: argparse.Namespace) -> int:
         # The data root lies outside the instance repository: `archi up` commits
         # everything inside it, and a report is not configuration.
         report_root = instance.data_root / "eval"
+        if chat_prompt_file is None:
+            found = instance.deployment_dir / "skills" / "chat-system-prompt.md"
+            chat_prompt_file = found if found.is_file() else None
         bundles = bundles or list(instance.bundles)
         mcp_url = mcp_url or f"http://127.0.0.1:{instance.ports.mcp}/mcp"
         try:
@@ -122,17 +129,28 @@ def cmd_eval(args: argparse.Namespace) -> int:
         out = args.out or report_root / bundle.name
         if args.out and len(plan) > 1:
             out = args.out / bundle.name
-        code = _run_one(smoke, model_name, args, mcp_url, token, out)
+        code = _run_one(smoke, model_name, args, mcp_url, token, out, chat_prompt_file)
         worst = max(worst, code)
     return worst
 
 
-def _run_one(smoke, model_name: str, args: argparse.Namespace, mcp_url: str, token: str, out: Path) -> int:
+def _run_one(smoke, model_name: str, args: argparse.Namespace, mcp_url: str, token: str, out: Path,
+             chat_prompt_file=None) -> int:
     import asyncio
 
     from archi.evaluation.agent import McpToolBox, OpenAIChat
     from archi.evaluation.runner import run_smoke, write_report
 
+    chat_prompt = None
+    if chat_prompt_file is not None:
+        try:
+            chat_prompt = Path(chat_prompt_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    else:
+        print("note: no chat system prompt found for this instance; the agent gets only the MCP "
+              "server's instructions", file=sys.stderr)
     model = OpenAIChat(args.model_url, model_name, no_think=args.no_think)
 
     def progress(result, i: int, total: int) -> None:
@@ -146,6 +164,8 @@ def _run_one(smoke, model_name: str, args: argparse.Namespace, mcp_url: str, tok
             lambda: McpToolBox(mcp_url, token),
             model_url=args.model_url,
             mcp_url=mcp_url,
+            chat_prompt=chat_prompt,
+            chat_prompt_file=str(chat_prompt_file or ""),
             max_steps=args.max_steps,
             progress=progress,
         )

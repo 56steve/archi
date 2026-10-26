@@ -16,7 +16,9 @@ from archi.evaluation.agent import (
     ToolError,
     ToolSpec,
     ask,
+    build_system_prompt,
     prompt_hash,
+    sha,
 )
 from archi.evaluation.smoke import NodeInfo, SmokeSet, check_answer, merge_nodes, nodes_in
 
@@ -54,6 +56,11 @@ class Report:
     smoke_file: str
     tools: list[str] = field(default_factory=list)
     prompt_hash: str = ""
+    #: what the model was given besides the question, each as a hash (None: not given)
+    mcp_instructions_hash: Optional[str] = None
+    chat_prompt_hash: Optional[str] = None
+    chat_prompt_file: Optional[str] = None
+    system_prompt_hash: Optional[str] = None
     questions: list[QuestionResult] = field(default_factory=list)
     started_at: str = ""
     seconds: float = 0.0
@@ -88,6 +95,10 @@ class Report:
             "mcp_url": self.mcp_url,
             "tools": self.tools,
             "prompt_hash": self.prompt_hash,
+            "mcp_instructions_hash": self.mcp_instructions_hash,
+            "chat_prompt_hash": self.chat_prompt_hash,
+            "chat_prompt_file": self.chat_prompt_file,
+            "system_prompt_hash": self.system_prompt_hash,
             "smoke_file": self.smoke_file,
             "started_at": self.started_at,
             "seconds": round(self.seconds, 1),
@@ -123,6 +134,8 @@ async def run_smoke(
     *,
     model_url: str = "",
     mcp_url: str = "",
+    chat_prompt: Optional[str] = None,
+    chat_prompt_file: str = "",
     max_steps: int = DEFAULT_MAX_STEPS,
     max_tool_chars: int = DEFAULT_MAX_TOOL_CHARS,
     progress: Optional[Callable[[QuestionResult, int, int], None]] = None,
@@ -141,7 +154,13 @@ async def run_smoke(
         async with open_tools() as tools:
             specs: list[ToolSpec] = await tools.list_tools()
             report.tools = sorted(s.name for s in specs)
-            report.prompt_hash = prompt_hash(specs)
+            instructions = getattr(tools, "instructions", None)
+            system = build_system_prompt(instructions, chat_prompt)
+            report.prompt_hash = prompt_hash(specs, system)
+            report.mcp_instructions_hash = sha(instructions)
+            report.chat_prompt_hash = sha(chat_prompt)
+            report.chat_prompt_file = chat_prompt_file or None
+            report.system_prompt_hash = sha(system)
             if not specs:
                 report.error = "the MCP endpoint offers no tools, so the agent has nothing to read with"
                 report.questions = [
@@ -150,7 +169,7 @@ async def run_smoke(
                 ]
             else:
                 for i, question in enumerate(smoke.questions, 1):
-                    result = await _one(question, model, tools, specs, max_steps, max_tool_chars)
+                    result = await _one(question, model, tools, specs, system, max_steps, max_tool_chars)
                     report.questions.append(result)
                     if progress:
                         progress(result, i, len(smoke.questions))
@@ -163,8 +182,9 @@ async def run_smoke(
     return report
 
 
-async def _one(question, model, tools: ToolBox, specs, max_steps, max_tool_chars) -> QuestionResult:
-    trace = await ask(model, tools, specs, question.question, max_steps=max_steps, max_tool_chars=max_tool_chars)
+async def _one(question, model, tools: ToolBox, specs, system, max_steps, max_tool_chars) -> QuestionResult:
+    trace = await ask(model, tools, specs, question.question, system=system, max_steps=max_steps,
+                      max_tool_chars=max_tool_chars)
     result = QuestionResult(
         id=question.id,
         question=question.question,
@@ -210,7 +230,9 @@ def render_markdown(report: Report) -> str:
         "",
         f"- model: `{report.model}` at {report.model_url}",
         f"- MCP: {report.mcp_url}; tools: {', '.join(report.tools) or 'none'}",
-        f"- prompt hash: `{report.prompt_hash or 'none'}`",
+        f"- prompt hash: `{report.prompt_hash or 'none'}`; system message `{report.system_prompt_hash}`",
+        f"- MCP server instructions: `{report.mcp_instructions_hash}`; chat prompt: "
+        f"`{report.chat_prompt_hash}` ({report.chat_prompt_file or 'none'})",
         f"- started {report.started_at}; wall time {data['seconds']} s; "
         f"tokens {data['prompt_tokens']} in / {data['completion_tokens']} out",
         f"- smoke file: {report.smoke_file}",

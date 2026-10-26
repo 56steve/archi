@@ -234,3 +234,25 @@ def test_the_eval_harness_is_not_imported_by_other_commands():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert out.strip() == "False False"
+
+
+def test_the_system_message_carries_the_server_instructions_and_the_chat_prompt():
+    tools = FakeTools()
+    tools.instructions = "Use search first; filter by type only with a type the graph card lists."
+    model = FakeModel(searches(), answers("documentation_page:22"))
+    report = run(smoke_of("a"), model, tools, chat_prompt="You are the team chat.", chat_prompt_file="p.md")
+    system = model.seen[0][0][0]["content"]
+    assert system.startswith(agent_mod.ANSWER_FORMAT)
+    assert "Use search first" in system and "You are the team chat." in system
+    assert report.mcp_instructions_hash == agent_mod.sha(tools.instructions)
+    assert report.chat_prompt_hash == agent_mod.sha("You are the team chat.")
+    assert report.system_prompt_hash == agent_mod.sha(system)
+    data = report.to_dict()
+    assert data["chat_prompt_file"] == "p.md" and data["mcp_instructions_hash"].startswith("sha256:")
+
+
+def test_a_server_without_instructions_and_no_chat_prompt_is_recorded_as_none():
+    model = FakeModel(searches(), answers("documentation_page:22"))
+    report = run(smoke_of("a"), model, FakeTools())
+    assert model.seen[0][0][0]["content"] == agent_mod.ANSWER_FORMAT
+    assert report.mcp_instructions_hash is None and report.chat_prompt_hash is None

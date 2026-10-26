@@ -184,7 +184,9 @@ def build(dsn: str, work: Path, port: int) -> dict:
         "--allowed-host '127.0.0.1:*' --allowed-host 'localhost:*'\n"
     )
     serve.chmod(0o755)
-    return {"instance": str(instance), "serve": str(serve), "mcp_url": f"http://127.0.0.1:{port}/mcp",
+    return {"instance": str(instance),
+            "chat_prompt": str(deployments / DEPLOYMENT / "skills" / "chat-system-prompt.md"),
+            "serve": str(serve), "mcp_url": f"http://127.0.0.1:{port}/mcp",
             "packs": list(resolution.pack_names)}
 
 

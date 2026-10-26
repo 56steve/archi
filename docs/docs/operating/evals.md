@@ -37,6 +37,7 @@ graph.
 | `--model-url URL` | An OpenAI-compatible base URL. Must be on this host or a private network. |
 | `--out DIR` | Where to write the report. Default: `eval/<bundle>/` under the instance's data root, outside the instance repository. |
 | `--mcp-url URL` | An MCP endpoint other than the instance's own. The bearer token then comes from `OKG_CHAT_MCP_TOKEN`. |
+| `--chat-prompt FILE` | The chat system prompt to give the agent. Default: the instance's `deployments/<name>/skills/chat-system-prompt.md`, the one `archi up` gives the chat. |
 | `--max-steps N` | Tool-call rounds allowed per question (default 8). |
 | `--no-think` | Ask a reasoning model to skip its thinking pass. |
 | `--allow-remote-model` | Allow a model endpoint off this network. This can cost money; it is off by default. |
@@ -49,6 +50,13 @@ The command prints one line per question, writes `report.md` and
 | 0 | The set passed at least the bundle's threshold. |
 | 1 | It passed fewer than the threshold. |
 | 2 | The run could not execute: the MCP endpoint offered no tools or was unreachable, the model failed on every question, or a file was unusable. |
+
+## What the agent is given
+
+The system message holds three things: a short answer-format note, the
+instructions the MCP server serves in its `initialize` reply (how to search,
+filter and read), and the bundle's chat system prompt. That is what an
+operator's chat agent sees. The report records a hash of each.
 
 ## What a question checks
 

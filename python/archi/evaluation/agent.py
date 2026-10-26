@@ -17,16 +17,11 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Protocol
 from urllib.parse import urlparse
 
-SYSTEM_PROMPT = """\
-You answer questions about a knowledge graph by calling its tools. Search the \
-graph, read what you need, and answer only from what the tools return. If the \
-tools return nothing relevant, say so.
-
-Start with search(query=<the key words of the question>) and no other arguments. \
-A search row shows an excerpt only. To read a record in full, call \
-inspect(target={"kind": "node", "node_id": <an id from the search results>}); use \
-an id exactly as a tool returned it, never one you made up.
-
+#: The harness's own part of the system message: only the answer format. How to search and
+#: read comes from the MCP server's instructions and the bundle's chat prompt, the same
+#: guidance an operator's chat agent gets.
+ANSWER_FORMAT = """\
+Answer only from what the tools return; if they return nothing relevant, say so.
 End your answer with a line "Sources:" listing the node ids you used. Copy each \
 id in full, with the part before the colon, exactly as the tool results show it \
 (for example documentation_page:22 or meeting_minutes:1716863). Do not invent ids."""
@@ -73,6 +68,9 @@ class ChatModel(Protocol):
 
 
 class ToolBox(Protocol):
+    #: the `instructions` of the server's initialize result, or None
+    instructions: Optional[str]
+
     async def list_tools(self) -> list[ToolSpec]: ...
 
     async def call(self, name: str, arguments: Mapping[str, Any]) -> tuple[str, bool]:
@@ -80,10 +78,25 @@ class ToolBox(Protocol):
         ...
 
 
-def prompt_hash(tools: list[ToolSpec]) -> str:
-    """One digest over the system prompt and the tool schemas the model saw."""
+def sha(text: Optional[str]) -> Optional[str]:
+    return None if text is None else "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def build_system_prompt(instructions: Optional[str], chat_prompt: Optional[str]) -> str:
+    """The system message: the answer format, then what the MCP server serves about itself
+    (`instructions` in its initialize result), then the bundle's chat system prompt."""
+    parts = [ANSWER_FORMAT]
+    if instructions:
+        parts.append("# Instructions served by the MCP server\n\n" + instructions.strip())
+    if chat_prompt:
+        parts.append("# The chat agent's system prompt\n\n" + chat_prompt.strip())
+    return "\n\n".join(parts)
+
+
+def prompt_hash(tools: list[ToolSpec], system: str = ANSWER_FORMAT) -> str:
+    """One digest over the system message and the tool schemas the model saw."""
     body = json.dumps(
-        {"system": SYSTEM_PROMPT, "tools": [[t.name, t.description, t.input_schema] for t in tools]},
+        {"system": system, "tools": [[t.name, t.description, t.input_schema] for t in tools]},
         sort_keys=True,
     )
     return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -190,6 +203,7 @@ class McpToolBox:
         self.token = token
         self._stack = None
         self._session = None
+        self.instructions: Optional[str] = None
 
     async def __aenter__(self) -> "McpToolBox":
         from contextlib import AsyncExitStack
@@ -203,11 +217,12 @@ class McpToolBox:
                 streamablehttp_client(self.url, headers={"Authorization": f"Bearer {self.token}"})
             )
             session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            initialized = await session.initialize()
         except BaseException as exc:
             await stack.aclose()
             raise ToolError(f"{self.url}: {_describe(exc)}") from exc
         self._stack, self._session = stack, session
+        self.instructions = getattr(initialized, "instructions", None)
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -256,14 +271,14 @@ class Trace:
 
 
 async def ask(model: ChatModel, tools: ToolBox, specs: list[ToolSpec], question: str, *,
-              max_steps: int = DEFAULT_MAX_STEPS, max_tool_chars: int = DEFAULT_MAX_TOOL_CHARS) -> Trace:
+              system: str = ANSWER_FORMAT, max_steps: int = DEFAULT_MAX_STEPS, max_tool_chars: int = DEFAULT_MAX_TOOL_CHARS) -> Trace:
     """Run the loop for one question. A model failure ends it with `error` set."""
     trace = Trace()
     started = time.monotonic()
     schema = openai_tools(specs)
     known = {s.name for s in specs}
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": question},
     ]
     try:
