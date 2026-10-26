@@ -22,6 +22,11 @@ You answer questions about a knowledge graph by calling its tools. Search the \
 graph, read what you need, and answer only from what the tools return. If the \
 tools return nothing relevant, say so.
 
+Start with search(query=<the key words of the question>) and no other arguments. \
+A search row shows an excerpt only. To read a record in full, call \
+inspect(target={"kind": "node", "node_id": <an id from the search results>}); use \
+an id exactly as a tool returned it, never one you made up.
+
 End your answer with a line "Sources:" listing the node ids you used. Copy each \
 id in full, with the part before the colon, exactly as the tool results show it \
 (for example documentation_page:22 or meeting_minutes:1716863). Do not invent ids."""
