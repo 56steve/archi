@@ -42,5 +42,4 @@ The pack declares no invariant.
 
 ## Playbooks
 
-- `incident_root_cause.md`
 - `ops_precedents.md`

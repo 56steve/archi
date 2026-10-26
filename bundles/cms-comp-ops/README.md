@@ -6,10 +6,10 @@ and the generic playbooks, and adds the CMS computing catalogs on top.
 
 | Pack | Default | What it brings |
 |---|---|---|
-| `cms-catalogs` | yes | Sites, storage and compute endpoints, SITECONF, DBS datasets, WMStats workflows, GOCDB downtimes, CondDB global tags. Carries the `rucio_command`, `rucio_dataset_hosting` and `site_profile` playbooks. |
+| `cms-catalogs` | yes | Sites, storage and compute endpoints, SITECONF, DBS datasets, WMStats workflows, GOCDB downtimes, CondDB global tags. Carries the `rucio_command`, `rucio_dataset_hosting`, `site_profile` and `incident_root_cause` playbooks. |
 | `cmssst` | yes | Site status from the CMS Site Support Team |
 | `cmssw-releases` | yes | CMSSW releases |
-| `ops-record` | yes | The operational memory: incidents, proposals, decisions, actions and outcomes. Carries the `incident_root_cause` playbook. |
+| `ops-record` | yes | The operational memory: incidents, proposals, decisions, actions and outcomes. |
 | `monit-live` | optional | MONIT snapshots (SAM, HTCondor, Rucio) and the live MONIT query tools. Carries the `monitoring_condor_snapshot` playbook. |
 | `dqm` | optional | DQM data-quality certifications and the runs they cover |
 | `hypernews` | optional | HyperNews forum threads |
@@ -53,9 +53,8 @@ myops --bundle cms-comp-ops --without cms-catalogs` to start without it.
 
 | Playbook | Pack |
 |---|---|
-| `rucio_command`, `rucio_dataset_hosting`, `site_profile` | `cms-catalogs` |
+| `rucio_command`, `rucio_dataset_hosting`, `site_profile`, `incident_root_cause` | `cms-catalogs` |
 | `monitoring_condor_snapshot` | `monit-live` |
-| `incident_root_cause` | `ops-record` |
 
 Each pack links the playbook from `skills/` and carries its trigger, copied
 from `skills/skill-triggers.yaml`.

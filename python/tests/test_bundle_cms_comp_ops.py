@@ -99,3 +99,10 @@ def test_the_chat_site_is_comp_ops(bare):
     assert "computing operations" in preset["description"]
     # cern-team's suggestions come first, then the bundle's own.
     assert [s for s in preset["suggestions"] if "storage endpoints" in s or "downtimes" in s]
+
+
+def test_the_incident_playbook_is_not_in_ops_record():
+    """ops-record is generic (cluster-manager defaults to it too), so the CMS
+    incident trigger lives with the CMS catalogs it reads."""
+    assert not (ROOT / "bundles" / "packs" / "ops-record" / "skills" / "incident_root_cause.md").exists()
+    assert (ROOT / "bundles" / "packs" / "cms-catalogs" / "playbooks" / "incident_root_cause.md").is_symlink()

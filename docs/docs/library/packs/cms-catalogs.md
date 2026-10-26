@@ -76,6 +76,7 @@ The pack owns these checks. They leave with it.
 
 ## Playbooks
 
+- `incident_root_cause.md`
 - `rucio_command.md`
 - `rucio_dataset_hosting.md`
 - `site_profile.md`
