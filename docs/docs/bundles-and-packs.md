@@ -27,10 +27,11 @@ selects. It never sets the level itself.
 |---|---|
 | `cern-team` | A generic CERN team knowledge instance: documentation, meetings, wiki, documents, tickets and code. No automations. |
 | `cms-physics` | A CMS physics knowledge instance. Extends `cern-team`. |
+| `cluster-manager` | A knowledge instance for people who run a batch cluster: documentation, Redmine tickets and operational memory, with optional ServiceNow, Slurm, HTCondor, node health and code. It depends on no CERN pack. Its Slurm pack ships live tools whose actions (drain or resume a node, requeue a job) run only after an approved escalation. See the [bundle README](https://github.com/archi-physics/archi/blob/archi_v3/bundles/cluster-manager/README.md). |
 
-`cms-comp-ops` and `cluster-manager` are planned for 3.0 and are not in
-this branch. The [library](library/index.md) has one generated page per
-bundle and per pack, so it matches what ships.
+`cms-comp-ops` is planned for 3.0 and is not in this branch. The
+[library](library/index.md) has one generated page per bundle and per pack,
+so it matches what ships.
 
 ## Choosing packs
 

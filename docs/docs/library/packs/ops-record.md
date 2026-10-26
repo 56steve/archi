@@ -14,7 +14,7 @@ Operational memory, the incidents, proposals, decisions, actions and outcomes au
 
 ## In which bundles
 
-- Default in: none
+- Default in: [`cluster-manager`](../bundles/cluster-manager.md)
 - Optional in: none
 
 Add it to an instance with `archi add ops-record`.
