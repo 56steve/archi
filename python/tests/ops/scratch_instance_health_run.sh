@@ -46,7 +46,7 @@ except ValueError:
 ok = $2
 print(('PASS' if ok else 'FAIL') + ': $1')
 sys.exit(0 if ok else 1)
-" || FAILS=$((FAILS + 1))
+" || { FAILS=$((FAILS + 1)); echo "$1" >> "$RUN/fails"; }   # a check in a pipeline runs in a subshell: the file counts it
 }
 start_worker() {
   ( cd "$INST" && exec nohup "$V/okg" runtime worker --deployment $D >> "$RUN/worker.log" 2>&1 ) &
@@ -197,8 +197,17 @@ print('$kind', len(rows), sorted({(r['attrs'].get('verdict') or r['attrs'].get('
 done
 
 echo "== 10. the worker log has no traceback from the automation"
-grep -c "Traceback" "$RUN/worker.log" | sed 's/^/{"tracebacks": /; s/$/}/' | check "no traceback in the worker log" "d['tracebacks'] == 0"
+# okg's own publisher cycle may refuse to run while the instance repo has uncommitted PACT files (the promotion
+# window in step 6); that is okg waiting for the operator's commit, not this automation. Count only tracebacks that
+# pass through archi's code.
+"$V/python" -c "
+import re
+text = open('$RUN/worker.log', errors='replace').read()
+blocks = re.split(r'(?=Traceback \(most recent call last\))', text)[1:]
+mine = [b for b in blocks if '/python/archi/' in b.split('\n\n')[0]]
+print('{\"all\": %d, \"through_archi\": %d}' % (len(blocks), len(mine)))" | tee "$RUN/tracebacks.json" | check "no traceback through archi code in the worker log" "d['through_archi'] == 0"
 git -C "$INST" log --oneline | head -12
 
+FAILS=$( [ -f "$RUN/fails" ] && wc -l < "$RUN/fails" | tr -d ' ' || echo 0 )
 echo "== result: $FAILS failed check(s)"
 [ "$FAILS" = 0 ]
