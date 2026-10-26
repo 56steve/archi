@@ -252,6 +252,16 @@ def test_a_source_with_no_scope_is_refused():
         IndicoLiveSource()
 
 
+def test_default_events_apply_only_when_nothing_else_is_named():
+    assert IndicoLiveSource(default_event_ids=["7"]).event_ids == ("7",)
+    # Any named scope replaces the default: a category-only source does not
+    # also read the default event.
+    assert IndicoLiveSource(category_ids=["100"], default_event_ids=["7"]).event_ids == ()
+    assert IndicoLiveSource(event_ids=["9"], default_event_ids=["7"]).event_ids == ("9",)
+    both = IndicoLiveSource(event_ids=["9"], category_ids=["100"], default_event_ids=["7"])
+    assert both.event_ids == ("9",) and both.category_ids == ("100",)
+
+
 def test_max_events_rejects_zero():
     with pytest.raises(ValueError, match="max_events must be >= 1"):
         IndicoLiveSource(event_ids=["1"], max_events=0)

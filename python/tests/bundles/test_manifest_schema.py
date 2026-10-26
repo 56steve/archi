@@ -159,6 +159,43 @@ INVALID_PACKS = {
         ),
         "references ${nowhere}",
     ),
+    "prepare module is not a dotted name": (
+        lambda root: edit_yaml(
+            _pack(root) / "pack.yaml",
+            lambda d: d.update(prepare=[{"name": "fetch", "module": "rm -rf /"}]),
+        ),
+        "does not match",
+    ),
+    "prepare step with an unknown key": (
+        lambda root: edit_yaml(
+            _pack(root) / "pack.yaml",
+            lambda d: d.update(prepare=[{"name": "fetch", "module": "a.b", "shell": "ls"}]),
+        ),
+        "Additional properties are not allowed",
+    ),
+    "prepare timeout out of range": (
+        lambda root: edit_yaml(
+            _pack(root) / "pack.yaml",
+            lambda d: d.update(prepare=[{"name": "fetch", "module": "a.b", "timeout": 0}]),
+        ),
+        "less than the minimum",
+    ),
+    "prepare references an unknown question": (
+        lambda root: edit_yaml(
+            _pack(root) / "pack.yaml",
+            lambda d: d.update(prepare=[{"name": "fetch", "module": "a.b", "args": ["${nowhere}"]}]),
+        ),
+        "prepare[0].args[0]: references ${nowhere}",
+    ),
+    "prepare repeats a step name": (
+        lambda root: edit_yaml(
+            _pack(root) / "pack.yaml",
+            lambda d: d.update(prepare=[
+                {"name": "fetch", "module": "a.b"}, {"name": "fetch", "module": "a.c"},
+            ]),
+        ),
+        "duplicate step 'fetch'",
+    ),
     "template key differs from file name": (
         lambda root: (_pack(root) / "sources" / "pages.yaml").rename(
             _pack(root) / "sources" / "other.yaml"

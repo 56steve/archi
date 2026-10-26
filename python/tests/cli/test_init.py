@@ -194,6 +194,11 @@ class FakeOkg:
         return subprocess.CompletedProcess(cmd, 0, "{}", "")
 
 
+def _no_download(cmd, **kw):
+    """The prepare runner unit tests inject: nothing is fetched."""
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
 def test_init_installs_commits_then_publishes(tmp_path, shipped, monkeypatch):
     monkeypatch.setattr(stack_compose, "detect_runtime", lambda preferred, runner: "docker")
     monkeypatch.setattr(init_mod, "okg_version", lambda: "0.2.0")
@@ -211,7 +216,7 @@ def test_init_installs_commits_then_publishes(tmp_path, shipped, monkeypatch):
         data_root=tmp_path / "data",
         answers={"chat_model": "qwen3:4b", "twiki_eos_root": str(tmp_path / "dump")},
         okg_runner=okg, compose_runner=fake_compose, wait_db=lambda dsn: None,
-        echo=lambda _: None,
+        prepare_runner=_no_download, echo=lambda _: None,
     )
     verbs = [args[0] if args[0] != "db" else "db " + args[1] for args, _ in okg.calls]
     assert verbs == ["install", "provision", "db role-passwords"]
@@ -257,5 +262,5 @@ def test_provision_capacity_warning_is_not_a_failure(tmp_path, shipped, monkeypa
     init("myteam", bundles=["cern-team"], catalog=shipped, directory=tmp_path / "myteam",
          data_root=tmp_path / "data", okg_runner=okg8,
          compose_runner=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""),
-         wait_db=lambda dsn: None, echo=notes.append)
+         wait_db=lambda dsn: None, prepare_runner=_no_download, echo=notes.append)
     assert any("capacity_warning" in n for n in notes)

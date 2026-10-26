@@ -15,9 +15,14 @@ init_questions:
     default: "[]"
     description: |
       Events read directly, by the numeric id in their URL
-      (indico.cern.ch/event/<id>/). Give event ids, category ids or both:
-      with neither, the source is refused when it is built and the publish
-      stops, rather than ingesting nothing quietly.
+      (indico.cern.ch/event/<id>/). Give event ids, category ids or both.
+      With neither, the source reads one public event, 1716863 ("Knowledge
+      Bases and Agents for CERN"), so a bare install has a scope. That is
+      the source's `default_event_ids` parameter: any event or category id
+      you give replaces it, so answering only categories does not also read
+      this event. It is one named event, not a bounded walk, so its scope is
+      complete: if it cannot be read the run claims no complete scope and
+      nothing is retracted.
 
   - id: category_ids
     prompt: Indico category ids to read, as a YAML list (for example '["100"]')
