@@ -10,6 +10,7 @@
     archi init NAME [--bundle B]        a published instance (archi.cli.init)
     archi up / archi down               the instance's compose project (archi.cli.up)
     archi doctor [--json]               okg lint + doctor + footgun checks (archi.cli.doctor)
+    archi eval [--bundle B]             a bundle's smoke questions over the instance MCP (archi.cli.evaluate)
 """
 from __future__ import annotations
 

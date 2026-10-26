@@ -63,9 +63,11 @@ A context eval is a set of operator questions, each with the evidence that
 should answer it. It scores retrieval (was the right evidence found)
 separately from answer quality, and compares against a baseline that reads
 raw documents. The command will be `archi eval --context`, and each bundle
-will ship its own set. This is not in the current branch. Until it lands, a
-gate that asks for a `min_context_eval_score` fails, which is the safe result.
-See [Operating](operating/evals.md).
+will ship its own set. This is not in the current branch. `archi eval` today
+runs only the bundles' smoke sets, which check that an instance answers; they
+produce no context score. Until the context eval lands, a gate that asks for a
+`min_context_eval_score` fails, which is the safe result. See
+[Operating](operating/evals.md).
 
 ## ops-record: the operational memory
 

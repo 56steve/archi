@@ -47,6 +47,12 @@ named after the site: the graph tools are bound to it, not to the raw model.
 archi absorbs, and prints a fix line for each failure. `--json` prints one object for agents. Exit code 0 means no
 check failed.
 
+**`archi eval [--bundle B] [--model M] [--model-url URL] [--out DIR]`** asks the
+bundle's smoke questions of the instance through its MCP endpoint, with a local
+model that can call tools, and writes `report.md` and `report.json`. It exits 1
+below the bundle's pass threshold. Start ollama with `OLLAMA_CONTEXT_LENGTH=16384`
+or more first (see [A local model](#a-local-model)). See [archi eval](evals.md).
+
 **`archi down`** stops the project and keeps every volume. `archi down
 --purge --yes` also deletes the graph, chat and webui volumes; that is the
 reset (okg keeps its ownership claim in the database, so deleting the
