@@ -182,13 +182,13 @@ def test_an_upstream_pack_change_shows_in_diff(cern_root, installed, tmp_path):
     changed = tmp_path / "changed"
     shutil.copytree(cern_root, changed)
     manifest = changed / "packs" / "docsite" / "pack.yaml"
-    manifest.write_text(manifest.read_text().replace("version: 0.1.0", "version: 0.2.0"))
+    manifest.write_text(manifest.read_text().replace("version: 0.2.0", "version: 9.9.9"))
     playbook = next((changed / "packs" / "core-playbooks" / "playbooks").glob("*.md"))
     playbook.write_text(playbook.read_text() + "\nmore\n")
     catalog = discovery.from_roots([changed / "packs", THIRD_PARTY_PACKS], [changed])
     drift = diff(instance, catalog)
     assert drift.upstream == [
-        "pack docsite: version 0.1.0 locked, 0.2.0 installed",
+        "pack docsite: version 0.2.0 locked, 9.9.9 installed",
         "pack core-playbooks: content changed at version 0.1.0",
     ]
 

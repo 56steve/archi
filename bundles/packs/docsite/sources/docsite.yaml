@@ -1,8 +1,10 @@
 # Documentation-site connector (cache-backed). Reads a records cache that
 # `python -m archi.downloaders.static_docs` writes under
-# ${archi_data_root}/docsite/ (targets in the packaged
-# source-download-manifest.yaml). A configured cache that is missing fails
-# the run loudly; it never publishes an empty, "complete" scope.
+# ${archi_data_root}/docsite/. `archi init` and `archi add` write it first
+# (the pack's `prepare` step, from the `urls` answer); refresh it by running
+# the module again (more targets: the packaged source-download-manifest.yaml).
+# A configured cache that is missing fails the run loudly; it never
+# publishes an empty, "complete" scope.
 #
 # The reader can also link page text to other packs' records (JIRA issues,
 # CMSSW releases, sites; docs/connector-caches.md "Reference caches"). Those
