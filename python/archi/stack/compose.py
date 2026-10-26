@@ -37,7 +37,7 @@ GRAPH_DB_SHM = "2g"
 #: shows PGDATA=/home/postgres/pgdata/data). The graph volume must cover its
 #: parent; mounted anywhere else it holds nothing and the graph dies with the
 #: container. Re-check when GRAPH_DB_IMAGE changes.
-GRAPH_DB_PGDATA = "/home/postgres/pgdata/data"
+GRAPH_DB_PGDATA = "/home/postgres/pgdata/data"  # container-internal path
 CHAT_DB_IMAGE = "docker.io/library/postgres:16"
 #: Upstream Open WebUI at the version okg's chat code is measured against
 #: (okg.substrate.chat.instance.PINNED_VERSION). okg v0.2.0 pins a patched

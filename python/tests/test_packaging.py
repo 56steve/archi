@@ -61,12 +61,16 @@ def test_v2_tree_removed():
 
 def test_no_operator_paths_in_package():
     """req.w2.auth lint floor, applied from day one: no hardcoded
-    operator/host paths in package code."""
+    operator/host paths in package code. A path inside a container image
+    (not on any operator's machine) is allowed on a line that says so with
+    `# container-internal path`."""
     pattern = re.compile(r"[\"'](?:/Users/|/root/|/home/|/work/)")
     for path in (REPO_ROOT / "python" / "archi").rglob("*.py"):
         for lineno, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), 1
         ):
+            if line.rstrip().endswith("# container-internal path"):
+                continue
             assert not pattern.search(line), f"{path}:{lineno}: {line.strip()}"
 
 
