@@ -441,7 +441,8 @@ runs `okg runtime bootstrap`; if a later okg stops provision on the missing sche
 `archi init` bootstraps and ingests in-process (`okg ingest --inline`, `okg run
 --once --apply`). `archi up` repeats the bootstrap, which is idempotent. The stack
 has no runtime worker yet: start `okg runtime worker --deployment <name>` yourself,
-with `ARCHI_INSTANCE`, `OKG_DSN` and `ARCHI_OPS_DEPLOYMENT` set.
+with `ARCHI_INSTANCE`, `OKG_DSN`, `ARCHI_OPS_DEPLOYMENT` and `OKG_ROLE_SECRETS_FILE` (the instance's
+`.secrets/role-secrets.json`, for okg's read-only roles) set.
 
 okg publishes only from a committed instance repository. `archi.yaml` and
 `ops.yaml` are in it, so commit an edit to either before the next publish (`archi

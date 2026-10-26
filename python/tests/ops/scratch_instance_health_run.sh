@@ -26,6 +26,8 @@ D="$(basename "$DSN")"
 INST="$RUN/instance"
 export ARCHI_INSTANCE="$INST" OKG_DSN="$DSN" ARCHI_OPS_DEPLOYMENT="$D" OKG_DEPLOYMENTS_DIR="$INST/deployments"
 export PYTHONDONTWRITEBYTECODE=1
+# where `archi init` put the role passwords; okg (worker and CLI) reads them from here, as archi.stack.instance.host_env sets it
+export OKG_ROLE_SECRETS_FILE="$INST/.secrets/role-secrets.json"
 T="$V/python $REPO/python/tests/ops/scratch_instance_health_tools.py"
 PIDS="$RUN/pids"
 FAILS=0
