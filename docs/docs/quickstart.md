@@ -1,7 +1,8 @@
 # Quickstart
 
 From an empty machine to a cited answer from your team's knowledge graph,
-with the `cern-team` bundle. Five commands.
+with the `cern-team` bundle: five user commands, the same ones the nightly
+build runs (the `cd` is not counted, and the fifth is a check).
 
 **You need:** `docker` or `podman` (with `compose`), Python 3.12 or newer,
 and `git`. No account, key or root access.

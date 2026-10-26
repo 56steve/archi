@@ -1,7 +1,7 @@
 # cern-team quickstart
 
 > **Reference material.** The setup path is now `archi init` / `archi up` /
-> `archi doctor`: see the [quickstart](quickstart.md). Every trap below is in
+> `archi doctor`: see the [quickstart](docs/quickstart.md). Every trap below is in
 > the [footgun ledger](docs/operating/footguns.md), as absorbed by archi or
 > filed with AKMON. Read on for what happens underneath, or for a source the
 > golden path does not cover yet.

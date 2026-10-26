@@ -41,7 +41,7 @@ affected_code:
 - python/archi/enrichment/anonymizer.py
 - .gitignore
 - docs/cache-snapshot.md
-- docs/connector-caches.md
+- docs/docs/reference/connector-caches.md
 - docs/okg-alignment.md
 - python/tests/downloaders/test_downloader_jira.py
 - python/tests/downloaders/test_downloader_static_docs.py

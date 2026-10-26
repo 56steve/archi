@@ -36,7 +36,7 @@ affected_code:
 - bundles/cern-team/source-defaults/code_structure.yaml.example
 - bundles/cern-team/source-defaults/code_structure_gitlab.yaml.example
 - docs/cern-team-quickstart.md
-- docs/connector-caches.md
+- docs/docs/reference/connector-caches.md
 - python/tests/sources/test_cds.py
 - python/tests/downloaders/test_downloader_jira.py
 requirements:

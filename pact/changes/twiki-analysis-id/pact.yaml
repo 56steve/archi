@@ -19,7 +19,7 @@ affected_code:
 - python/tests/sources/test_twiki_analysis_id.py
 - python/archi/schemas/sources.yaml
 - bundles/cern-team/schemas/sources.yaml
-- docs/connector-caches.md
+- docs/docs/reference/connector-caches.md
 requirements:
 - id: req.twiki-analysis-id.pattern
   statement: 'The analysis id is read from the topic name only. The name must hold a
