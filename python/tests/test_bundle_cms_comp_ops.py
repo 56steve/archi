@@ -97,4 +97,5 @@ def test_the_chat_site_is_comp_ops(bare):
     defaults = yaml.safe_load((bare.profile_dir / "deployment-defaults.yaml").read_text())
     preset = defaults["chat"]["preset"]
     assert "computing operations" in preset["description"]
-    assert len(preset["suggestions"]) == 3
+    # cern-team's suggestions come first, then the bundle's own.
+    assert [s for s in preset["suggestions"] if "storage endpoints" in s or "downtimes" in s]
