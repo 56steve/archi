@@ -3,6 +3,7 @@
 The running stack is the executed test in the PACT (golden_path_run.sh).
 These cover what archi renders and decides without a container runtime.
 """
+import json
 import subprocess
 
 import pytest
@@ -53,6 +54,18 @@ def test_compose_graph_db_has_preload_cron_and_shm(instance):
     assert db["environment"]["POSTGRES_DB"] == "my_team"
 
 
+def test_graph_volume_holds_the_images_own_pgdata(instance):
+    """The AKMON image sets PGDATA=/home/postgres/pgdata/data; the volume must
+    cover it or the graph lives in the container layer and dies with it."""
+    # ghcr.io/mitdbg/akmon-postgres:v0.2.0 sets PGDATA=/home/postgres/pgdata/data
+    # (GRAPH_DB_PGDATA); the volume target is its parent.
+    assert stack_compose.GRAPH_DB_IMAGE.endswith(":v{okg_version}")
+    assert stack_compose.GRAPH_DB_PGDATA == "/home/postgres/pgdata/data"
+    db = render_compose(instance)["services"]["graph-db"]
+    assert db["volumes"] == ["graph-data:/home/postgres/pgdata"]
+    assert stack_compose.GRAPH_DB_PGDATA.startswith(db["volumes"][0].split(":")[1] + "/")
+
+
 def test_compose_services_reach_each_other_by_name(instance):
     services = render_compose(instance)["services"]
     mcp, webui_service = services["mcp"], services["webui"]
@@ -81,12 +94,15 @@ def test_mcp_dockerfile_pins_the_host_okg_and_installs_git(instance):
 
 def _runner(results):
     calls = []
+    kwargs = []
 
     def run(cmd, **kw):
         calls.append(cmd)
+        kwargs.append(kw)
         return subprocess.CompletedProcess(cmd, results.get(tuple(cmd[:2]), 0), "", "")
 
     run.calls = calls
+    run.kwargs = kwargs
     return run
 
 
@@ -115,6 +131,69 @@ def test_compose_commands_name_the_project_and_env_file(instance):
     assert cmd[cmd.index("-p") + 1] == "archi-my-team"
     assert cmd[cmd.index("--env-file") + 1] == str(instance.dir / ".env")
     assert cmd[-3:] == ["up", "-d", "graph-db"]
+
+
+@pytest.mark.parametrize("runtime", ["docker", "podman"])
+def test_compose_argv_is_the_same_for_both_runtimes_and_has_no_project_directory(instance, runtime):
+    """podman-compose 1.4 rejects --project-directory; both runtimes default the
+    project directory to the first -f file's, so only -f, --env-file and -p are
+    passed, and the process runs in the instance directory."""
+    instance.runtime = runtime
+    run = _runner({})
+    Compose(instance, runner=run).up("graph-db")
+    assert run.calls[-1] == [
+        runtime, "compose",
+        "-f", str(instance.dir / "compose.yaml"),
+        "--env-file", str(instance.dir / ".env"),
+        "-p", instance.project,
+        "up", "-d", "graph-db",
+    ]
+    assert "--project-directory" not in run.calls[-1]
+    assert run.kwargs[-1]["cwd"] == instance.dir
+
+
+def _ps_runner(compose_out=None, runtime_out=None):
+    """compose ps answers compose_out (None: unsupported, exit 2); `<runtime> ps` runtime_out."""
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[1] == "compose":
+            return subprocess.CompletedProcess(cmd, 2 if compose_out is None else 0, compose_out or "", "")
+        return subprocess.CompletedProcess(cmd, 0, runtime_out or "", "")
+
+    run.calls = calls
+    return run
+
+
+def test_services_reads_compose_ps_json(instance):
+    out = json.dumps([{"Service": "graph-db", "State": "running", "Health": "healthy"}])
+    assert Compose(instance, runner=_ps_runner(out)).services() == {
+        "graph-db": {"state": "running", "health": "healthy"}
+    }
+
+
+def test_services_falls_back_to_the_runtime_when_compose_ps_has_no_json(instance):
+    """podman-compose 1.4 rejects `ps --format json`; podman lists labels as a dict."""
+    out = json.dumps([
+        {"State": "running", "Status": "Up 3 minutes (healthy)",
+         "Labels": {"com.docker.compose.service": "graph-db"}},
+        {"State": "running", "Status": "Up 3 minutes", "Labels": {"com.docker.compose.service": "mcp"}},
+    ])
+    run = _ps_runner(None, out)
+    assert Compose(instance, runner=run).services() == {
+        "graph-db": {"state": "running", "health": "healthy"},
+        "mcp": {"state": "running", "health": ""},
+    }
+    assert run.calls[-1][-2:] == ["--filter", f"label=com.docker.compose.project={instance.project}"]
+
+
+def test_services_fallback_reads_docker_label_strings(instance):
+    row = {"State": "running", "Status": "Up 1 second (unhealthy)",
+           "Labels": "a=b,com.docker.compose.service=webui"}
+    assert Compose(instance, runner=_ps_runner(None, json.dumps(row))).services() == {
+        "webui": {"state": "running", "health": "unhealthy"}
+    }
 
 
 def test_down_keeps_volumes_and_purge_deletes_them(instance):

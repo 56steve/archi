@@ -64,7 +64,11 @@ check failed.
 **`archi down`** stops the project and keeps every volume. `archi down
 --purge --yes` also deletes the graph, chat and webui volumes; that is the
 reset (okg keeps its ownership claim in the database, so deleting the
-folder alone is not one).
+folder alone is not one). Your data persists across `archi down` and
+`archi up` (the published graph is the same generation), but not across
+`--purge`. An instance created before 2026-10-26 kept its graph only inside
+the container (the volume was mounted at the wrong path), so after upgrading
+archi, re-run `archi init` for it rather than `archi up`.
 
 ## Adding sources
 
