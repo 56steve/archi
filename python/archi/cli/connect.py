@@ -1,6 +1,6 @@
 """`archi connect open-webui|claude-code|codex|openclaw|mcp` (PACT r3-mcp-clients req.connect).
 
-    archi connect claude-code [--instance DIR] [--print | --write [PATH]] [--show-token] [--token-ref]
+    archi connect claude-code [--instance DIR] [--print | --write [PATH]] [--show-token] [--embed-token]
 
 Writes the config another agent needs to use the instance's MCP endpoint
 (`http://127.0.0.1:<ports.mcp>/mcp`, streamable HTTP, bearer token
@@ -18,9 +18,10 @@ Each client's real format (checked 2026-10; see docs/connecting-clients.md):
     mcp          generic {"mcpServers": ...} JSON for any client that reads that shape
     open-webui   nothing to write: `archi up` registers the server (okg chat sync); prints what it did
 
-The token is never printed unless `--show-token`. Printed configs carry
-`${OKG_CHAT_MCP_TOKEN}` (every client above expands it) and a written file
-carries the token (mode 0600) unless `--token-ref`. A client config that
+The token is never printed unless `--show-token`. Printed and written configs carry
+`${OKG_CHAT_MCP_TOKEN}` (Claude Code, OpenClaw and most MCP clients expand it from the
+environment; Codex names the variable). `--write --embed-token` writes the literal token
+(mode 0600) instead, and only to a file git ignores. A client config that
 already exists is never replaced: archi's entries are merged into it, and
 running the command again changes nothing.
 
@@ -33,6 +34,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -179,55 +181,166 @@ def merge_json(existing: Optional[str], client: str, entry_list: list[Entry], so
     return json.dumps(doc, indent=2, ensure_ascii=False) + "\n", status
 
 
-_HEADER = re.compile(r"^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$")
+#: What archi writes in a Codex `[mcp_servers.<name>]` table. Any other key there is the user's
+#: (startup_timeout_sec, tool_timeout_sec, enabled, ...) and is kept.
+TOML_OWNED_KEYS = ("url", "bearer_token_env_var", "env_http_headers")
+_TABLE_HEADER = re.compile(r"^\s*\[(?!\[)\s*(.*?)\s*\]\s*(#.*)?$")
+_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
-def _is_archi_table(header: str, names: set[str]) -> bool:
-    parts = [p.strip().strip('"') for p in header.split(".")]
-    return len(parts) >= 2 and parts[0] == "mcp_servers" and parts[1] in names
+def _toml_key(key: str) -> str:
+    return key if _BARE_KEY.match(key) else _q(key)
+
+
+def toml_value(value: Any) -> str:
+    """A TOML value for what tomllib can read back (strings, bools, numbers, arrays, tables)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return _q(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{_toml_key(k)} = {toml_value(v)}" for k, v in value.items()) + " }" if value else "{}"
+    raise ConnectError(f"cannot write a {type(value).__name__} value into a TOML config")
+
+
+def _table_lines(name: str, table: dict[str, Any]) -> str:
+    lines = [f"[mcp_servers.{_toml_key(name)}]"]
+    lines += [f"{_toml_key(k)} = {toml_value(v)}" for k, v in table.items()]
+    return "\n".join(lines) + "\n"
+
+
+def _header_names(header: str) -> Optional[list[str]]:
+    """The dotted key path in a `[a.b."c"]` header, or None when it is not simple enough to read."""
+    parts: list[str] = []
+    rest = header.strip()
+    while rest:
+        if rest[0] == '"':
+            m = re.match(r'"((?:[^"\\]|\\.)*)"\s*', rest)
+            if not m:
+                return None
+            parts.append(json.loads(f'"{m.group(1)}"'))
+        else:
+            m = re.match(r"([A-Za-z0-9_-]+)\s*", rest)
+            if not m:
+                return None
+            parts.append(m.group(1))
+        rest = rest[m.end():]
+        if rest:
+            if rest[0] != ".":
+                return None
+            rest = rest[1:].lstrip()
+    return parts
 
 
 def merge_toml(existing: Optional[str], entry_list: list[Entry], source: str) -> tuple[str, str]:
-    """Replace archi's `[mcp_servers.<name>]` tables in a Codex config; keep every other line."""
-    names = {e.name for e in entry_list}
-    block = toml_document(entry_list)
+    """Merge archi's servers into a Codex config.
+
+    The file is read with tomllib. Each archi table keeps the user's own keys and only archi's keys
+    (TOML_OWNED_KEYS) are set; a stale owned key (a bearer token variable on a server that no longer
+    uses one) is dropped. Everything outside the table's own lines (comments, other tables, the
+    table's sub-tables) is kept byte for byte. The result is parsed again and must equal the old
+    document with only those tables changed, or nothing is written.
+    """
     text = existing or ""
-    if text.strip():
-        try:
-            tomllib.loads(text)
-        except tomllib.TOMLDecodeError as exc:
-            raise ConnectError(f"{source} is not valid TOML ({exc}); fix it first, archi will not rewrite it") from exc
-    kept: list[str] = []
-    dropping = False
-    for line in text.splitlines(keepends=True):
-        m = _HEADER.match(line)
-        if m:
-            dropping = _is_archi_table(m.group(1), names)
-        if not dropping:
-            kept.append(line)
-    body = "".join(kept).rstrip("\n")
-    new = (body + "\n\n" if body else "") + block
     try:
-        parsed = tomllib.loads(new)
-    except tomllib.TOMLDecodeError as exc:  # pragma: no cover - defensive
-        raise ConnectError(f"merging into {source} produced invalid TOML: {exc}") from exc
-    if not names <= set(parsed.get("mcp_servers", {})):  # pragma: no cover - defensive
-        raise ConnectError(f"merging into {source} lost an entry")
-    if text == new:
+        old = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConnectError(f"{source} is not valid TOML ({exc}); fix it first, archi will not rewrite it") from exc
+    servers = old.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        raise ConnectError(f"{source}: `mcp_servers` is not a table")
+    expected = {k: v for k, v in old.items()}
+    expected["mcp_servers"] = dict(servers)
+    lines = text.splitlines(keepends=True)
+    # keys the user wrote as their own sub-table header, [mcp_servers.<name>.<key>]: those lines stay
+    subtables: dict[str, set[str]] = {}
+    for line in lines:
+        m = _TABLE_HEADER.match(line)
+        names = _header_names(m.group(1)) if m else None
+        if names and len(names) >= 3 and names[0] == "mcp_servers":
+            subtables.setdefault(names[1], set()).add(names[2])
+    merged: dict[str, dict[str, Any]] = {}
+    for e in entry_list:
+        current = servers.get(e.name, {})
+        if not isinstance(current, dict):
+            raise ConnectError(f"{source}: mcp_servers.{e.name} is not a table")
+        owned: dict[str, Any] = {"url": e.url}
+        if e.token_env:
+            owned["bearer_token_env_var"] = e.token_env
+        if e.env_headers:
+            owned["env_http_headers"] = dict(e.env_headers)
+        mine = {k: v for k, v in current.items() if k not in TOML_OWNED_KEYS}
+        # archi's keys first, then the user's own; sub-table keys are not rewritten
+        merged[e.name] = {**owned, **{k: v for k, v in mine.items() if k not in subtables.get(e.name, set())}}
+        expected["mcp_servers"][e.name] = {**owned, **mine}
+
+    out: list[str] = []
+    done: set[str] = set()
+    i = 0
+    while i < len(lines):
+        m = _TABLE_HEADER.match(lines[i])
+        names = _header_names(m.group(1)) if m else None
+        if names and len(names) == 2 and names[0] == "mcp_servers" and names[1] in merged:
+            j = i + 1
+            while j < len(lines) and not _TABLE_HEADER.match(lines[j]) and not lines[j].lstrip().startswith("[["):
+                j += 1
+            block = _table_lines(names[1], merged[names[1]])
+            if j < len(lines):
+                block += "\n"
+            out.append(block)
+            done.add(names[1])
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+    body = "".join(out)
+    for e in entry_list:
+        if e.name not in done:
+            body = (body.rstrip("\n") + "\n\n" if body.strip() else "") + _table_lines(e.name, merged[e.name])
+    try:
+        new_doc = tomllib.loads(body)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConnectError(f"merging into {source} would produce invalid TOML ({exc}); nothing written") from exc
+    if new_doc != expected:
+        raise ConnectError(f"merging into {source} would change more than archi's own tables; nothing written. "
+                           f"Merge by hand (`archi connect codex --print`)")
+    if body == text:
         status = "unchanged"
     else:
-        status = "updated" if any(f"mcp_servers.{n}]" in text for n in names) else "added"
-    return new, status
+        status = "updated" if any(e.name in servers for e in entry_list) else "added"
+    return body, status
 
 
 # --- files ----------------------------------------------------------------------------------
 
 
+def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True)
+
+
+def refuse_unignored_secret_file(path: Path) -> None:
+    """A file that will hold the token may sit inside a git work tree only if git ignores it."""
+    path = path.expanduser().resolve()
+    directory = next((p for p in [path.parent, *path.parent.parents] if p.is_dir()), None)
+    if directory is None or _git(directory, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        return  # not in a repository
+    if _git(directory, "check-ignore", "-q", "--no-index", str(path)).returncode != 0:
+        raise ConnectError(
+            f"{path} is inside a git repository and is not git-ignored; refusing to write the token "
+            f"into it. Add it to .gitignore, or drop --embed-token to write a ${{{TOKEN_ENV}}} reference"
+        )
+
+
 def write_file(path: Path, text: str, *, secret: bool) -> list[str]:
-    """Write atomically. A new file is 0600; an existing one keeps its mode unless it now holds a
-    secret and is readable by others, which is tightened to 0600. Returns notes for the operator."""
+    """Write atomically. A symlinked config is written through to its target. A new file is 0600; an
+    existing one keeps its mode unless it now holds a secret and is readable by others, which is
+    tightened to 0600. Returns notes for the operator."""
     notes: list[str] = []
-    path = path.expanduser()
+    path = Path(os.path.realpath(path.expanduser()))
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = 0o600
     if path.exists():
@@ -309,14 +422,18 @@ def run(args: argparse.Namespace, out=None) -> int:
         return 0
     token = instance_token(instance)
     writing = args.write is not None
-    # A printed config carries a reference unless asked; a written file carries the token unless
-    # --token-ref. Codex never holds the token: it names the environment variable.
-    literal = args.show_token if not writing else not args.token_ref
-    entry_list = entries(instance, token, literal=literal or False)
+    # Every config carries a ${OKG_CHAT_MCP_TOKEN} reference (Claude Code, OpenClaw and most MCP
+    # clients expand it from the environment). The literal token goes in only when asked:
+    # --show-token to print it, --embed-token to write it (and then only to a git-ignored file).
+    # Codex never holds the token: it names the environment variable.
+    literal = bool(args.embed_token) if writing else bool(args.show_token)
+    entry_list = entries(instance, token, literal=literal)
     if not writing:
         out.write(print_config(client, entry_list, token, args.show_token))
         return 0
     path = Path(args.write if args.write != "" else DEFAULT_PATHS[client]).expanduser()
+    if literal and client != "codex":
+        refuse_unignored_secret_file(path)
     existing = path.read_text(encoding="utf-8") if path.is_file() else None
     if client == "codex":
         text, status = merge_toml(existing, entry_list, str(path))
@@ -361,6 +478,7 @@ def add_parser(sub) -> None:
                       help="merge into this client config (default per client: "
                            + ", ".join(f"{k} {v}" for k, v in DEFAULT_PATHS.items()) + ")")
     p.add_argument("--show-token", action="store_true", help="include the bearer token in what is printed")
-    p.add_argument("--token-ref", action="store_true",
-                   help="with --write: write ${%s} instead of the token" % TOKEN_ENV)
+    p.add_argument("--embed-token", action="store_true",
+                   help="with --write: write the literal token (mode 0600) instead of a ${%s} reference; "
+                        "refused unless the file is git-ignored" % TOKEN_ENV)
     p.set_defaults(func=cmd_connect)

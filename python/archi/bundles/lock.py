@@ -416,26 +416,32 @@ def _merge_into_deployment(plan, deployment_dir: Path, new_sources: list[str],
 
 
 def _git_commit(deployment_dir: Path, message: str, instance_dir: Optional[Path] = None) -> Optional[list[str]]:
-    """Commit the deployment change. When the deployment is inside the instance repository, the
-    files `archi add` rewrote beside it (archi.lock, profiles/) go in the same commit: okg
-    refuses to publish while they are uncommitted ("repository provenance inputs are not
-    committed"). Nothing else in the instance is staged."""
-    inside = subprocess.run(
-        ["git", "-C", str(deployment_dir), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True,
-    )
-    if inside.returncode != 0:
+    """Commit archi's own paths: the deployment directory and, when it sits in the same repository
+    as the instance, archi.lock and profiles/ (okg refuses to publish while they are uncommitted:
+    "repository provenance inputs are not committed"). The commit is limited to those paths, so
+    other staged work stays staged and uncommitted. Returns None when there is no repository or
+    nothing changed."""
+    def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(deployment_dir), *args], capture_output=True, text=True,
+                              check=check)
+
+    if git("rev-parse", "--is-inside-work-tree", check=False).returncode != 0:
         return None
-    subprocess.run(["git", "-C", str(deployment_dir), "add", "-A", "."], check=True)
+    top = Path(git("rev-parse", "--show-toplevel").stdout.strip()).resolve()
+    candidates = [Path(deployment_dir).resolve()]
     if instance_dir is not None:
-        top = subprocess.run(["git", "-C", str(deployment_dir), "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True, check=True).stdout.strip()
         instance = Path(instance_dir).resolve()
-        if Path(top).resolve() == instance:
-            wanted = [str(instance / n) for n in ("archi.lock", "profiles") if (instance / n).exists()]
-            if wanted:
-                subprocess.run(["git", "-C", top, "add", "-A", "--", *wanted], check=True)
-    cmd = ["git", "-C", str(deployment_dir), "commit", "-m", message]
+        candidates += [instance / name for name in ("archi.lock", "profiles")]
+    # pathspecs relative to the repository's top level, so a nested instance is handled the same way
+    paths = [str(p.relative_to(top)) for p in candidates
+             if p.exists() and (p == top or top in p.parents)]
+    if not paths:
+        return None
+    pathspec = ["--", *paths]
+    git("-C", str(top), "add", "-A", *pathspec)
+    if git("-C", str(top), "diff", "--cached", "--quiet", *pathspec, check=False).returncode == 0:
+        return None  # nothing changed in archi's paths
+    cmd = ["git", "-C", str(top), "commit", "-m", message, *pathspec]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
     return cmd
 

@@ -6,7 +6,7 @@ streamable HTTP can use the same graph tools. The endpoint is
 the instance `.env`.
 
 ```console
-archi connect claude-code [--instance DIR] [--print | --write [PATH]] [--show-token] [--token-ref]
+archi connect claude-code [--instance DIR] [--print | --write [PATH]] [--show-token] [--embed-token]
 ```
 
 `--print` (the default) shows the config. `--write` merges it into the client's
@@ -15,10 +15,18 @@ archi adds or updates its own entries (`archi-<instance name>` and the external
 servers) and keeps everything else. Running the same command again changes
 nothing. A file that archi cannot parse is left alone and the command stops.
 
-The token is not printed unless you pass `--show-token`. Printed configs carry
-`${OKG_CHAT_MCP_TOKEN}`. A written file holds the token and is mode 0600 (an
-existing file that is more open is tightened); pass `--token-ref` to write the
-reference instead and export the variable in the shell that starts the client.
+The token is not printed unless you pass `--show-token`. Printed and written configs carry
+`${OKG_CHAT_MCP_TOKEN}`, which Claude Code and OpenClaw expand from the environment, so
+export the variable (from the instance `.env`) in the shell that starts the client. A new
+file is mode 0600. `--write --embed-token` writes the literal token instead; archi refuses
+unless the file is outside any git repository or git ignores it (`git check-ignore`), and
+tightens an existing file to 0600. A symlinked config is written through to its target.
+
+For Codex, archi sets only the keys it owns in `[mcp_servers.<name>]` (`url`,
+`bearer_token_env_var`, `env_http_headers`). Your own keys there (`startup_timeout_sec`,
+`tool_timeout_sec`, `enabled`, sub-tables) and the rest of the file are kept. The file is
+read with a TOML parser, and the result is checked to differ from the old file only in
+those tables; otherwise nothing is written.
 
 | Client | Default file | Format | Checked how |
 |---|---|---|---|
@@ -63,6 +71,11 @@ archi connect claude-code --write /tmp/probe/.mcp.json
 python python/tests/connect/recipe_check.py --client claude-code \
     --config /tmp/probe/.mcp.json --env-file DIR/.env --query "CMSSW"
 ```
+
+For Open WebUI, `python/tests/connect/webui_check.py --instance DIR` signs in as the site
+admin, reads the tool server the site registered, and runs an MCP client inside the webui
+container (`podman|docker exec`) that calls `search` at that registered URL over the compose
+network; it exits 0 only if the answer cites rows.
 
 `python/tests/connect/fixtures/echo_server.py` is a small external server (one
 `echo` tool) for trying the `mcp_servers:` path.

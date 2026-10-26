@@ -5,7 +5,7 @@
         "url": "http://127.0.0.1:18080/mcp",
         "transport": "streamable-http",
         "headers": {
-          "Authorization": "Bearer TESTTOKEN-0123456789abcdef"
+          "Authorization": "Bearer ${OKG_CHAT_MCP_TOKEN}"
         }
       },
       "notes": {
