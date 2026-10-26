@@ -415,16 +415,36 @@ def _merge_into_deployment(plan, deployment_dir: Path, new_sources: list[str],
     return changed
 
 
-def _git_commit(deployment_dir: Path, message: str) -> Optional[list[str]]:
-    inside = subprocess.run(
-        ["git", "-C", str(deployment_dir), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True,
-    )
-    if inside.returncode != 0:
+def _git_commit(deployment_dir: Path, message: str, instance_dir: Optional[Path] = None) -> Optional[list[str]]:
+    """Commit archi's own paths: the deployment directory and, when it sits in the same repository
+    as the instance, archi.lock and profiles/ (okg refuses to publish while they are uncommitted:
+    "repository provenance inputs are not committed"). The commit is limited to those paths, so
+    other staged work stays staged and uncommitted. Returns None when there is no repository or
+    nothing changed."""
+    def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(deployment_dir), *args], capture_output=True, text=True,
+                              check=check)
+
+    if git("rev-parse", "--is-inside-work-tree", check=False).returncode != 0:
         return None
-    subprocess.run(["git", "-C", str(deployment_dir), "add", "-A", "."], check=True)
-    cmd = ["git", "-C", str(deployment_dir), "commit", "-m", message]
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    top = Path(git("rev-parse", "--show-toplevel").stdout.strip()).resolve()
+    candidates = [Path(deployment_dir).resolve()]
+    if instance_dir is not None:
+        instance = Path(instance_dir).resolve()
+        candidates += [instance / name for name in ("archi.lock", "profiles")]
+    # pathspecs relative to the repository's top level, so a nested instance is handled the same way
+    paths = [str(p.relative_to(top)) for p in candidates
+             if p.exists() and (p == top or top in p.parents)]
+    if not paths:
+        return None
+    pathspec = ["--", *paths]
+    git("-C", str(top), "add", "-A", *pathspec)
+    if git("-C", str(top), "diff", "--cached", "--quiet", *pathspec, check=False).returncode == 0:
+        return None  # nothing changed in archi's paths
+    from archi.cli.init import _git_identity_env  # lazy: archi.cli imports this module
+
+    cmd = ["git", "-C", str(top), "commit", "-m", message, *pathspec]
+    subprocess.run(cmd, check=True, capture_output=True, text=True, env=_git_identity_env())
     return cmd
 
 
@@ -495,7 +515,7 @@ def add(
     echo(f"added to {deployment_dir}: {', '.join(changed)}")
 
     commands: list[list[str]] = []
-    commit = _git_commit(deployment_dir, f"archi add {pack}")
+    commit = _git_commit(deployment_dir, f"archi add {pack}", instance_dir)
     if commit:
         commands.append(commit)
         echo("committed the deployment change")

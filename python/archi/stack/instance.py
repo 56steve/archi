@@ -17,11 +17,13 @@ an instance is a git repository that should hold configuration, not data.
 from __future__ import annotations
 
 import os
+import re
 import secrets as _secrets
 import socket
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional
+from urllib.parse import urlparse
 
 import yaml
 
@@ -82,6 +84,9 @@ class Instance:
     #: automation runs at; the bundle and the pack only bound it (ADR 0002
     #: section 7.3). L3 and unknown levels are refused when archi.yaml loads.
     automations: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: External MCP servers `archi connect` registers next to the instance's own
+    #: (`mcp_servers:` in archi.yaml). Headers hold env-var names, never values.
+    mcp_servers: list["McpServer"] = field(default_factory=list)
 
     @property
     def deployment_dir(self) -> Path:
@@ -110,6 +115,8 @@ class Instance:
         data["data_root"] = str(self.data_root)
         if not data["automations"]:
             del data["automations"]
+        if not data["mcp_servers"]:
+            del data["mcp_servers"]
         return {"instance_version": INSTANCE_VERSION, **data}
 
     def save(self) -> Path:
@@ -152,7 +159,88 @@ class Instance:
             okg_version=data.get("okg_version") or "",
             admin_email=data.get("admin_email") or "",
             automations=_automation_settings(path, data.get("automations")),
+            mcp_servers=parse_mcp_servers(path, data.get("mcp_servers"), reserved=f"archi-{data['name']}"),
         )
+
+
+@dataclass
+class McpServer:
+    """One external MCP server: `{name, url, headers: {<Header>: <ENV_VAR_NAME>}}`.
+
+    The environment variable holds the whole header value (for example
+    `Bearer abc`). archi.yaml is committed, so it names the variable and
+    never holds the secret.
+    """
+
+    name: str
+    url: str
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+MCP_SERVER_KEYS = {"name", "url", "headers"}
+_MCP_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_HEADER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def mcp_server_problems(raw: Any, reserved: Optional[str] = None) -> list[str]:
+    """Everything wrong with an `mcp_servers:` value (empty when it is valid)."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return ["mcp_servers must be a list of {name, url, headers}"]
+    problems: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        label = f"mcp_servers[{index}]"
+        if not isinstance(item, dict):
+            problems.append(f"{label} must be a mapping with name, url and optional headers")
+            continue
+        extra = sorted(str(k) for k in set(item) - MCP_SERVER_KEYS)
+        if extra:
+            problems.append(f"{label}: unknown key(s) {', '.join(extra)}")
+        name = item.get("name")
+        if not isinstance(name, str) or not _MCP_NAME.match(name):
+            problems.append(f"{label}: name must be lowercase letters, digits, - or _ (got {name!r})")
+        else:
+            label = f"mcp_servers[{name}]"
+            if name in seen:
+                problems.append(f"{label}: duplicate name")
+            seen.add(name)
+            if reserved and name == reserved:
+                problems.append(f"{label}: {name!r} is the instance's own MCP server; pick another name")
+        url = item.get("url")
+        parsed = urlparse(url) if isinstance(url, str) else None
+        if parsed is None or parsed.scheme not in ("http", "https") or not parsed.hostname:
+            problems.append(f"{label}: url must be an http(s) URL (got {url!r})")
+        elif parsed.username or parsed.password or parsed.query:
+            problems.append(f"{label}: url must not carry credentials or a query string; "
+                            "put the secret in a header whose value is an environment variable name")
+        headers = item.get("headers")
+        if headers is None:
+            continue
+        if not isinstance(headers, dict):
+            problems.append(f"{label}: headers must map a header name to an environment variable name")
+            continue
+        for header, env in headers.items():
+            if not isinstance(header, str) or not _HEADER_NAME.match(header):
+                problems.append(f"{label}: {header!r} is not a header name")
+            if not isinstance(env, str) or not _ENV_NAME.match(env):
+                problems.append(
+                    f"{label}: header {header!r} must name an environment variable "
+                    "(like EXT_TOKEN), not hold a value"
+                )
+    return problems
+
+
+def parse_mcp_servers(path: Path, raw: Any, reserved: Optional[str] = None) -> list[McpServer]:
+    problems = mcp_server_problems(raw, reserved)
+    if problems:
+        raise InstanceError(f"{path}: " + "; ".join(problems))
+    return [
+        McpServer(name=i["name"], url=i["url"], headers=dict(i.get("headers") or {}))
+        for i in (raw or [])
+    ]
 
 
 def _automation_settings(path: Path, raw: Any) -> dict[str, dict[str, str]]:
