@@ -27,6 +27,8 @@ on:
       - "bundles/**"
       - "python/tests/cli/golden_path_run.sh"
       - "python/tests/cli/mcp_cited_answer.py"
+      - "python/archi/evaluation/**"
+      - "python/archi/cli/evaluate.py"
       - ".github/workflows/nightly-e2e.yml"
   push:
     branches: [archi_v3]
@@ -37,17 +39,26 @@ on:
       - "bundles/**"
       - "python/tests/cli/golden_path_run.sh"
       - "python/tests/cli/mcp_cited_answer.py"
+      - "python/archi/evaluation/**"
+      - "python/archi/cli/evaluate.py"
       - ".github/workflows/nightly-e2e.yml"
 
 concurrency:
   group: nightly-e2e-${{ github.ref }}
   cancel-in-progress: false
 
+# The job only reads the repository; the token it holds can do nothing else.
+permissions:
+  contents: read
+
 jobs:
   golden-path:
     name: empty runner to a cited answer
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # 40 minutes for the golden path and the down/up check, plus room for the
+    # report-only eval step's own 25-minute limit, so a slow eval ends that
+    # step and never the job.
+    timeout-minutes: 70
     env:
       OKG_WHEEL: "okg @ https://github.com/mitdbg/akmon/releases/download/v0.2.0/okg-0.2.0-py3-none-any.whl#sha256=72bac3b67cf29cccd27e77e58ad309104f19fcce255a04a4a6f23b8318b88e12"
       QUESTION: "What is the Knowledge Bases and Agents for CERN workshop?"
@@ -60,6 +71,8 @@ jobs:
           df -h /
 
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -100,6 +113,55 @@ jobs:
               print(f"- `{c['node_id']}` ({c['subtype']})")
           EOF
           test "$elapsed" -le 900
+
+      # The bundle smoke eval (PACT r3-bundle-evals, acc.nightly): `archi eval` over
+      # the same instance with a small local model on the CPU runner. It sits after
+      # the 15-minute measure above, so the golden path's clock never includes the
+      # model download or the eval. It REPORTS and does not gate: a 1.5B model on
+      # four cores scores low and slowly, so a failure here says nothing about the
+      # bundle. The #619 framework replaces this harness and owns any gate.
+      - name: "bundle smoke eval: archi eval --bundle cern-team (report only, not part of the 15 minutes)"
+        continue-on-error: true
+        timeout-minutes: 25
+        working-directory: ${{ runner.temp }}/gp
+        env:
+          OLLAMA_HOST: "127.0.0.1:11500"
+          OLLAMA_MODELS: ${{ runner.temp }}/ollama-models
+          # Ollama's default 4096-token window cuts off the graph tools' descriptions.
+          OLLAMA_CONTEXT_LENGTH: "16384"
+          EVAL_MODEL: "qwen2.5:1.5b-instruct"
+          # The installer fetches exactly this release, not the latest one.
+          OLLAMA_VERSION: "0.32.13"
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          sudo systemctl stop ollama || true
+          nohup ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for _ in $(seq 1 30); do curl -fsS "http://$OLLAMA_HOST/api/tags" >/dev/null && break; sleep 1; done
+          ollama pull "$EVAL_MODEL"
+          started=$(date +%s)
+          set +e
+          archi eval --bundle cern-team --model "$EVAL_MODEL" --model-url "http://$OLLAMA_HOST/v1" \
+            --out "$RUNNER_TEMP/eval-report"
+          rc=$?
+          set -e
+          echo "### bundle smoke eval: exit $rc, $(( $(date +%s) - started ))s with $EVAL_MODEL on CPU (report only)" >> "$GITHUB_STEP_SUMMARY"
+          python - "$RUNNER_TEMP/eval-report/report.json" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          print(f"\n{r['status']}: {r['passed']} of {r['total']} passed (threshold {r['pass_threshold']}); "
+                f"tokens {r['prompt_tokens']} in / {r['completion_tokens']} out\n")
+          for q in r["questions"]:
+              print(f"- `{q['id']}`: {q['status']} ({q['seconds']} s)")
+          EOF
+          exit "$rc"
+
+      - name: Keep the eval report (housekeeping)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-smoke-eval-report
+          path: ${{ runner.temp }}/eval-report
+          if-no-files-found: ignore
 
       - name: The graph survives archi down + archi up (housekeeping)
         working-directory: ${{ runner.temp }}/gp

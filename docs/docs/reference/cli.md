@@ -157,6 +157,25 @@ Okg lint + doctor + archi's footgun checks, with remediations.
 | `--instance INSTANCE` | instance directory | `.` |
 | `--json` | one JSON object, for agents |  |
 
+## `archi eval`
+
+Ask a bundle's smoke questions through the instance MCP with a local model.
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--bundle BUNDLE` | bundle whose smoke set to run (repeatable; default: the instance's bundles) |  |
+| `--instance INSTANCE` | instance directory (default: .) | `.` |
+| `--model MODEL` | model name at the endpoint (default: the bundle's chat.default_model) |  |
+| `--model-url MODEL_URL` | OpenAI-compatible base URL (default: http://127.0.0.1:11434/v1, a local Ollama) | `http://127.0.0.1:11434/v1` |
+| `--out OUT` | report directory (default: &lt;data root&gt;/eval/&lt;bundle&gt;, outside the instance repository) |  |
+| `--mcp-url MCP_URL` | MCP endpoint (default: the instance's, http://127.0.0.1:&lt;port&gt;/mcp) |  |
+| `--chat-prompt CHAT_PROMPT` | the chat system prompt to give the agent (default: the instance deployment's skills/chat-system-prompt.md, the one `archi up` gives the chat) |  |
+| `--max-steps MAX_STEPS` | tool-call rounds allowed per question | `8` |
+| `--no-think` | ask a reasoning model to skip its thinking pass (reasoning_effort: none) |  |
+| `--allow-remote-model` | allow a model endpoint off this host or network (may cost money; off by default) |  |
+| `--pack-root PACK_ROOT` | extra directory of &lt;name&gt;/pack.yaml entries (repeatable) |  |
+| `--bundle-root BUNDLE_ROOT` | extra directory of &lt;name&gt;/bundle.yaml entries (repeatable) |  |
+
 ## `archi ops`
 
 Status, halt, resume, promote and answer the operations automations.
