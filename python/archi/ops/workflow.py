@@ -543,6 +543,30 @@ class _Recorder:
         self.last = digest
 
 
+#: starts the one line of an escalation reason that records the action (line 2; see `escalation_reason`)
+ACTION_PREFIX = "Action: "
+
+
+def _one_line(text: Any) -> str:
+    """Free text from a proposal on one line: no newline can start a line of the escalation reason."""
+    return " ".join(str(text).split())
+
+
+def escalation_reason(automation: str, proposal: Any) -> str:
+    """The reason an escalation is opened with, in a fixed layout the approver and the live tools both read.
+
+    Line 1 is the proposer's free-text summary, line 2 is the one `Action: <class> <payload JSON>` line, then
+    `Rollback:` and `Evidence:`. Every proposer-written piece is put on one line first, so a summary holding
+    a newline and "Action: ..." cannot make a second Action line or move the real one. A live tool binds an
+    approval to the payload by reading line 2, and refuses a reason with any other line that starts with
+    `Action: ` (archi.tools._live.ops_verifier).
+    """
+    return (f"{automation}: {_one_line(proposal.summary)}\n"
+            f"{ACTION_PREFIX}{_one_line(proposal.action_class)} {json.dumps(dict(proposal.payload), sort_keys=True)}\n"
+            f"Rollback: {_one_line(proposal.rollback)}\n"
+            f"Evidence: {_one_line(', '.join(proposal.evidence_ids))}")
+
+
 class _Decider:
     """Opens the escalation through request_escalation and reads the decision back from okg."""
 
@@ -550,9 +574,7 @@ class _Decider:
         self.rt, self.reason = rt, ""
 
     def open(self, *, automation, proposal_id, proposal, timeout_at) -> Escalation:
-        self.reason = (f"{automation}: {proposal.summary}\nAction: {proposal.action_class} "
-                       f"{json.dumps(dict(proposal.payload), sort_keys=True)}\nRollback: {proposal.rollback}\n"
-                       f"Evidence: {', '.join(proposal.evidence_ids)}")
+        self.reason = escalation_reason(automation, proposal)
         return Escalation(expected_escalation_id(DBOS.workflow_id), proposal_id, _Clock().now(), timeout_at)
 
     def wait(self, escalation: Escalation) -> Decision:

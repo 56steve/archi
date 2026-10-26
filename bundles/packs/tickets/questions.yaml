@@ -1,0 +1,18 @@
+init_questions:
+  - id: base_url
+    prompt: Tracker URL
+    type: string
+    required: true
+    description: |
+      The tracker's root URL; each ticket links to it (for Redmine,
+      <url>/issues/<id>). Fill the cache with
+      `python -m archi.downloaders.redmine --base-url <url>` before the first ingest.
+
+  - id: system
+    prompt: Tracker system name (lowercase)
+    type: string
+    required: false
+    default: redmine
+    description: |
+      Recorded on every ticket (`redmine`, or the name of the tracker whose
+      export fills the cache). It also keeps ticket ids of two trackers apart.

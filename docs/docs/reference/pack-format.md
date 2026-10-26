@@ -43,7 +43,7 @@ not leave that directory (`..`, absolute paths and `~` are refused).
 | `search_subtypes` | | Subtypes added to the `content` search profile. |
 | `search_profiles` | | Named okg search profiles, `{<name>: {description, subtypes}}`, added to the instance's `search.profiles`. Not `content`. |
 | `live_tools` | | `archi.tools.*` entries for the MCP server. |
-| `action_classes` | | File holding an `action_classes:` mapping keyed by id (automation packs). |
+| `action_classes` | | File holding an `action_classes:` mapping keyed by id. Automation packs declare theirs here; a pack that ships the live tools those classes use may declare them too (`slurm` does), so every instance that installs the pack gets the same payload schemas. |
 | `automation` | automation packs | The automation: trigger, context gate, playbook, action classes, proposal schema, budget, levels. See [Automation packs](#automation-packs). |
 | `files` | | Files installed at the same path in the deployment root (okg's `files:` allow-list applies). |
 | `prompt_fragment` | | Markdown appended to the chat system prompt. |

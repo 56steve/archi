@@ -106,6 +106,20 @@ def test_cern_team_installs_from_packs_and_publishes(tmp_path):
 
 
 @needs_db
+@pytest.mark.parametrize("with_optional", [False, True], ids=["defaults", "every-optional-pack"])
+def test_cluster_manager_installs_from_packs_and_publishes(tmp_path, with_optional):
+    """The cluster-manager bundle (no CERN pack): every default, then every default and optional pack."""
+    from packs.pack_support import shipped_catalog
+
+    catalog = shipped_catalog()
+    bundle = catalog.bundles["cluster-manager"]
+    optional = list(bundle.optional_packs) if with_optional else []
+    resolution = resolve(catalog, ["cluster-manager"], with_packs=optional)
+    assert set(resolution.pack_names) >= set(bundle.default_packs) | set(optional)
+    _install_and_publish(tmp_path, resolution, "cluster-manager")
+
+
+@needs_db
 def test_cms_comp_ops_installs_from_packs_and_publishes(tmp_path):
     """The cms-comp-ops bundle (PACT r3-bundle-cms-comp-ops): every default and
     optional pack selected, from fixture inputs."""
