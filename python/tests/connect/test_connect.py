@@ -24,7 +24,7 @@ def test_print_matches_the_golden_file_and_carries_no_token(client, instance, ca
     code, out, err = run_cli(capsys, client, "--instance", str(instance.dir), "--print")
     assert code == 0, err
     assert TOKEN not in out and TOKEN not in err
-    check_golden(f"print-{client}.txt", out)
+    check_golden(f"print-{client}.golden", out)
 
 
 def test_print_is_the_default_and_show_token_adds_the_token(instance, capsys):
