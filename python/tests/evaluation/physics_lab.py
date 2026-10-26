@@ -149,7 +149,10 @@ def build(dsn: str, work: Path, port: int) -> dict:
 
         install = okg("install", "--profile", rendered.name, "--deployment-name", DEPLOYMENT,
                       "--deployments-root", str(deployments), "--non-interactive", "--json", *flags)
-        _must(install, "okg install")
+        # The first install stops before publishing (okg will not publish from
+        # configuration that is not committed yet); it is done when it wrote the registry.
+        if not (deployments / DEPLOYMENT / "source_registry.yaml").is_file():
+            _must(install, "okg install")
         ps.git(["add", "-A"], deployments)
         ps.git(["commit", "-q", "-m", "px deployment config"], deployments)
         _must(okg("ingest", "--deployment", DEPLOYMENT, "--json"), "okg ingest")
