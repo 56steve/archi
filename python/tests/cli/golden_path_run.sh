@@ -5,15 +5,15 @@
 #
 # Runs the user commands of the golden path with the cern-team bundle, times
 # each one, and checks each result:
-#   1. archi init gp --bundle cern-team --without docsite,indico --with cmssw-releases
-#                                           instance repo, secrets, published graph
+#   1. archi init gp --bundle cern-team     no answers: the bundle's defaults (docsite,
+#                                           indico) publish; instance repo, secrets, graph
 #   2. archi up                             graph-db, chat-db, mcp, webui; okg chat sync
 #   3. archi doctor --json                  every check passes
 #   4. mcp_cited_answer.py "<question>"     a search over MCP that cites node ids
 # (The nightly workflow adds the install as its first command.)
 #
-# Needs docker or podman with compose, network access (images, the CMSSW
-# release map, the okg wheel), and okg + archi installed in the Python
+# Needs docker or podman with compose, network access (images, the public
+# documentation pages and Indico event the defaults read, the okg wheel), and okg + archi installed in the Python
 # environment whose bin/ holds `python` (set V to that bin/; default: PATH).
 # KEEP=1 leaves the stack running; otherwise it ends with `archi down --purge --yes`.
 set -euo pipefail
@@ -21,7 +21,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 V="${V:-$(dirname "$(command -v python)")}"
 RUN="$1"
-QUESTION="${QUESTION:-Which CMSSW_14_0 releases are in the graph?}"
+QUESTION="${QUESTION:-What is the Knowledge Bases and Agents for CERN workshop?}"
 mkdir -p "$RUN"
 [ -z "$(ls -A "$RUN")" ] || { echo "$RUN is not empty"; exit 1; }
 RUN="$(cd "$RUN" && pwd)"
@@ -39,7 +39,7 @@ cleanup() {
 trap cleanup EXIT
 
 step "1. archi init"
-"$V/archi" init gp --bundle cern-team --without docsite,indico --with cmssw-releases --dir "$INST" --data-root "$RUN/data"
+"$V/archi" init gp --bundle cern-team --dir "$INST" --data-root "$RUN/data"
 
 step "2. archi up"
 "$V/archi" up --instance "$INST"

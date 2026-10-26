@@ -29,12 +29,34 @@ deployment directory, `okg ingest` and `okg run --once --apply`; the
 [cern-team quickstart](../../docs/cern-team-quickstart.md) has every step.
 `archi add <pack>` adds a pack to an installed instance.
 
-Every selected source must be able to read its input, or the publish stops
-for all of them. So select only what you can feed: docsite needs its records
-cache (`python -m archi.downloaders.static_docs`), indico an event or
-category, twiki a dump, jira its cache, git-code a repository URL. A bare
-`archi render --bundle cern-team` selects docsite and indico; `--without`
-drops either.
+## A bare install publishes
+
+`archi init <name> --bundle cern-team` needs no answer and no credential.
+The two default sources carry their own input:
+
+- **docsite** declares a `prepare` step (see
+  [packs and bundles](../../docs/packs-and-bundles.md#preparing-a-packs-input)).
+  `archi init` and `archi add` run it before the first ingest: it downloads
+  the pages of the `docsite_urls` answer into the records cache. The default is
+  two small public CERN documentation sites, the FTS3 and Rucio docs, one
+  record each (links are not followed).
+- **indico** reads one public event, 1716863 ("Knowledge Bases and Agents for
+  CERN"), live. It is a single named event, not a bounded walk of a
+  category, so the run claims a complete scope of exactly that event, and an
+  event that cannot be read fails the run rather than retracting anything.
+
+Answer `docsite_urls`, `indico_event_ids` or `indico_category_ids` to read
+your own; answer `indico_event_ids='[]'` to drop the default event when you
+give categories only. `cmssw-releases` is not part of this bundle; add it with
+`--with cmssw-releases` (existing instances: the
+[migration note](../../docs/cern-team-migration.md)).
+
+When you install by hand with `okg install` instead of `archi init`, no
+`prepare` step runs: select only what you can feed, because every selected
+source must be able to read its input or the publish stops for all of them.
+docsite then needs its records cache (`python -m archi.downloaders.static_docs`),
+indico an event or category, twiki a dump, jira its cache, git-code a
+repository URL.
 
 No file here or in the packs carries an operator path or a credential value:
 paths are `${archi_data_root}`-relative or install answers, and credentials

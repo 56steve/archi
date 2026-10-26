@@ -3,7 +3,8 @@
 # The scope comes from two install answers, `--indico-event-ids` and
 # `--indico-category-ids`, each a YAML list such as '["1716863"]'. Give at
 # least one: a source with neither is refused when it is built, rather than
-# harvesting nothing quietly. Category walks expand to the events they hold.
+# harvesting nothing quietly. The event list defaults to one public event so
+# a bare install has a scope; answer it (`[]` to drop it) to read your own. Category walks expand to the events they hold.
 #
 # AUTHENTICATION. Public events and categories need nothing. For protected
 # ones the connector never logs in: it reads a Netscape cookie file whose

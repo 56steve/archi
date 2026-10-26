@@ -11,8 +11,7 @@ python3.12 -m venv archi-venv && source archi-venv/bin/activate
 pip install "okg @ https://github.com/mitdbg/akmon/releases/download/v0.2.0/okg-0.2.0-py3-none-any.whl" \
   "archi-kb @ git+https://github.com/archi-physics/archi@archi_v3#subdirectory=python"
 
-archi init myteam --without docsite,indico --with cmssw-releases
-                           # ./myteam: git repo, secrets, a published graph
+archi init myteam          # ./myteam: git repo, secrets, a published graph
 cd myteam
 archi up                   # graph and chat databases, MCP server, Open WebUI
 archi doctor               # every check, with a fix line for each failure
@@ -35,10 +34,15 @@ with `okg provision`, and sets okg's role passwords. Every path it passes to
 okg is absolute. The data root, where connector caches and repository
 checkouts go, is `~/.local/share/archi/<name>` (`--data-root` to change it)
 and must lie outside the instance. The default bundle is `cern-team`. Its default
-packs, docsite and indico, need a records cache and an Indico event or
-category; until a default that needs neither ships, select what you can feed,
-for example the public CMSSW release catalog:
-`archi init <name> --without docsite,indico --with cmssw-releases`.
+packs publish with no answer and no credential. docsite downloads two small
+public documentation sites (the FTS3 and Rucio docs) into its records cache
+before the first ingest; indico reads one public event, "Knowledge Bases and
+Agents for CERN", live. Read your own instead with
+`--answer docsite_urls=<url>[,<url>...]` and
+`--answer indico_event_ids='["<id>"]'` (or `--answer indico_category_ids=...`).
+The public CMSSW release catalog is no longer a default; add it with
+`--with cmssw-releases`. If a documentation page cannot be fetched, init stops
+and names it.
 
 **`archi up`** starts one compose project, `archi-<name>`, on one network:
 
