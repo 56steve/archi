@@ -86,4 +86,17 @@ tasks:
 
     - workflow run [evidence: manual]'
 evidence: []
-decisions: []
+decisions:
+- digest: sha256:49f890825bdd36608b28a511db88a7dac5d31b19a13f0e9d2b800d26bd41a05d
+  reviewer: Jason Mohoney
+  at: '2026-10-26'
+  note: 'Board d332, Jason: "A, build the $0 smoke harness now" (archi-only; a fixed question
+    list per bundle; a local model on submit76; pass/fail on cited sources; a run in the
+    nightly). This row records the design choice, not a review of the code. The #619 framework
+    REPLACES this harness; the CI gate across all four bundles is deferred to it, except the
+    nightly run. Nightly: the step runs `archi eval --bundle cern-team` with a small CPU model
+    and REPORTS only (continue-on-error). It does not gate, because the one lab model tried
+    (qwen2.5:7b-instruct) scored 4/10 on cern-team and 2/10 on cms-physics against the 7/10
+    threshold, so a smaller CPU model cannot be expected to clear it and a failing gate would say
+    nothing about the bundle. The CPU model''s timing and score are untested (not measured).
+    acc.r3-bundle-evals.sets is NOT met as written: the lab model did not reach the threshold.'

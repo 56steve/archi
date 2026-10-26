@@ -27,6 +27,8 @@ on:
       - "bundles/**"
       - "python/tests/cli/golden_path_run.sh"
       - "python/tests/cli/mcp_cited_answer.py"
+      - "python/archi/evaluation/**"
+      - "python/archi/cli/evaluate.py"
       - ".github/workflows/nightly-e2e.yml"
   push:
     branches: [archi_v3]
@@ -37,6 +39,8 @@ on:
       - "bundles/**"
       - "python/tests/cli/golden_path_run.sh"
       - "python/tests/cli/mcp_cited_answer.py"
+      - "python/archi/evaluation/**"
+      - "python/archi/cli/evaluate.py"
       - ".github/workflows/nightly-e2e.yml"
 
 concurrency:
@@ -100,6 +104,53 @@ jobs:
               print(f"- `{c['node_id']}` ({c['subtype']})")
           EOF
           test "$elapsed" -le 900
+
+      # The bundle smoke eval (PACT r3-bundle-evals, acc.nightly): `archi eval` over
+      # the same instance with a small local model on the CPU runner. It sits after
+      # the 15-minute measure above, so the golden path's clock never includes the
+      # model download or the eval. It REPORTS and does not gate: a 1.5B model on
+      # four cores scores low and slowly, so a failure here says nothing about the
+      # bundle. The #619 framework replaces this harness and owns any gate.
+      - name: "bundle smoke eval: archi eval --bundle cern-team (report only, not part of the 15 minutes)"
+        continue-on-error: true
+        timeout-minutes: 25
+        working-directory: ${{ runner.temp }}/gp
+        env:
+          OLLAMA_HOST: "127.0.0.1:11500"
+          OLLAMA_MODELS: ${{ runner.temp }}/ollama-models
+          # Ollama's default 4096-token window cuts off the graph tools' descriptions.
+          OLLAMA_CONTEXT_LENGTH: "16384"
+          EVAL_MODEL: "qwen2.5:1.5b-instruct"
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          sudo systemctl stop ollama || true
+          nohup ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for _ in $(seq 1 30); do curl -fsS "http://$OLLAMA_HOST/api/tags" >/dev/null && break; sleep 1; done
+          ollama pull "$EVAL_MODEL"
+          started=$(date +%s)
+          set +e
+          archi eval --bundle cern-team --model "$EVAL_MODEL" --model-url "http://$OLLAMA_HOST/v1" \
+            --out "$RUNNER_TEMP/eval-report"
+          rc=$?
+          set -e
+          echo "### bundle smoke eval: exit $rc, $(( $(date +%s) - started ))s with $EVAL_MODEL on CPU (report only)" >> "$GITHUB_STEP_SUMMARY"
+          python - "$RUNNER_TEMP/eval-report/report.json" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          print(f"\n{r['status']}: {r['passed']} of {r['total']} passed (threshold {r['pass_threshold']}); "
+                f"tokens {r['prompt_tokens']} in / {r['completion_tokens']} out\n")
+          for q in r["questions"]:
+              print(f"- `{q['id']}`: {q['status']} ({q['seconds']} s)")
+          EOF
+          exit "$rc"
+
+      - name: Keep the eval report (housekeeping)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-smoke-eval-report
+          path: ${{ runner.temp }}/eval-report
+          if-no-files-found: ignore
 
       - name: The graph survives archi down + archi up (housekeeping)
         working-directory: ${{ runner.temp }}/gp
