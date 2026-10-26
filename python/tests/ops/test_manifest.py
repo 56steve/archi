@@ -246,7 +246,8 @@ def test_mediator_tool_of_a_pack_not_required_is_refused(library):
 
 
 def test_mediator_tool_of_the_pack_itself_is_accepted(library):
-    edit(library, lambda d: d.update(requires={"packs": []}, live_tools=["archi.tools.fixture:set_ticket_status"]))
+    tool = "archi.tools.fixture:set_ticket_status"
+    edit(library, lambda d: d.update(requires={"packs": []}, live_tools=[tool], idempotent_tools=[tool]))
     assert messages(library) == []
 
 
@@ -489,5 +490,27 @@ def test_without_a_catalog_a_required_tool_is_not_guessed_from_siblings(library)
 
 
 def test_without_a_catalog_the_packs_own_tool_still_resolves(library):
-    edit(library, lambda d: d.update(requires={"packs": []}, live_tools=["archi.tools.fixture:set_ticket_status"]))
+    tool = "archi.tools.fixture:set_ticket_status"
+    edit(library, lambda d: d.update(requires={"packs": []}, live_tools=[tool], idempotent_tools=[tool]))
     assert [p.message for p in validate_pack(library / "packs" / "fixture-triage")] == []
+
+
+# --- idempotent tools (a mediator that can run at L2 must honour the idempotency key) ---
+
+
+def test_an_l2_mediator_tool_must_be_declared_idempotent(library):
+    edit(library, lambda d: d.pop("idempotent_tools"), pack="fixture-tools")
+    found = messages(library)
+    assert "idempotent_tools" in only(found, "can run at L2")
+    assert "set_ticket_status" in only(found, "can run at L2")
+
+
+def test_an_l1_class_needs_no_idempotent_declaration(library):
+    edit(library, lambda d: d.pop("idempotent_tools"), pack="fixture-tools")
+    edit(library, classes(lambda c: c["set_ticket_status"].update(max_level="L1")), file="action_classes.yaml")
+    assert messages(library) == []
+
+
+def test_idempotent_tools_must_be_live_tools_of_the_pack(library):
+    edit(library, lambda d: d["idempotent_tools"].append("archi.tools.fixture:other"), pack="fixture-tools")
+    assert "not one of this pack's live_tools" in only(messages(library, "fixture-tools"), "other")

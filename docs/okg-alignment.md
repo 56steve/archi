@@ -419,7 +419,16 @@ okg.deployment:
     ConnectorRun, ConnectorHealth, PreflightResult, Checkpoint,
     ConnectorAdapter,
     ContentHashProbe, MutableApiProbe,
-    file_preflight, credential_preflight, http_preflight, redact
+    file_preflight, credential_preflight, http_preflight, redact,
+    deployment_workflow, deployment_scheduled, deployment_step,
+    request_escalation, cost_budget
+okg.deployment._internal.context:     bind_sdk_context
+okg.deployment._internal.cost_budget: BudgetExhaustedError
+okg.deployment._internal.escalation:  EscalationTimeoutError
+okg.substrate.db.connection:          connect
+okg.substrate.generation_resolver:    resolve_okg_generation
+okg.substrate.runtime.escalation:     EscalationStateError
+okg.substrate.runtime.escalation_response: respond_to_escalation
 okg.substrate.enrichers.base:     EnrichResult, IncrementalContext
 okg.substrate.enrichers.derived_edges:
     DerivedEdgeCandidate, insert_deterministic_edges, mint_edge_id
@@ -429,6 +438,17 @@ okg.substrate.alias.protocol:     AliasMatch
 okg.substrate.deployment_bootstrap.profile_init:
     build_plan, discover_profile, planned_writes, source_default_entries
 ```
+
+**The ops runtime (2026-10-25).** `python/archi/ops/workflow.py` is the one module that
+imports `okg.deployment`: the workflow, scheduled and step decorators, `request_escalation`
+and `cost_budget`, all public. It also imports three private names from
+`okg.deployment._internal` (`bind_sdk_context`, `EscalationTimeoutError`,
+`BudgetExhaustedError`) and one substrate error (`EscalationStateError`), in one function
+(`_private_okg`), until okg offers a public context binding (ask O9 in
+`docs/ops-runtime-akmon-asks.md`). `python/archi/ops/okg_io.py` and `archi ops` use three more
+substrate names to answer escalations and pin a generation (`respond_to_escalation`, `connect`,
+`resolve_okg_generation`: asks O3 and O7). Each module's docstring tells what else it reads
+(SQL tables, CLI output) and the ask that removes it.
 
 **The bundle tooling reads okg's profile planner (2026-10-25).** `archi diff`
 and `archi add` (`python/archi/bundles/lock.py`, PACT `r3-bundle-format`) ask

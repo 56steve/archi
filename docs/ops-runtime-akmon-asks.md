@@ -291,3 +291,15 @@ decision.
 
 **archi deletes.** The narrow catch of that one `EscalationStateError` in
 `archi.ops.workflow` (`_Decider.wait`), which reads the row back instead.
+
+## O15. Read when and by whom a PACT change was approved (read; draft, not filed, not yet checked a second time)
+
+**Problem (read).** `okg pact view <change> --format status --json` says a change is `retired` (approved), not
+when or by whom. Archi needs the approval time to decide whether a demotion came before or after it, and reads
+`okg.pact_decisions` with SQL.
+
+**Ask.** Put the latest decision (verdict, principal, `decided_at`) in the `view --format status` JSON.
+
+**Acceptance.** The JSON for an approved change carries the approving verdict and its time.
+
+**archi deletes.** The `okg.pact_decisions` read in `OpsIO.promotion_status`.

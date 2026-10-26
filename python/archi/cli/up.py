@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from archi.cli.init import commit_all
+from archi.cli.init import commit_all, ensure_ops_tables, has_automations
 from archi.stack import compose as stack_compose
 from archi.stack import webui
 from archi.stack.instance import Instance, InstanceError, graph_dsn, read_env
@@ -59,6 +59,15 @@ def up(
     stack_compose.wait_for(
         "the graph database", stack_compose.graph_db_ready(graph_dsn(instance, secrets)), 300, echo
     )
+    okg = Okg(instance, secrets, runner=okg_runner, echo=echo)
+    if has_automations(instance.dir):
+        # Idempotent. `archi init` already did this; it matters for an instance whose database was
+        # restored or purged, and it never leaves the DBOS schema for a hand step.
+        okg.run("runtime", "bootstrap", "--deployment", instance.name)
+        ensure_ops_tables(instance, secrets)
+        echo("ops runtime bootstrapped. The stack has no runtime worker yet: run `okg runtime worker "
+             f"--deployment {instance.name}` (with ARCHI_INSTANCE, OKG_DSN and ARCHI_OPS_DEPLOYMENT set) "
+             "for automations to run")
     # Unauthenticated, the MCP endpoint answers 401: up, and refusing strangers.
     stack_compose.wait_for(
         "the MCP server", lambda: stack_compose.http_status(mcp_url(instance)) in (401, 405, 406), 300, echo
@@ -83,7 +92,6 @@ def up(
              "under Settings > Admin > Connections; the graph tools work without it over MCP")
 
     port = stack_compose.mcp_port(instance.deployment_dir)
-    okg = Okg(instance, secrets, runner=okg_runner, echo=echo)
     okg.run(
         "chat", "sync", "--deployment", instance.name,
         "--mcp-probe-url", mcp_url(instance),

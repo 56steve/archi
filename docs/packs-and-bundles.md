@@ -416,3 +416,97 @@ repeated, listed twice or not defined, an invalid `payload_schema`, a mediator
 that resolves to neither a declared live tool nor a registered step, a bundle
 bound for a pack that is not an automation pack, and a missing or mistyped
 proposal field.
+
+## Running automations (`archi ops`)
+
+An automation runs as an okg deployment workflow, `archi.ops.workflow`. Any
+render that selects an automation pack writes `runtime: {enabled: true,
+workflows: [archi.ops.workflow]}` into the deployment defaults, so it is in
+`deployment.yaml` when `okg install` starts. (Editing `runtime:` after install
+makes publish refuse until `okg catalog load --apply`.)
+
+Because the runtime is on from the start, `okg install` without `--no-publish`
+stops at its last stage (the DBOS schema does not exist yet). `archi init` uses
+`okg install --no-publish` and `okg provision`, which finish on okg 0.2.0, and then
+runs `okg runtime bootstrap`; if a later okg stops provision on the missing schema,
+`archi init` bootstraps and ingests in-process (`okg ingest --inline`, `okg run
+--once --apply`). `archi up` repeats the bootstrap, which is idempotent. The stack
+has no runtime worker yet: start `okg runtime worker --deployment <name>` yourself,
+with `ARCHI_INSTANCE`, `OKG_DSN` and `ARCHI_OPS_DEPLOYMENT` set.
+
+okg publishes only from a committed instance repository. `archi.yaml` and
+`ops.yaml` are in it, so commit an edit to either before the next publish (`archi
+ops promote` commits its own).
+
+Settings that belong to the instance, not the pack:
+
+- `archi.yaml`, `automations.<name>.level`: the level to run at. L3 and
+  unknown values are refused when `archi.yaml` loads, and again at run start.
+- `ops.yaml`, `automations.<name>`: `mode` (`shadow`, the default, or `live`),
+  `timeout_seconds` (how long an L2 escalation waits; default 4 hours),
+  `estimate_cost` (checked against the budget before each proposal; default
+  the pack's `budget.cost_per_run`), `promotion` (the PACT change `archi ops
+  promote` opened; see below), and the `proposer` and `outcome` stubs used until the
+  model-backed ones land. `test_gate_seconds` is for tests only.
+
+One scanner (`archi_ops_scan`, a `@deployment_scheduled` workflow) starts the
+next run of each automation that has none in flight (one at a time: a run
+waiting hours for a person holds that automation's next signal), with the
+workflow id `<automation>~<signal id>~<attempt>`. Neither an automation name
+nor a signal id may contain `~`, so two runs never share an id. Each external
+effect is a durable step. A live automation whose context gate fails runs in
+shadow for that run, with the failing checks in the proposal's `mode_reason`,
+and it stays in shadow until a promotion approved after the demotion. The
+demotion is written to `archi_ops.demotions` when it happens, so the very next
+run sees it without waiting for a publish; the published ops records carry the
+same history.
+
+`mode: live` in `ops.yaml` is a request. The runtime counts it only while the
+PACT change named by `promotion:` is approved in okg's decision ledger; with no
+such change, or one still awaiting review, the run is in shadow and its
+proposal's `mode_reason` says "not promoted: ...". Hand-editing `ops.yaml` to say
+live changes nothing, and so does naming another approved change: the change must
+carry this automation's name in its own `promotion.json`, must be the newest
+promotion change for it, and its approval must come after the latest demotion.
+If okg cannot be run to read the ledger, the run is in shadow with that reason.
+
+An L2 proposal waits for an okg escalation. Only an approval made before the
+deadline, by a named person, for that proposal and escalation, reaches the
+mediator step, which checks halt and the escalation again.
+
+### The mediator contract
+
+A mediator is a live tool called as `tool(payload=..., context=...)`; the
+context carries `idempotency_key` (the run id), `proposal_id`, `workflow_id`
+and `dsn`. The runtime calls it at most once per key: it records an attempt in
+`archi_ops.mediations` before the call, and a replay that finds an attempt with
+no recorded end (the worker died mid-call) does not call again. It records the
+action as `unknown` and the outcome as `unknown`, "possible duplicate
+prevented; check the external system". A tool that can run at L2 must also be
+listed in its pack's `idempotent_tools:` (a subset of `live_tools:`; `archi
+bundles validate` refuses an L2 action class whose tool is not): given the same
+key twice it has the effect once, because the step cannot know whether a
+crashed call finished.
+
+Runbook: an `unknown` outcome after a crash may mean the tool ran or did not.
+The attempt row is written before the call, so a crash between that row and the
+tool call leaves the same trace as a crash inside the call. Check the external
+system before acting; do not assume it ran, and do not assume it did not.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `archi ops status [--json]` | Effective level, mode, scanner state, pending escalations, today's budget against its cap, shadow counts and scores. |
+| `archi ops pending` | Escalations waiting for a person. |
+| `archi ops approve <id> [--note] [--as]` | Approve (`reject` refuses). Only an open escalation about an `ops_proposal:` of this instance's automations is accepted; a timed-out or already-decided one exits non-zero with the reason. |
+| `archi ops halt [--no-cancel]` | Pause the scanner, answer each open escalation of a run with `reject` (decided by `archi ops halt`), cancel runs that have not finished, record them as `halted`. It reports any escalation it could not close and exits non-zero. `--no-cancel` leaves runs in flight; their mediator step refuses to act. |
+| `archi ops resume` | Resume what halt paused. A cancelled run is not resumed; its signal runs again as attempt 2. |
+| `archi ops promote <automation>` | Needs a shadow report that passes `promotion_readiness` (thresholds: `--min-proposals` and the others). Opens a PACT change in the instance repo that holds the shadow report and the thresholds used, with the readiness verdict as its junit evidence, names it in `ops.yaml` (`mode: live`, `promotion: <change>`), commits both, and stops. An operator then approves it: `okg pact decide <change> --verdict approve --principal <name>`, a step archi never takes; commit the archived change. Until then the automation runs in shadow. Refuses without a passing report, and outside a repository. `.okg/` is ignored by the instance repo. |
+
+`decided_by` is the OS user. `--as X` is recorded as "<os user> for X", not as
+X: nothing authenticates the caller until okg offers an authenticated proposal
+API (docs/ops-runtime-akmon-asks.md, O3). Put `--instance`, `--deployment` and
+`--dsn` (default `$OKG_DSN`) before the subcommand: `archi ops --dsn ... pending`.
+`python/tests/ops/scratch_ops_runtime_run.sh` runs every case above on a scratch
+okg 0.2.0 instance.

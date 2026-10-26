@@ -303,6 +303,10 @@ def compose(resolution: Resolution) -> Composition:
     return comp
 
 
+#: The module okg's worker imports to get the ops loop (archi.ops.workflow).
+OPS_WORKFLOW_MODULE = "archi.ops.workflow"
+
+
 def deployment_defaults(resolution: Resolution, comp: Composition, profile_name: str) -> dict:
     """The base deployment defaults with the pack- and bundle-decided parts filled."""
     data = yaml.safe_load((BASE_DIR / "deployment-defaults.yaml").read_text(encoding="utf-8"))
@@ -326,4 +330,9 @@ def deployment_defaults(resolution: Resolution, comp: Composition, profile_name:
         preset.pop("suggestions")
     if comp.triggers is None:
         data.pop("skill_triggers")
+    if comp.automations:
+        # The ops runtime is a workflow module the okg worker loads. It must be declared
+        # before `okg install`: editing `runtime:` afterwards makes publish refuse
+        # (CatalogOwnershipMismatch) until `okg catalog load --apply`.
+        data["runtime"] = {"enabled": True, "workflows": [OPS_WORKFLOW_MODULE]}
     return data
