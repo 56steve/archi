@@ -88,5 +88,33 @@ tasks:
     Test plan:
 
     - rebuild run [evidence: executed_test]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.r3-bundle-cms-physics.pack
+  status: pass
+  command: python -m pytest python/tests/packs/test_cms_analyses.py python/tests/packs/test_cms_analyses_edges.py
+    -q; python -m pytest python/tests -q -k "not is_linear"
+  head: 6cd7918b33730fae7400e7e75a6aa747d70d610f
+  at: '2026-10-26T02:49:39+00:00'
+  note: 'acc.r3-bundle-cms-physics.links: the cms-analyses pack (PAG/POG vocabulary, 180 public physics
+    entities with alias matching, the declarative cross-link rules and the analysis-lookup playbook,
+    lifted from cms-kb with cms_kb_* renamed cms_analyses_*) runs its real sources over a synthetic fixture
+    corpus, and each cross-link rule through the linker''s matcher: it asserts concrete linked pairs
+    (CDS record to analysis note, PAG to POG, the two-hop legacy-note path). A warn invariant flags an
+    instance where the hand-wired enricher produced no derived edges. Full suite 2905 passed, 19 skipped
+    at 06a507d9; this head only rewords two comments. Two independent reviews: publication-safe, with
+    their findings fixed.'
+- kind: executed_test
+  requirement: req.r3-bundle-cms-physics.notes
+  status: pass
+  command: python -m pytest python/tests/packs/test_analysis_notes.py python/tests/packs/test_analysis_notes_walk.py
+    -q
+  head: 6cd7918b33730fae7400e7e75a6aa747d70d610f
+  at: '2026-10-26T02:49:39+00:00'
+  note: 'acc.r3-bundle-cms-physics.notes: the analysis-notes source and parser (lifted from cms_kb.analysis_notes)
+    walk synthetic note trees and yield notes, sections, figures (caption, label, panels on disk) and
+    references, plus the bibliography-to-TWiki bridge; cms-kb''s walker, chunking, figure, import and
+    match-cache tests are ported with synthetic fixtures. The note floor is an init question enforced at
+    preflight (default 1; cms-physics sets 2500 through the new bundle answers key). The mirror fetch
+    needs CERN credentials and is documented in the pack README.'
 decisions: []

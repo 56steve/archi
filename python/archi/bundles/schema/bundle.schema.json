@@ -66,6 +66,12 @@
         "properties": {"max_level": {"type": "string"}}
       }
     },
+    "answers": {
+      "description": "Install-question defaults this bundle sets, {<rendered question id>: value}, e.g. analysis_notes_min_notes. A later bundle overrides an earlier one; an id no selected pack asks is refused.",
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+      "additionalProperties": {"type": ["string", "integer"]}
+    },
     "eval": {
       "description": "Eval set (JSONL) run by `archi eval` and by CI.",
       "type": "string",
