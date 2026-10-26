@@ -85,6 +85,10 @@ class PhysicsEntitySource:
         self.eos_root = eos_root
         self.web_root = web_root
         self.an_root = an_root
+        if not isinstance(physics_filter, bool):
+            raise ValueError(
+                f"physics_filter must be true or false, got {physics_filter!r}"
+            )
         self.physics_filter = physics_filter
         self.max_notes = max_notes
         self.max_files = max_files

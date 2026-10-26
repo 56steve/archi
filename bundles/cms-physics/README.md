@@ -17,12 +17,26 @@ A CMS physics knowledge instance (ADR 0002 section 5). It extends
 archi render --bundle cms-physics --instance .
 okg install --profile cms-physics --deployment-name <slug> \
   --postgres-dsn "$OKG_DSN" --archi-data-root "$PWD/archi-data/data" \
-  --twiki-eos-root <TWiki dump> --twiki-physics-filter true \
-  --analysis-notes-mirror-root <note mirror>
+  --twiki-eos-root <TWiki dump> --analysis-notes-mirror-root <note mirror>
 ```
 
-Add `PhysicsCrossLinker` to the deployment's `enrichers` block to turn on the
-cross-link rules (see the [cms-analyses README](../packs/cms-analyses/README.md)).
+The bundle sets two answers you can override with their flags:
+`--twiki-physics-filter` is `true`, and `--analysis-notes-min-notes` is 2500
+(the floor the cms-kb deployment calibrated; a smaller mirror fails
+preflight).
+
+**Wire the cross-link enricher.** Packs cannot yet install an enricher, and
+without it the publish succeeds but the CDS-to-note, citation-to-CDS,
+TWiki-to-group and PAG-to-POG edges do not exist. Paste this into the
+deployment's manifest, commit, and publish:
+
+```yaml
+enrichers:
+  - class: archi.enrichment.physics_cross_links.PhysicsCrossLinker
+```
+
+If it is missing, the warn invariant `cms_analyses_enricher_edges` fires. See
+the [cms-analyses README](../packs/cms-analyses/README.md).
 
 ## What needs credentials
 

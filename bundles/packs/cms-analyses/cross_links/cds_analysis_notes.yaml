@@ -2,13 +2,13 @@
 #
 # Both are exact matches between identifiers the records ALREADY carry.
 # Nothing here infers, resolves entities across spellings, or asks a
-# model: a CDS Physics Analysis Summary is named CMS-PAS-HIG-19-001, the
-# analysis note behind it is named HIG-19-001, and archi's CDS connector
+# model: a CDS Physics Analysis Summary is named CMS-PAS-HIG-99-001, the
+# analysis note behind it is named HIG-99-001, and archi's CDS connector
 # parses the first into the second as `analysis_code` precisely so this
 # join can be a string equality rather than a guess.
 #
 # WHY `analysis_code` AND NOT `report_number`: a report number with no
-# PAG token (CMS-NOTE-2019-001 names a note series, not an analysis) or
+# PAG token (CMS-NOTE-2099-001 names a note series, not an analysis) or
 # an unrecognised token yields an EMPTY analysis_code upstream. Matching
 # on the raw report number would let those match the wrong note, or
 # nothing, silently. The empty-string case simply finds no partner.

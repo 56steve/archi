@@ -1,7 +1,7 @@
 # CMS analysis lookup in the OKG
 
-Use this when a question names a CMS analysis by its id (`HIG-19-001`,
-`CMS-PAS-TOP-20-003`, `AN-99-120`) or asks what exists for an analysis,
+Use this when a question names a CMS analysis by its id (`HIG-99-001`,
+`CMS-PAS-TOP-99-003`, `AN-99-120`) or asks what exists for an analysis,
 group or technique. The cms-analyses pack links the same analysis across
 CDS records, analysis notes and TWiki pages; what it cannot link, say so.
 
@@ -9,11 +9,11 @@ CDS records, analysis notes and TWiki pages; what it cannot link, say so.
 
 An analysis id is `<PAG>-<YY>-<NNN>`. The same analysis appears as:
 
-- `HIG-19-001`: the analysis note directory (`analysis_note`, id
-  `an:HIG-19-001`).
-- `CMS-PAS-HIG-19-001`, `CMS-HIG-19-001`: a CDS report number
+- `HIG-99-001`: the analysis note directory (`analysis_note`, id
+  `an:HIG-99-001`).
+- `CMS-PAS-HIG-99-001`, `CMS-HIG-99-001`: a CDS report number
   (`cds_record`, attrs `report_number` and `analysis_code`).
-- `HIG19001`, `HIG19001Review`: a TWiki topic name, which drops the
+- `HIG99001`, `HIG99001Review`: a TWiki topic name, which drops the
   hyphens because a topic name is a WikiWord (`documentation_page`, ids
   `twiki:<Web>:<Topic>`). Search the joined form as well as the hyphenated
   one; a topic's `analysis_id` attr, when set, holds the hyphenated id.

@@ -20,6 +20,15 @@ reimplementation of OKG services.
 
 ## Current state (update this section when it changes)
 
+**The cms-analyses pack adds one private okg import (2026-10-26).**
+`archi.enrichment.physics_cross_links.PhysicsCrossLinker` subclasses okg's
+`DeclarativeLinker` (already imported by `GlobalTagReleaseLinker`) and calls
+`okg.substrate.publisher.enricher_loader.derive_write_envelope` to derive the
+write envelope it labels `untrusted`. That function is private substrate, so it
+joins the enricher-side imports below. The analysis-notes and cms-analyses
+sources use only the public `okg.deployment` SDK. Tested against the v0.2.0
+release (no pin change). PACT `r3-bundle-cms-physics`.
+
 **archi composes bundles itself and reads okg's profile planner (2026-10-25).**
 okg has no profile composition (ADR 0002 §9 ask 3), so `archi render` writes one
 ordinary profile into the instance's `./profiles/`, which okg's discovery
@@ -184,15 +193,15 @@ account (reading `mitdbg/okg` returned 403, run `34494575759`). The read-only
 deploy key on `mitdbg/okg` replaces both, so a pin bump no longer needs a fork sync.
 The workflow release must still equal the release in the *Last updated* line above.
 
-**Our migration debt, now measured rather than estimated.** 43 imports of
-`okg.substrate.*` across ten private modules:
+**Our migration debt, now measured rather than estimated.** 44 imports of
+`okg.substrate.*` across eleven private modules:
 
 | Side | Sites | Status |
 |---|---|---|
 | Connector — `library.sources.base` (17), `sources.preflight` (4), `content_hash_probe` (3), `mutable_api_probe` (3), `sources.redaction` (1) | **28** | **Migratable now.** `okg.deployment` exports 82 names; 17 of the 20 we need are present. `SourceRun` → `ConnectorRun` and `SourceHealth` → `ConnectorHealth` are renames touching ~133 references. We do not use `content_hash_items`. |
-| Enricher — `enrichers.base` (4), `enrichers.derived_edges` (4), `library.linkers` (5), `linkers.declarative` (1), `alias.protocol` (1) | **15** | **Blocked** on the enricher read surface, deferred at our own recommendation. |
+| Enricher — `enrichers.base` (4), `enrichers.derived_edges` (4), `library.linkers` (5), `linkers.declarative` (1), `alias.protocol` (1), `publisher.enricher_loader` (1) | **16** | **Blocked** on the enricher read surface, deferred at our own recommendation. |
 
-One of the fifteen is `okg.substrate.library.linkers._chronos` — underscore-private by
+One of the sixteen is `okg.substrate.library.linkers._chronos` — underscore-private by
 Python convention, and the single item we flagged upstream as most worth absorbing.
 
 **Sprint 11 closed 2026-09-10 with our three reports absorbed.** Its

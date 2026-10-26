@@ -1,26 +1,23 @@
 # Coverage for the subtypes this pack emits. It leaves with the pack.
 #
-# The note-count floor is the second branch. The pack's own floor is one
-# note, the lowest value that still means "the walker found the mirror": a
-# walker whose directory or section rules stop matching drops notes
-# silently and still publishes, and zero notes is the one count that is
-# wrong for every mirror. A real mirror holds thousands of notes, so an
-# instance that has measured its own build raises the floor with an
-# invariant of its own; the number belongs to the instance, not the pack.
+# The pack-level floor is one note, the one count that is wrong for every
+# mirror. The real note-count floor is the `min_notes` install answer, which
+# the source enforces at preflight (a static invariant cannot read an
+# answer); the cms-physics bundle sets it for production. `reference` is not
+# required: a mirror with no .bib files must still publish.
 invariants:
   - name: analysis_notes_coverage
     severity: error
     scope: cross
     timeout_ms: 5000
     description: >-
-      The analysis-note source must have live notes with sections and
-      bibliography entries. Required live subtypes: analysis_note,
-      section, reference. A missing one means the mirror was empty, the
-      walker stopped matching its directories, or the connector
-      regressed. The note-count floor is one note (see the file header).
+      The analysis-note source must have live notes with sections.
+      Required live subtypes: analysis_note, section. A missing one means
+      the mirror was empty, the walker stopped matching its directories,
+      or the connector regressed.
     sql: |
       WITH required(subtype) AS (
-        VALUES ('analysis_note'), ('section'), ('reference')
+        VALUES ('analysis_note'), ('section')
       ),
       counts AS (
         SELECT subtype, count(*) AS n

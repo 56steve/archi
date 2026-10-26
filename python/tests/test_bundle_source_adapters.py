@@ -571,9 +571,7 @@ def test_the_twiki_eos_root_answer_reaches_the_reader_and_reads_the_dump(
         (dump / f"{topic}.txt").write_text(text, encoding="utf-8")
 
     rendered = render_alone(tmp_path / "render", "twiki")
-    # The data root holds the page index the reader writes; keep it out of the cwd.
-    answers = {"twiki_eos_root": str(dump), "archi_data_root": str(tmp_path / "data")}
-    plan = okg_plan(rendered, tmp_path / "render", answers)
+    plan = okg_plan(rendered, tmp_path / "render", {"twiki_eos_root": str(dump)})
     entry = yaml.safe_load(plan.source_defaults["twiki.twiki_eos"])["twiki.twiki_eos"]
     assert entry["params"]["eos_root"] == str(dump)
 
@@ -595,6 +593,11 @@ def test_the_twiki_eos_reader_refuses_a_missing_dump_instead_of_shrinking(tmp_pa
         tmp_path,
         extra={"${eos_root}": str(tmp_path / "no-such-dump")},
     )
+    # The install answer is YAML true/false once substituted; the reader
+    # refuses the raw placeholder (or any typo) instead of reading it as true.
+    with pytest.raises(ValueError, match="true or false"):
+        _adapter_class(entry)(**params)
+    params["physics_filter"] = False
     run = _adapter_class(entry)(**params).run("run-1", mode="scope_complete")
     assert list(run.facts) == []
     assert run.completed_scope is False

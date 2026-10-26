@@ -421,7 +421,11 @@ def test_the_entity_template_reads_the_answers_of_the_packs_it_requires():
 
 
 def test_the_coverage_invariant_requires_every_subtype_the_pack_emits():
-    (invariant,) = invariants("cms-analyses")
+    invariant, enricher = invariants("cms-analyses")
+    # The second invariant only warns when the hand-wired enricher is missing.
+    assert enricher["name"] == "cms_analyses_enricher_edges"
+    assert enricher["severity"] == "warn"
+    assert "physics_object_group" in enricher["sql"] and "cds_record" in enricher["sql"]
     for subtype in (
         "physics_analysis_group", "physics_object_group",
         "physics_technique", "physics_concept", "physics_topic",

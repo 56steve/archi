@@ -285,6 +285,14 @@ def compose(resolution: Resolution) -> Composition:
         if pack.path("prompt_fragment") is not None:
             fragments.append(pack.path("prompt_fragment").read_text(encoding="utf-8").strip())
 
+    for qid, value in resolution.answers.items():
+        if qid not in question_defs:
+            raise CompositionError(
+                "answer_unknown",
+                f"a bundle sets answers.{qid}, which no selected pack asks",
+                question=qid,
+            )
+        question_defs[qid] = {**question_defs[qid], "default": value}
     comp.questions = list(question_defs.values())
     for sid, text in comp.sources.items():
         unknown = sorted(set(TEMPLATE_REF.findall(text)) - set(question_defs))

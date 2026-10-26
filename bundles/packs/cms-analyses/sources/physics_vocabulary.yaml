@@ -28,6 +28,13 @@ physics_vocabulary:
       summary: CMS Physics Analysis Groups and Physics Object Groups as hub nodes
       nodes: [physics_analysis_group, physics_object_group]
       edges: []
+  # ORDERING. The analysis-notes source also emits `pag:*` hubs, for a note
+  # installed without this pack. Where both are installed this source runs
+  # after it, so the producers of one id have a defined order, and the
+  # vocabulary's fuller record (name, POG twin) is the last write. (The
+  # other order would make analysis-notes depend on this pack, which
+  # already requires it.)
+  predecessor_source: ${deployment_name}.analysis-notes
   source_class: reference_catalog
   # domain_key, not scoped_locator: a PAG code identifies the group itself,
   # not a position inside some scope. The reference_catalog profile refuses

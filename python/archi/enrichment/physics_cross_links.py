@@ -64,6 +64,8 @@ class PhysicsCrossLinker(DeclarativeLinker):
         # rule set under this linker's name -- the bug
         # GlobalTagReleaseLinker documents having hit.
         if not any(kwargs.get(key) for key in ("rules", "rules_files", "rules_dir")):
+            for key in ("rules", "rules_files", "rules_dir"):
+                kwargs.pop(key, None)
             kwargs["rules_files"] = cross_link_rules_files()
         super().__init__(**kwargs)
 

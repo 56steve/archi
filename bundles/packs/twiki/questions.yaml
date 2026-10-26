@@ -28,4 +28,5 @@ init_questions:
       `true` narrows a CMS snapshot to physics topics (PAG, POG and workbook
       roots, their parent topics, and documentation page types) and drops the
       computing-operations roots. Use it for a physics instance; leave the
-      default for an operations one. Give `true` or `false`.
+      default for an operations one. Give exactly `true` or `false`; anything
+      else (a typo such as `ture`) is refused when the source starts.

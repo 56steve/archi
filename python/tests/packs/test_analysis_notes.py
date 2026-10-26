@@ -389,9 +389,15 @@ def test_the_template_binds_to_the_adapter_and_follows_the_twiki_source():
     params = set(entry["params"])
     assert params <= set(inspect.signature(AnalysisNoteSource).parameters)
     twiki = templates("twiki")["twiki_eos"]
-    # The page list the bridge reads is the one the twiki source writes, and
-    # the notes source is ordered after it.
-    assert entry["params"]["twiki_pages_path"] == twiki["params"]["page_index_path"]
+    # The bridge's page list comes from the same dump, web and filter the
+    # twiki source reads, and the notes source is ordered after it.
+    assert entry["params"]["twiki_eos_root"] == "${twiki_eos_root}"
+    assert twiki["params"]["eos_root"] == "${eos_root}"
+    assert entry["params"]["twiki_web_root"] == twiki["params"]["web_root"]
+    assert entry["params"]["twiki_physics_filter"] == "${twiki_physics_filter}"
+    assert twiki["params"]["physics_filter"] == "${physics_filter}"
+    assert "page_index_path" not in twiki["params"]
+    assert entry["params"]["min_notes"] == "${min_notes}"
     assert entry["predecessor_source"] == twiki["ownership_id"]
     assert entry["admission_policy"]["trust_label"] == "untrusted"
     assert entry["params"]["required"] is True
@@ -415,8 +421,48 @@ def test_the_readme_documents_the_mirror_fetch():
     assert "oauth2:" not in readme
 
 
-def test_the_coverage_invariant_holds_the_note_floor():
+def test_the_coverage_invariant_does_not_require_a_bibliography():
     (invariant,) = invariants("analysis-notes")
     assert invariant["name"] == "analysis_notes_coverage"
-    assert "'analysis_note'" in invariant["sql"]
-    assert "< 1" in invariant["sql"]
+    assert "'analysis_note'" in invariant["sql"] and "'section'" in invariant["sql"]
+    # A mirror with no .bib files must still publish.
+    assert "'reference'" not in invariant["sql"]
+
+
+def test_the_note_floor_is_an_install_question_the_bundle_raises():
+    import yaml
+
+    questions = yaml.safe_load(
+        (PACKS_DIR / "analysis-notes" / "questions.yaml").read_text(encoding="utf-8")
+    )["init_questions"]
+    (floor,) = [q for q in questions if q["id"] == "min_notes"]
+    assert floor["type"] == "integer" and floor["default"] == 1
+    bundle = yaml.safe_load(
+        (PACKS_DIR.parent / "cms-physics" / "bundle.yaml").read_text(encoding="utf-8")
+    )
+    assert bundle["answers"]["analysis_notes_min_notes"] == 2500
+
+
+def test_the_bundle_answers_reach_the_rendered_questions():
+    from archi.bundles.compose import compose
+    from archi.bundles.resolve import resolve
+    from packs.pack_support import shipped_catalog
+
+    comp = compose(resolve(shipped_catalog(), ["cms-physics"]))
+    defaults = {q["id"]: q.get("default") for q in comp.questions}
+    assert defaults["analysis_notes_min_notes"] == 2500
+    assert defaults["twiki_physics_filter"] == "true"
+
+
+def test_a_bundle_answer_no_pack_asks_is_refused(tmp_path):
+    from archi.bundles.compose import compose
+    from archi.bundles.resolve import CompositionError, resolve
+    from packs.pack_support import shipped_catalog
+
+    catalog = shipped_catalog()
+    bundle = catalog.bundles["cms-physics"]
+    object.__setattr__(
+        bundle, "manifest", {**bundle.manifest, "answers": {"nobody_asks_this": 1}}
+    )
+    with pytest.raises(CompositionError, match="no selected pack asks"):
+        compose(resolve(catalog, ["cms-physics"]))

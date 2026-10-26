@@ -24,16 +24,19 @@ Emits, per accepted directory:
 The bridge is the one cross-source edge, and it is only as good as its
 knowledge of which pages exist. A connector under this SDK cannot read
 the graph mid-build, and guessing would emit edges to nodes that are not
-there. So the target set arrives as a file, named by ``twiki_pages_path``.
-Absent, the bridge emits nothing and says so in the run's counters
-rather than emitting dangling edges.
+there. So the target set is either a file of node ids (``twiki_pages_path``)
+or, in the pack, computed by reading the same TWiki dump with the same
+reader and filter the twiki source uses (``twiki_eos_root``,
+``twiki_web_root``, ``twiki_physics_filter``), so the list describes the
+pages that source emits. With neither, the bridge emits nothing and says so
+in the run's counters rather than emitting dangling edges. A page named in
+the list that the twiki source did not produce fails admission for the
+WHOLE emission, not just the bad edge, which is why a stale export is
+worse than none.
 
-The TWiki source writes that file during its own run as
-``page_index_path``, and this source is ordered after it
-(``predecessor_source``), so the list describes the generation being
-built. A page named in the list that the run did not produce fails
-admission for the WHOLE emission, not just the bad edge, which is why a
-stale export is worse than none.
+``min_notes`` is the note-count floor: a mirror with fewer note directories
+fails preflight and emits nothing, so a walker whose rules stop matching
+cannot publish a fraction of the corpus.
 """
 from __future__ import annotations
 
@@ -144,6 +147,10 @@ class AnalysisNoteSource:
         required: bool = True,
         max_notes: int | None = None,
         twiki_pages_path: str | None = None,
+        twiki_eos_root: str | None = None,
+        twiki_web_root: str = "CMS",
+        twiki_physics_filter: bool = False,
+        min_notes: int = 1,
         chunker_name: str = DEFAULT_CHUNKER_NAME,
         records: list[AnalysisNoteRecord] | None = None,
         base: str | None = None,
@@ -157,6 +164,21 @@ class AnalysisNoteSource:
             )
         self.max_notes = max_notes
         self.twiki_pages_path = twiki_pages_path
+        if twiki_pages_path and twiki_eos_root:
+            raise ValueError("give twiki_pages_path or twiki_eos_root, not both")
+        if not isinstance(twiki_physics_filter, bool):
+            raise ValueError(
+                f"twiki_physics_filter must be true or false, got "
+                f"{twiki_physics_filter!r}"
+            )
+        if isinstance(min_notes, bool) or not isinstance(min_notes, int) or min_notes < 0:
+            raise ValueError(f"min_notes must be an integer >= 0, got {min_notes!r}")
+        self.twiki_eos_root = (
+            str(Path(twiki_eos_root).expanduser()) if twiki_eos_root else None
+        )
+        self.twiki_web_root = twiki_web_root
+        self.twiki_physics_filter = twiki_physics_filter
+        self.min_notes = min_notes
         self.chunker_name = chunker_name
         self._records = records
         self.base = base
@@ -169,6 +191,9 @@ class AnalysisNoteSource:
                 "an_root": self.an_root,
                 "max_notes": self.max_notes,
                 "twiki_pages_path": self.twiki_pages_path,
+                "twiki_eos_root": self.twiki_eos_root,
+                "twiki_physics_filter": self.twiki_physics_filter,
+                "min_notes": self.min_notes,
             },
             emit_targets=AnalysisNoteSource,
         )
@@ -214,6 +239,14 @@ class AnalysisNoteSource:
             cache = Path(self.twiki_pages_path).expanduser()
             if cache.is_file():
                 items.append(("twiki_pages", cache))
+        if self.twiki_eos_root and Path(self.twiki_eos_root).is_dir():
+            # The bridge depends on which pages the dump yields, so a topic
+            # added, removed or edited must move the probe.
+            listing = sorted(
+                f"{p.relative_to(self.twiki_eos_root).as_posix()}\0{p.stat().st_size}"
+                for p in Path(self.twiki_eos_root).rglob("*.txt")
+            )
+            items.append(("twiki_dump", "\n".join(listing).encode("utf-8")))
         return items
 
     # ── lifecycle ──────────────────────────────────────────────────────
@@ -234,6 +267,16 @@ class AnalysisNoteSource:
                 ),
             )
         notes = self._note_dirs(root)
+        if len(self._all_note_dirs(root)) < self.min_notes:
+            return PreflightResult(
+                source_name=self.name,
+                status="cache_missing",
+                mode="filesystem",
+                required=self.required,
+                record_count=len(notes),
+                cache_path=str(root),
+                reason=self._floor_reason(root),
+            )
         return PreflightResult(
             source_name=self.name,
             status="ok",
@@ -261,6 +304,17 @@ class AnalysisNoteSource:
                             f"analysis-note mirror absent at "
                             f"{root or '<unset>'}; no facts emitted"
                         ),
+                    ),
+                )
+            if len(self._all_note_dirs(root)) < self.min_notes:
+                return ConnectorRun(
+                    facts=[],
+                    completed_scope=False,
+                    run_mode=mode,
+                    health=ConnectorHealth(
+                        status="cache_missing",
+                        mode="filesystem",
+                        reason=self._floor_reason(root) + "; no facts emitted",
                     ),
                 )
             records = self._walk(root)
@@ -324,12 +378,23 @@ class AnalysisNoteSource:
 
     # ── the walk ───────────────────────────────────────────────────────
 
-    def _note_dirs(self, root: Path) -> list[Path]:
-        dirs = [
+    def _all_note_dirs(self, root: Path) -> list[Path]:
+        return [
             path for path in sorted(root.iterdir())
             if path.is_dir() and classify_an_directory(path.name) is not None
         ]
+
+    def _note_dirs(self, root: Path) -> list[Path]:
+        dirs = self._all_note_dirs(root)
         return dirs[:self.max_notes] if self.max_notes is not None else dirs
+
+    def _floor_reason(self, root: Path) -> str:
+        return (
+            f"analysis-note mirror at {root} holds "
+            f"{len(self._all_note_dirs(root))} note directories, below the "
+            f"floor of {self.min_notes} (min_notes); the mirror is partial "
+            f"or the directory rules stopped matching"
+        )
 
     def _walk(self, root: Path) -> list[AnalysisNoteRecord]:
         records: list[AnalysisNoteRecord] = []
@@ -388,6 +453,8 @@ class AnalysisNoteSource:
 
     def _twiki_pages(self) -> frozenset[str]:
         """Node ids of TWiki pages already in the graph, for the bridge."""
+        if self.twiki_eos_root:
+            return self._twiki_pages_from_dump()
         if not self.twiki_pages_path:
             return frozenset()
         path = Path(self.twiki_pages_path).expanduser()
@@ -397,8 +464,8 @@ class AnalysisNoteSource:
             # readers hold for a configured-but-missing cache.
             raise FileNotFoundError(
                 f"twiki_pages_path is set to {path} but no such file "
-                f"exists; run the twiki source first (it writes the list as "
-                f"page_index_path) or unset twiki_pages_path"
+                f"exists; write the list of TWiki node ids there or unset "
+                f"twiki_pages_path"
             )
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, list):
@@ -407,6 +474,28 @@ class AnalysisNoteSource:
                 f"got {type(payload).__name__}"
             )
         return frozenset(str(item) for item in payload)
+
+    def _twiki_pages_from_dump(self) -> frozenset[str]:
+        """The pages the twiki source emits from this dump and filter."""
+        from archi.sources.twiki import TwikiEOSSource
+
+        root = Path(self.twiki_eos_root)
+        if not root.is_dir():
+            raise FileNotFoundError(
+                f"twiki_eos_root is set to {root} but no such directory exists"
+            )
+        source = TwikiEOSSource(
+            eos_root=str(root),
+            web_root=self.twiki_web_root,
+            physics_filter=self.twiki_physics_filter,
+            base=self.base,
+        )
+        run = source.run("analysis-notes-bridge", mode="scope_complete")
+        return frozenset(
+            fact.node_id
+            for fact in run.facts
+            if getattr(fact, "subtype", None) == "documentation_page"
+        )
 
 
 def _section_files(an_dir: Path, an_id: str) -> list[tuple[Path, str, int | None]]:

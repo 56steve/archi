@@ -396,7 +396,7 @@ _BIB_URL_RE = re.compile(r"\\url\{([^}]+)\}")
 
 
 #: A CMS analysis code inside a bibliography report number, e.g. the
-#: ``TOP-14-012`` in ``CMS-TOP-14-012, CERN-EP-2016-078``. This is the
+#: ``TOP-99-012`` in ``CMS-TOP-99-012, CERN-EP-2099-078``. This is the
 #: key a published CDS summary carries, which is what lets a legacy
 #: AN-YY-NNN note reach the published corpus through its own citations.
 _CMS_ANALYSIS_CODE_RE = re.compile(
@@ -408,7 +408,7 @@ _CMS_ANALYSIS_CODE_RE = re.compile(
 def split_report_numbers(raw: str) -> tuple[str, ...]:
     """Bibliography report numbers arrive comma-joined.
 
-    ``CMS-TOP-14-012, CERN-EP-2016-078`` is two identifiers in one
+    ``CMS-TOP-99-012, CERN-EP-2099-078`` is two identifiers in one
     field. Matching the raw string against a CDS record's report number
     finds nothing; splitting it finds the analysis.
     """
@@ -419,7 +419,7 @@ def analysis_code_from_report_numbers(raw: str) -> str:
     """The CMS analysis code a reference names, or ``""``.
 
     Empty when no part of the field names a recognised PAG-coded
-    analysis -- a conference record (``CMS-CR-2011-213``) or a CERN
+    analysis -- a conference record (``CMS-CR-2099-213``) or a CERN
     preprint number names no analysis, and must not match one.
     """
     for part in split_report_numbers(raw):

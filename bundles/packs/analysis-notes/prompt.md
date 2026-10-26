@@ -1,7 +1,7 @@
 ## Analysis notes
 
 CMS analysis notes are `analysis_note` records with ids `an:<note id>`
-(for example `an:HIG-19-001` or the legacy `an:AN-99-001`). A note
+(for example `an:HIG-99-001` or the legacy `an:AN-99-001`). A note
 contains `section` records (`an_section:<note id>:<file>`) and
 `note_figure` records (`an_figure:<note id>:<label>`), and cites
 `reference` records. Read a note's prose through its sections; a figure

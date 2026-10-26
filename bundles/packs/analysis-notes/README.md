@@ -2,7 +2,7 @@
 
 CMS analysis notes, read from a local mirror of
 [`gitlab.cern.ch/tdr/notes`](https://gitlab.cern.ch/tdr/notes). Each note is
-a LaTeX tree named `<PAG>-YY-NNN` (for example `HIG-19-001`) or, for older
+a LaTeX tree named `<PAG>-YY-NNN` (for example `HIG-99-001`) or, for older
 notes, `AN-YY-NNN`.
 
 | Emitted | Id | What it is |
@@ -68,24 +68,28 @@ PPS FSQ. A project the walker accepts but that holds no `.tex` is skipped.
 
 ```bash
 okg install --profile <bundle> --deployment-name <slug> \
-  --analysis-notes-mirror-root "$MIRROR" ...
+  --analysis-notes-mirror-root "$MIRROR" --analysis-notes-min-notes <floor> ...
 ```
 
-The twiki pack must be installed too (this pack requires it): its source
-writes the list of TWiki pages it kept to
-`<archi_data_root>/twiki-page-index/pages.json`, and this source reads the
-same file, after the twiki source has run, to decide which bridge edges
-exist. A bib entry that names a page the twiki source did not keep gets no
-edge, rather than an edge to nothing.
+The twiki pack must be installed too (this pack requires it). To decide which
+bibliography-to-TWiki bridge edges exist, this source reads the same dump the
+twiki source reads (`--twiki-eos-root`), with the same physics filter
+(`--twiki-physics-filter`), and keeps the pages that source would emit. A bib
+entry that names a page the twiki source did not keep gets no edge, rather
+than an edge to nothing. The cost is a second read of the dump.
 
-## Coverage invariant
+## Coverage invariant and the note floor
 
-`analysis_notes_coverage` (error) requires live `analysis_note`, `section` and
-`reference` records. Its note-count floor is one note: the pack cannot know
-how large your mirror is. An instance that has measured a real build should
-add an invariant of its own with the calibrated floor, so a walker whose
-directory or section rules stop matching cannot silently publish a fraction of
-the corpus.
+`analysis_notes_coverage` (error) requires live `analysis_note` and `section`
+records. It does not require `reference`, so a mirror without `.bib` files
+still publishes.
+
+The note-count floor is the `--analysis-notes-min-notes` answer (default 1,
+which only catches an empty mirror). The source enforces it at preflight: a
+mirror with fewer note directories fails and publishes nothing, so a walker
+whose directory or section rules stop matching cannot silently publish a
+fraction of the corpus. A static invariant cannot read an answer, which is why
+the floor lives in the source. The cms-physics bundle sets a production value.
 
 ## What the walker does
 

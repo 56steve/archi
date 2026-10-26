@@ -11,7 +11,7 @@ alias already in the records; nothing is inferred by a model.
 | `physics_entities` source | `sources/physics_entities.yaml` | 180 entity nodes (81 techniques, 58 concepts, 41 topics), and a `references` edge from every TWiki page and analysis note whose text matches a declared alias. |
 | cross-link rules | `cross_links/*.yaml` | Declarative rules run by okg's `DeclarativeLinker`, listed below. |
 | schema slice | `schemas/` | The entity classes, `PhysicsObjectGroup`, and the edge narrowings the rules and the entity source need. |
-| playbook | `playbooks/analysis_lookup.md` | How an agent answers "what do we have on HIG-19-001". |
+| playbook | `playbooks/analysis_lookup.md` | How an agent answers "what do we have on HIG-99-001". |
 
 The pack requires `twiki`, `cds` and `analysis-notes`, and reads their
 answers (`--twiki-eos-root`, `--twiki-physics-filter`,
@@ -30,10 +30,10 @@ and the note mirror it reads need a CERN account, so it says
 | `cms_analyses_documentation_page_in_pog`, `..._alt` | TWiki page and POG hub | the POG root in the page title (`Muon`, `BTag`, `BTV`, ...) |
 | `cms_analyses_pag_pog_same_group` | the PAG and POG hub of one group (both ways) | the `pag_code` the POG hub carries |
 
-A report number with no PAG token (`CMS-NOTE-2019-001`, `CMS-CR-2011-213`)
+A report number with no PAG token (`CMS-NOTE-2099-001`, `CMS-CR-2099-213`)
 has an empty `analysis_code` and finds no partner, rather than a wrong one.
 
-TWiki page names drop the hyphens of an analysis id (`HIG19001`), and the
+TWiki page names drop the hyphens of an analysis id (`HIG99001`), and the
 twiki source records the hyphenated id in the page's `analysis_id`. No rule
 joins a page to a note by that id yet; today a page and a note meet at their
 PAG hub, through the note's citations, and through shared entities.
@@ -47,6 +47,10 @@ deployment manifest by hand:
 enrichers:
   - class: archi.enrichment.physics_cross_links.PhysicsCrossLinker
 ```
+
+If the block is missing the publish still succeeds and no derived edge
+exists. The warn invariant `cms_analyses_enricher_edges` flags that case: it
+fires when there is no CDS-to-note edge and no PAG-to-POG edge.
 
 `PhysicsCrossLinker` loads the four files in `cross_links/` from the installed
 pack, labels its edges `untrusted` (they derive from user-written text) and

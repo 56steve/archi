@@ -61,7 +61,9 @@ def test_each_context_pack_owns_one_coverage_invariant(pack):
     a floor for data that never arrives (the cern-team "core pages floor").
     """
     owned = invariants(pack)
-    assert [i["name"] for i in owned] == [pack.replace("-", "_") + "_coverage"]
+    assert owned[0]["name"] == pack.replace("-", "_") + "_coverage"
+    # Any further invariant is advisory (a pack may warn about a wiring step).
+    assert all(i["severity"] == "warn" for i in owned[1:])
     inv = owned[0]
     assert inv["severity"] == "error"
     required = required_subtypes(inv)

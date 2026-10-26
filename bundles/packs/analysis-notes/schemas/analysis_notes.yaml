@@ -32,7 +32,7 @@ classes:
     attributes:
       an_id:
         required: true
-        description: Directory name, e.g. HIG-19-001.
+        description: Directory name, e.g. HIG-99-001.
       title:
         description: \title{...} from the main tex, or the directory name.
       path:
@@ -85,8 +85,7 @@ classes:
         description: >-
           Section prose, capped at 200 kB by the reader. This is `body`
           and NOT `text` on purpose. `attrs.text` is okg's DERIVED
-          search rollup, not a storage field: the stamper
-          (okg graph_store_internal/writes.py:1917) rebuilds it from
+          search rollup, not a storage field: okg's stamper rebuilds it from
           every declared searchable field EXCEPT `text`, which it skips
           so a restamp stays idempotent. A class that both stores prose
           in `text` and names another searchable field therefore has its

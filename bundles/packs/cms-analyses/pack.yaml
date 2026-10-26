@@ -1,7 +1,7 @@
 name: cms-analyses
 kind: context
 version: 0.1.0
-description: CMS physics groups, techniques and analysis ids, linking CDS records, TWiki pages and analysis notes.
+description: CMS physics group and technique hubs, and rules joining analysis ids across CDS records, TWiki pages and analysis notes (code is not linked).
 requires:
   modules: [document_starter, person, extraction]
   # The entity source re-reads the TWiki dump and the note mirror, and the
