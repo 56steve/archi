@@ -434,6 +434,7 @@ okg.substrate.enrichers.derived_edges:
     DerivedEdgeCandidate, insert_deterministic_edges, mint_edge_id
 okg.substrate.library.linkers:    _chronos
 okg.substrate.library.linkers.declarative: DeclarativeLinker
+okg.substrate.publisher.enricher_loader: derive_write_envelope
 okg.substrate.alias.protocol:     AliasMatch
 okg.substrate.deployment_bootstrap.profile_init:
     build_plan, discover_profile, planned_writes, source_default_entries
