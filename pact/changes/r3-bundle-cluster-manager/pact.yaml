@@ -100,5 +100,35 @@ tasks:
     Test plan:
 
     - rebuild run [evidence: executed_test]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.r3-bundle-cluster-manager.connectors
+  status: pass
+  command: 'python -m pytest python/tests -q (submit76, a clean clone, network off); ARCHI_PACK_ISOLATION_DSN=...
+    python -m pytest python/tests/packs/test_pack_isolation.py'
+  head: 234014132038de4ff107557b846830930ffdf2e7
+  at: '2026-10-26T16:03:19+00:00'
+  note: 'acc.r3-bundle-cluster-manager.fixtures and .admission: new packs servicenow (incidents, requests, KB
+    articles; OAuth or basic auth by env-var name; https only; stable paging), tickets (Redmine; its URL is a
+    required init question), slurm, htcondor and node-health (a per-node check export, format in the pack
+    description). Each reads a records cache written by a downloader that takes an injected session or runner,
+    and each has a schema slice, one coverage invariant and fixtures. Connector tests over the recorded
+    fixtures pass, and the templates pass okg''s strict admission: each pack installed alone on a scratch
+    akmon-postgres v0.2.0 published with lint zero blockers, and so did the cluster-manager bundle with its
+    defaults and with every optional pack. Full suite 3361 passed, 38 skipped, 0 failed. Three independent
+    review rounds; findings fixed.'
+- kind: executed_test
+  requirement: req.r3-bundle-cluster-manager.live
+  status: pass
+  command: python -m pytest python/tests/tools python/tests/ops -q (fake runner; no scheduler command is ever run)
+  head: 234014132038de4ff107557b846830930ffdf2e7
+  at: '2026-10-26T16:03:19+00:00'
+  note: 'acc.r3-bundle-cluster-manager.gated: the Slurm act tools (drain_node, resume_node, requeue_job) are L2
+    mediators, declared idempotent, with explicit payload schemas. Called without an approved escalation, or with
+    an expired, future, halted or superseded one (archi.ops.escalation.may_execute plus the halt check), or with
+    a payload different from the one the approver saw (one fixed Action line in the escalation reason), each
+    refuses and runs no command; a test drives both the runtime''s mediator step and a direct call. Reads
+    (squeue, sinfo, condor_q, condor_status) have timeouts and capped output. Node and job ids are validated by
+    full match. requeue records its idempotency mark only after a confirmed requeue; resume touches only nodes
+    archi drained unless force is set; a timed-out act reports unknown. No real Slurm or HTCondor command was run.'
 decisions: []

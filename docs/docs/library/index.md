@@ -9,6 +9,7 @@ Each page below is generated from the manifest in the repository, so it cannot d
 | Bundle | Description |
 |---|---|
 | [`cern-team`](bundles/cern-team.md) | A generic CERN team knowledge instance - documentation, meetings, wiki, documents, tickets and code. |
+| [`cluster-manager`](bundles/cluster-manager.md) | A cluster manager's knowledge instance - documentation, tickets, operational memory and, optionally, ServiceNow, Slurm, HTCondor, node health and code. |
 | [`cms-comp-ops`](bundles/cms-comp-ops.md) | A CMS computing operations knowledge instance - sites, storage, datasets and workflows from the CMS catalogs, site status, CMSSW releases, and the operational memory of past incidents. |
 | [`cms-physics`](bundles/cms-physics.md) | A CMS physics knowledge instance - physics TWiki pages, CDS records, CMSSW releases, analysis notes, and the analysis ids, groups and techniques that link them. |
 
@@ -28,10 +29,15 @@ Each page below is generated from the manifest in the repository, so it cannot d
 | [`docsite`](packs/docsite.md) | context | Documentation sites, read from the records cache the static-docs downloader writes. |
 | [`dqm`](packs/dqm.md) | context | CMS DQM data-quality certifications, with the runs and datasets they cover. |
 | [`git-code`](packs/git-code.md) | context | One Git repository's tracked files and history (commits, tags, authors, per-file diffs). |
+| [`htcondor`](packs/htcondor.md) | context | An HTCondor pool snapshot (machines, schedds and CPU totals) with live condor_status and condor_q tools. |
 | [`hypernews`](packs/hypernews.md) | context | CMS HyperNews forum threads, from a records cache or a live SSO crawl. |
 | [`indico`](packs/indico.md) | context | Indico events and their talks, read live from the Indico HTTP API. |
 | [`instance-health`](packs/instance-health.md) | automation | Watches the instance itself (doctor, source freshness, failed ingests, automation error rates, eval trends) and keeps one issue per problem in the instance repository. |
 | [`jira`](packs/jira.md) | context | JIRA issues and their participants, read from the cache the JIRA downloader writes. |
 | [`monit-live`](packs/monit-live.md) | context | CERN MONIT monitoring snapshots (SAM, HTCondor, Rucio) and the live MONIT query tools. |
+| [`node-health`](packs/node-health.md) | context | Compute-node health from a JSON list of per-node reports that a site's own health exporter writes to node-health/records.json (each report has node, cluster, observed_at and checks, a list of name, status ok or warn or fail, and detail). |
 | [`ops-record`](packs/ops-record.md) | context | Operational memory, the incidents, proposals, decisions, actions and outcomes automations record through okg admission (ADR 0002 section 6.2). |
+| [`servicenow`](packs/servicenow.md) | context | ServiceNow incidents, requests and knowledge-base articles, read from the records cache the ServiceNow downloader writes. |
+| [`slurm`](packs/slurm.md) | context | Slurm partitions, nodes, reservations and job summaries from an exported snapshot, with live squeue and sinfo tools and gated drain, resume and requeue actions. |
+| [`tickets`](packs/tickets.md) | context | Generic tracker tickets (Redmine first), read from the records cache the tickets downloader writes. |
 | [`twiki`](packs/twiki.md) | context | TWiki topics, read from an EOS dump of the wiki's raw markup. |
