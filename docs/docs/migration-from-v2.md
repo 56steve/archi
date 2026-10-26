@@ -31,8 +31,6 @@ branch of 3.0:
 - **Queue bots in live mode.** The 3.0 reference automation, `ticket-triage`,
   is not in this branch. When it ships it runs in shadow first. Promotion to
   live is a later goal. The v2 bots keep serving until then.
-- **`archi connect`.** Client setup is by hand for now. See
-  [Connecting an agent](connecting-an-agent.md).
 - **`archi eval`.** The v2 benchmark has no replacement yet. See
   [archi eval](operating/evals.md).
 - **The Piazza bot.** It is retired and will not be ported.

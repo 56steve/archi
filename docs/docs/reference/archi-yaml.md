@@ -18,7 +18,26 @@
 | `runtime` | `docker` or `podman`. |
 | `ports` | Host ports, all bound to 127.0.0.1: `graph_db`, `mcp`, `webui`. |
 | `admin_email` | The Open WebUI admin account. |
+| `mcp_servers` | External MCP servers `archi connect` registers next to the instance's own. See below. |
 | `automations` | Per automation, `level`: `L0`, `L1` or `L2`. See below. |
+
+## mcp_servers
+
+```yaml
+mcp_servers:
+  - name: notes                       # lowercase letters, digits, - _
+    url: https://notes.example.org/mcp
+    headers:
+      Authorization: NOTES_AUTH       # header name -> NAME of an environment variable
+```
+
+The variable holds the whole header value, for example `Bearer abc`. The file
+is committed, so it never holds a secret. `archi connect` stops with the reason
+for a value that is not a variable name, a URL with credentials or a query
+string, an unknown key, a duplicate name, or the instance's own server name.
+See [Connecting an agent](../connecting-an-agent.md#external-mcp-servers).
+
+## Automation levels
 
 ```yaml
 automations:

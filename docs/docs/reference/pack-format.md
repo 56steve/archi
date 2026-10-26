@@ -216,7 +216,7 @@ The value is a callable returning the directory, or the directory itself;
 the name labels the provider in `archi bundles list`. Two providers shipping
 a pack or bundle of the same name, or an entry point that fails to load, are
 listed as problems and do not hide the rest. What an external package must
-declare, and how to test it, is in [Contributing a pack](contributing-packs.md).
+declare, and how to test it, is in [Contributing a pack](../contributing-a-pack.md).
 
 A bundle directory that holds an okg `profile.yaml` and no `bundle.yaml` is
 listed as a legacy profile, and `archi render --bundle <name> --instance DIR`

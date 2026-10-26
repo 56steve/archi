@@ -7,7 +7,7 @@ Writes the config another agent needs to use the instance's MCP endpoint
 `OKG_CHAT_MCP_TOKEN` from the instance `.env`) and every external server the
 instance's `mcp_servers:` block names (archi.yaml).
 
-Each client's real format (checked 2026-10; see docs/connecting-clients.md):
+Each client's real format (checked 2026-10; see docs/docs/connecting-an-agent.md):
 
     claude-code  .mcp.json            {"mcpServers": {name: {"type": "http", "url", "headers"}}}
                                       (what `claude mcp add --transport http --header` writes)

@@ -112,6 +112,22 @@ Create an instance: git repo, secrets, profile, published graph.
 | `--pack-root PACK_ROOT` | extra directory of &lt;name&gt;/pack.yaml entries (repeatable) |  |
 | `--bundle-root BUNDLE_ROOT` | extra directory of &lt;name&gt;/bundle.yaml entries (repeatable) |  |
 
+## `archi connect`
+
+Write another agent's MCP config for this instance.
+
+| Argument | Meaning |
+|---|---|
+| `client` |  |
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--instance INSTANCE` | instance directory | `.` |
+| `--print` | print the config (the default) |  |
+| `--write PATH` | merge into this client config (default per client: claude-code ./.mcp.json, codex ~/.codex/config.toml, openclaw ~/.openclaw/openclaw.json, mcp ./archi-mcp.json) |  |
+| `--show-token` | include the bearer token in what is printed |  |
+| `--embed-token` | with --write: write the literal token (mode 0600) instead of a ${OKG_CHAT_MCP_TOKEN} reference; refused unless the file is git-ignored |  |
+
 ## `archi up`
 
 Start the instance's compose project and wire the chat to the graph.
