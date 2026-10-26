@@ -37,8 +37,8 @@ name is `archi`.
   `docsite` (two public documentation sites) and `indico` (one public
   event). (#835)
 - A nightly build runs the whole path on an empty runner, with a down/up
-  durability check. It fails if the path takes longer than 15 minutes. (#786,
-  #837)
+  durability check. It prints the elapsed time to the run summary; it does not
+  fail past 15 minutes. (#786, #837)
 - Every footgun found on the way is listed in the footgun ledger as absorbed
   by Archi or filed with AKMON. (#809)
 
@@ -101,6 +101,10 @@ name is `archi`.
   PACT evidence and approvals: #788, #791, #794, #795, #797, #836.
 
 ### Known limits
+
+Open pull requests #844 to #847 (Windows file modes, HTTP backoff, the
+`archi eval` smoke harness, a generic tickets pack) were not merged when this
+entry was written. If one lands before the release, update the lists below.
 
 Some of what the plan calls for is not in 3.0.0. Plan around these.
 

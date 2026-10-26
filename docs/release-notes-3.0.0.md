@@ -55,7 +55,7 @@ You need `docker` or `podman` (with `compose`), Python 3.12 or newer, and
 `git`. Use a virtual environment.
 
 ```bash
-pip install "okg @ https://github.com/mitdbg/akmon/releases/download/v0.2.0/okg-0.2.0-py3-none-any.whl" archi-kb==3.0.0
+pip install "okg @ https://github.com/mitdbg/akmon/releases/download/v0.2.0/okg-0.2.0-py3-none-any.whl#sha256=72bac3b67cf29cccd27e77e58ad309104f19fcce255a04a4a6f23b8318b88e12" archi-kb==3.0.0
 ```
 
 `okg` is the graph engine. It is not on PyPI yet, so it comes from the AKMON
