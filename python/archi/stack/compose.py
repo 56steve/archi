@@ -33,6 +33,11 @@ GRAPH_DB_IMAGE = "ghcr.io/mitdbg/akmon-postgres:v{okg_version}"
 PRELOAD_LIBRARIES = ("timescaledb", "pg_cron", "pg_textsearch")
 #: The 64 MB container default is too small for okg's index builds.
 GRAPH_DB_SHM = "2g"
+#: PGDATA inside ghcr.io/mitdbg/akmon-postgres:v0.2.0 (`podman image inspect`
+#: shows PGDATA=/home/postgres/pgdata/data). The graph volume must cover its
+#: parent; mounted anywhere else it holds nothing and the graph dies with the
+#: container. Re-check when GRAPH_DB_IMAGE changes.
+GRAPH_DB_PGDATA = "/home/postgres/pgdata/data"  # container-internal path
 CHAT_DB_IMAGE = "docker.io/library/postgres:16"
 #: Upstream Open WebUI at the version okg's chat code is measured against
 #: (okg.substrate.chat.instance.PINNED_VERSION). okg v0.2.0 pins a patched
@@ -128,7 +133,10 @@ def render_compose(instance: Instance) -> dict[str, Any]:
                     "-c", "max_worker_processes=32",
                 ],
                 "ports": [f"127.0.0.1:{instance.ports.graph_db}:5432"],
-                "volumes": ["graph-data:/var/lib/postgresql/data"],
+                # The AKMON image keeps its cluster in PGDATA=/home/postgres/pgdata/data,
+                # not in the stock /var/lib/postgresql/data; a volume mounted there
+                # holds nothing, and the graph is lost when the container is recreated.
+                "volumes": [f"graph-data:{GRAPH_DB_PGDATA.rsplit('/', 1)[0]}"],
                 "healthcheck": {
                     "test": ["CMD-SHELL", f"pg_isready -U postgres -d {db}"],
                     "interval": "2s",
@@ -249,9 +257,11 @@ class Compose:
     runner: Runner = subprocess.run
 
     def base(self) -> list[str]:
+        # No --project-directory: podman-compose 1.4 rejects it, and both
+        # runtimes default the project directory to the one holding the first
+        # -f file, which is the instance directory. run() also sets cwd to it.
         return [
             self.instance.runtime, "compose",
-            "--project-directory", str(self.instance.dir),
             "-f", str(self.instance.dir / COMPOSE_FILE),
             "--env-file", str(self.instance.dir / ENV_FILE),
             "-p", self.instance.project,
@@ -276,21 +286,37 @@ class Compose:
         self.run("down", *(["--volumes"] if volumes else []))
 
     def services(self) -> dict[str, dict[str, Any]]:
-        """Service name -> {state, health} for running containers."""
+        """Service name -> {state, health} for the project's containers.
+
+        `compose ps --format json` is asked first. podman-compose 1.4 has no
+        such option, so on failure the runtime itself lists the containers
+        carrying this project's compose label.
+        """
         result = self.run("ps", "--all", "--format", "json", check=False, capture=True)
         if result.returncode != 0:
-            return {}
+            result = self.runner(
+                [self.instance.runtime, "ps", "--all", "--format", "json",
+                 "--filter", f"label=com.docker.compose.project={self.instance.project}"],
+                cwd=self.instance.dir, text=True, capture_output=True,
+            )
+            if result.returncode != 0:
+                return {}
         text = (result.stdout or "").strip()
         if not text:
             return {}
         rows = json.loads(text) if text.startswith("[") else [json.loads(l) for l in text.splitlines()]
-        return {
-            row.get("Service", ""): {
-                "state": (row.get("State") or "").lower(),
-                "health": (row.get("Health") or "").lower(),
-            }
-            for row in rows
-        }
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            labels = row.get("Labels") or {}
+            if isinstance(labels, str):  # docker ps: "k=v,k=v"
+                labels = dict(item.partition("=")[::2] for item in labels.split(",") if item)
+            name = row.get("Service") or labels.get("com.docker.compose.service", "")
+            status = str(row.get("Status") or "").lower()
+            health = (row.get("Health") or "").lower() or next(
+                (h for h in ("unhealthy", "healthy", "starting") if f"({h}" in status), ""
+            )
+            out[name] = {"state": (row.get("State") or "").lower(), "health": health}
+        return out
 
 
 # ---------------------------------------------------------------------------
