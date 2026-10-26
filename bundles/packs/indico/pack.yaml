@@ -1,6 +1,6 @@
 name: indico
 kind: context
-version: 0.1.0
+version: 0.2.0
 description: Indico events and their talks, read live from the Indico HTTP API.
 requires:
   modules: [document_starter, person, extraction]

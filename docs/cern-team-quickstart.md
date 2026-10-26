@@ -788,12 +788,13 @@ precaution (not something the run tested), do not start a second publish
 while the first is running. Whether later publishes are shorter
 was not measured.
 
-The answer lands in the source as `eos_root: <your path>`. To read part of
-the dump, edit the `twiki.twiki_eos` entry in the deployment's
-`source_registry.yaml` (then commit, claim, load and ingest as in step 4): `seed_topics` and
-`max_depth` for a subtree, `physics_filter: true` for physics topics only,
-`page_index_path` to write the list of kept page ids. If the dump root is
-a web other than `CMS`, set `web_root` to its name.
+The answer lands in the source as `eos_root: <your path>`. For physics topics
+only, install with `--twiki-physics-filter true` (the default is `false`; any
+other value is refused when the source starts). To read part of the dump, edit
+the `twiki.twiki_eos` entry in the deployment's `source_registry.yaml` (then
+commit, claim, load and ingest as in step 4): `seed_topics` and `max_depth` for
+a subtree, and `page_index_path` to write the list of kept page ids. If the
+dump root is a web other than `CMS`, set `web_root` to its name.
 
 The source is `required`: a missing or empty dump blocks the publish
 instead of shrinking the graph without telling you.

@@ -52,6 +52,8 @@ class Resolution:
     without_packs: tuple[str, ...]
     okg_range: SpecifierSet
     chat: Mapping[str, Any]
+    #: Question defaults the bundles set, later bundles overriding earlier ones.
+    answers: Mapping[str, Any] = field(default_factory=dict)
     #: Conflicts resolved by rule rather than refused, e.g. two bundles
     #: setting different chat site names. Reported, never silent.
     notes: tuple[str, ...] = field(default=())
@@ -212,5 +214,6 @@ def resolve(
         without_packs=without_packs,
         okg_range=okg_range,
         chat=chat,
+        answers={k: v for b in bundle_objs for k, v in b.answers.items()},
         notes=tuple(notes),
     )
