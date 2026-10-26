@@ -1,0 +1,164 @@
+# Changelog
+
+All notable changes to `archi-kb` (import name `archi`). Numbers like #786
+are pull requests on `archi-physics/archi`. The v2 line (`v2.x` tags, branch
+`v2` after the cutover) is not covered here.
+
+## 3.0.0
+
+Archi 3.0 is a new product, not an upgrade of v2. It is a knowledge graph
+(OKG) with the facility's own sources in it, an agent-ready MCP endpoint over
+that graph, and an operations layer that proposes and records actions. There
+is no in-place conversion from v2. See
+[Moving from v2 to 3.0](docs/docs/migration-from-v2.md).
+
+This entry covers milestones M2 to M7 of
+[ADR 0002](docs/adr/0002-archi-3.0-release.md), from pull request #779 on.
+(M0 and M1 landed earlier, in the archi-okg repository and the first
+merge into this one.)
+
+The version is `3.0.0`. The PyPI distribution is `archi-kb`; the import
+name is `archi`.
+
+### What an operator gets
+
+**One command from an empty machine to a cited answer** (M3)
+
+- `archi init`, `archi up`, `archi down` and `archi doctor`. `init` makes the
+  instance as a git repository, generates every secret into `.env`, and
+  publishes a first graph. `up` starts one compose project (podman or docker)
+  with the graph database, the chat database, the MCP server and Open WebUI.
+  `doctor` runs the okg checks and Archi's own, and prints a fix line for
+  each failure. (#786)
+- The graph now survives `archi down` followed by `archi up`. It used to live
+  only inside the container. podman-compose is supported. Instances made
+  before this fix must be re-initialised. (#834)
+- `cern-team` publishes on a bare machine with no credential. Its defaults are
+  `docsite` (two public documentation sites) and `indico` (one public
+  event). (#835)
+- A nightly build runs the whole path on an empty runner, with a down/up
+  durability check. It fails if the path takes longer than 15 minutes. (#786,
+  #837)
+- Every footgun found on the way is listed in the footgun ledger as absorbed
+  by Archi or filed with AKMON. (#809)
+
+**Bundles and packs: choose what goes in the graph** (M2)
+
+- A pack is one installable capability: a context pack (sources), a tool pack
+  (live tools) or an automation pack. A bundle is a named, versioned
+  selection of packs. Several bundles can share one instance. (#779)
+- `archi render` composes bundles into one okg profile. (#780)
+- Packs and bundles are found through the `archi.packs` entry point, so a pack
+  can live in another pip package. No `OKG_PROFILES_DIR` step. (#781)
+- `archi.lock`, `archi add <pack>` and `archi diff`. `archi add` edits the
+  registry, claims ownership of the source, commits, and publishes again.
+  `archi diff` reports drift from the lock. (#782)
+- The connectors, schemas, invariants and playbooks are split into
+  context and tool packs. `cern-team` is a bundle of them. (#789)
+- A second bundle, `cms-physics`, with the `analysis-notes` and
+  `cms-analyses` packs. It links analysis ids across CDS records, TWiki pages
+  and analysis notes. (#838)
+
+**A context layer that says how current and complete it is** (M2)
+
+- Each pack declares how stale each source may be, how many records must link
+  across sources, and the checks it owns. `archi doctor` reports them.
+  Automations can refuse to run live when the context fails its gate. (#796)
+- The `ops-record` pack stores incidents, proposals, decisions, actions and
+  outcomes as graph records, admitted like any other producer. Ticket
+  resolutions link to them, and a precedent playbook lets an agent ask what
+  was done last time. (#785, #787, #790)
+
+**An operations layer** (M4)
+
+- Automation packs, autonomy levels L0 to L2, and validation of an automation
+  before it installs. An L3 setting is refused. (#811)
+- The loop signal, context, proposal, decision, action, outcome, with
+  `archi ops status`, `pending`, `approve`, `reject`, `promote`, `halt` and
+  `resume`. Shadow scoring reports how often a shadow automation agreed with
+  the person who handled the case. (#810, #833)
+- `instance-health`, the first automation. It watches the instance itself and
+  keeps one issue per problem, with no duplicates. It starts at L1 and may go to L2. (#839)
+
+**Bring your own agent** (M6)
+
+- `archi connect` writes the MCP configuration for Claude Code, codex,
+  openclaw, Open WebUI and generic MCP over HTTP. It keeps the bearer token
+  out of git unless you ask. External MCP servers and external packs are
+  supported. (#840)
+
+**Documentation** (M7)
+
+- The documentation site is rewritten for 3.0. v2 pages sit under "v2
+  (legacy)". The bundle, pack and command reference pages are generated from
+  the code and checked by a test. (#841, #831, #832)
+- The upgrade guide for v2 operators, the cutover runbook, release notes and
+  this changelog. (This release.)
+
+**Maintenance**
+
+- Regenerated `uv.lock` (#784). Recorded that archi-okg is archived (#783).
+  PACT evidence and approvals: #788, #791, #794, #795, #797, #836.
+
+### Known limits
+
+Some of what the plan calls for is not in 3.0.0. Plan around these.
+
+Open requirements (each is a PACT requirement still unproven at this tag):
+
+- **Context evals.** `archi eval --context` does not exist. A gate that asks
+  for a context-eval score fails, so the automation stays in shadow.
+  (`r3-context-quality`, requirement `context-eval`.)
+- **Bundle evals.** There is no `archi eval`, no per-bundle smoke set, and no
+  CI job that gates a bundle on one. (`r3-bundle-evals`.)
+- **`cms-physics` install proof.** The bundle ships and its packs are tested,
+  but its bundle-install proof in CI and the rebuild of the cms-kb instance
+  from it are not recorded. (`r3-bundle-cms-physics`.)
+- **`cms-comp-ops` is not shipped.** (`r3-bundle-cms-comp-ops`.)
+- **`cluster-manager` is not shipped.** (`r3-bundle-cluster-manager`.)
+- **`ticket-triage` is not shipped.** There is no shadow report. The v2 queue
+  bots (Redmine, JIRA, Mattermost) keep serving on a tagged `v2.x` until a
+  promotion that is a later goal. (`r3-auto-ticket-triage`.)
+- **`cern-team` bundle proof.** The bundle ships and the nightly runs it, but
+  its PACT requirement is not marked proven. (`r3-bundle-cern-team`.)
+- **PyPI pre-release proof.** `archi-kb` has not been published to PyPI before
+  this tag. The clean-venv install check is part of the release. (`r3-release-home`,
+  `r3-release`.)
+
+Also not in 3.0.0:
+
+- The v2 Piazza bot, the grader, the A/B tools, the playbook store, document
+  upload in the chat UI, and Helm deployment. See
+  [what has no equivalent yet](docs/docs/migration-from-v2.md#what-has-no-equivalent-yet).
+- Autonomy level L3. Langfuse (deferred).
+- `okg` is installed from an AKMON GitHub release wheel, not from PyPI
+  (AKMON ask 1). `uv tool install archi-kb` alone does not bring it.
+
+### AKMON asks
+
+These are asks filed against `mitdbg/akmon` for things Archi works around.
+Archi was built and tested against okg 0.2.0. None is a release blocker, and
+none has landed in an okg release.
+
+- Packaging and setup: wheels on PyPI (#3), role passwords set during migrate
+  (#4), `chat-instance up` also starts the MCP server (#5), publish a fresh
+  install without a manual commit (#6), plus traps found on the way (#7 to #13).
+  Detail: [golden-path-akmon-asks.md](docs/golden-path-akmon-asks.md).
+- Profiles: discovery by entry point (#1), composition and optional sources
+  (#2).
+- Operations layer: expiry on admission envelopes (#14), approve with edits
+  (#15), a mounted authenticated proposal API (#16), per-actor cost
+  attribution (#17), a first-class kill switch (#18), a retraction-size guard
+  (#19), and bugs found while building the loop (#20 to #27). Until these
+  land, automations run co-located as deployment workflows, edits are
+  handled as reject-and-resubmit, and `archi ops halt` wraps pause and cancel.
+  Detail: [ops-runtime-akmon-asks.md](docs/ops-runtime-akmon-asks.md).
+- One more ask, O15 (read when and by whom a PACT change was approved), is a
+  draft and not filed.
+
+### Upgrading
+
+There is no upgrade from v2, only a move. Read
+[Moving from v2 to 3.0](docs/docs/migration-from-v2.md). Owners of v2
+deployments: the cutover waits on you. See the
+[cutover runbook](docs/docs/operating/cutover.md).

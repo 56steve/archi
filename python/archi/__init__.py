@@ -10,4 +10,4 @@ imported *by* an OKG deployment (`module: archi.sources.<name>` in its
 source registry), so the substrate is always already present.
 """
 
-__version__ = "3.0.0a1"
+__version__ = "3.0.0"
