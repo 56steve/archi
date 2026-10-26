@@ -303,6 +303,12 @@ def _jira(data: Path, server: FixtureServer) -> dict:
     return {}
 
 
+def _analysis_notes(data: Path, server: FixtureServer) -> dict:
+    from packs.physics_fixtures import write_note_mirror
+
+    return {"mirror_root": str(write_note_mirror(data / "analysis-notes"))}
+
+
 def _git_code(data: Path, server: FixtureServer) -> dict:
     upstream = data.parent / "upstream" / "demo"
     if not (upstream / ".git").is_dir():
@@ -425,6 +431,10 @@ FIXTURES: dict[str, Callable[[Path, FixtureServer], dict]] = {
     "indico": _indico,
     "twiki": _twiki,
     "cds": _cds,
+    "analysis-notes": _analysis_notes,
+    # Its inputs are twiki's dump and the notes mirror, written by the fixtures
+    # of the packs it requires; the cross-link rules read what those publish.
+    "cms-analyses": lambda data, server: {},
     "jira": _jira,
     "git-code": _git_code,
     # Both read git-code's checkout; its fixture (run for the closure) is all

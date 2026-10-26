@@ -47,14 +47,21 @@ twiki_eos:
     eos_root: '${eos_root}'
     web_root: CMS
     required: true
+    # The ids of the pages this run emitted, written for the sources that
+    # link INTO them later in the same ingest (analysis-notes' bibliography
+    # bridge). Written only after a good run, so a refused scope never
+    # replaces a good list with a short one.
+    page_index_path: '${archi_data_root}/twiki-page-index/pages.json'
     # Optional seeded subtree instead of the whole snapshot:
     # seed_topics: [CMS/CompOpsHome]
     # max_depth: 2
-    # Optional physics scoping (off here, and off by default): narrows a
-    # CMS snapshot to physics topics -- PAG/POG/workbook roots, their
-    # parent-topic closure, and documentation page types -- and drops the
-    # computing-operations roots this bundle is otherwise built around.
-    # physics_filter: true
+    # Physics scoping, from the `--twiki-physics-filter` answer (default
+    # false): true narrows a CMS snapshot to physics topics --
+    # PAG/POG/workbook roots, their parent-topic closure, and documentation
+    # page types -- and drops the computing-operations roots the
+    # computing bundles are built around. The cms-analyses pack reads the
+    # same answer so its entity source matches the pages this one keeps.
+    physics_filter: ${physics_filter}
     # Optional: also write the URL of a labelled web link
     # ([[URL][label]] -> "label (URL)") so an identifier that sits only
     # in the URL, such as a JIRA key in a /browse/ link, reaches the

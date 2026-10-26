@@ -18,3 +18,14 @@ init_questions:
       graph quietly. To scope the read, edit the installed registry entry:
       `seed_topics` and `max_depth` for a subtree, `physics_filter` for
       physics topics only, `page_index_path` to write the kept page ids.
+
+  - id: physics_filter
+    prompt: keep only physics topics (true or false)
+    type: string
+    required: false
+    default: 'false'
+    description: |
+      `true` narrows a CMS snapshot to physics topics (PAG, POG and workbook
+      roots, their parent topics, and documentation page types) and drops the
+      computing-operations roots. Use it for a physics instance; leave the
+      default for an operations one. Give `true` or `false`.

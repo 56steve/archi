@@ -1,0 +1,33 @@
+# Coverage for the subtypes this pack emits. It leaves with the pack.
+#
+# The note-count floor is the second branch. The pack's own floor is one
+# note, the lowest value that still means "the walker found the mirror": a
+# walker whose directory or section rules stop matching drops notes
+# silently and still publishes, and zero notes is the one count that is
+# wrong for every mirror. A real mirror holds thousands of notes, so an
+# instance that has measured its own build raises the floor with an
+# invariant of its own; the number belongs to the instance, not the pack.
+invariants:
+  - name: analysis_notes_coverage
+    severity: error
+    scope: cross
+    timeout_ms: 5000
+    description: >-
+      The analysis-note source must have live notes with sections and
+      bibliography entries. Required live subtypes: analysis_note,
+      section, reference. A missing one means the mirror was empty, the
+      walker stopped matching its directories, or the connector
+      regressed. The note-count floor is one note (see the file header).
+    sql: |
+      WITH required(subtype) AS (
+        VALUES ('analysis_note'), ('section'), ('reference')
+      ),
+      counts AS (
+        SELECT subtype, count(*) AS n
+          FROM okg.v_nodes
+         GROUP BY subtype
+      )
+      SELECT r.subtype, coalesce(c.n, 0) AS live_count
+        FROM required r
+        LEFT JOIN counts c USING (subtype)
+       WHERE coalesce(c.n, 0) < 1

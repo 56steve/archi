@@ -548,7 +548,7 @@ def test_twiki_in_the_bundle_is_the_eos_dump_reader_and_nothing_else():
 
     questions = yaml.safe_load((PACKS / "twiki" / "questions.yaml").read_text(encoding="utf-8"))
     ids = {q["id"] for q in questions["init_questions"]}
-    assert ids == {"eos_root"}
+    assert ids == {"eos_root", "physics_filter"}
 
 
 @pytest.mark.parametrize(
@@ -571,7 +571,9 @@ def test_the_twiki_eos_root_answer_reaches_the_reader_and_reads_the_dump(
         (dump / f"{topic}.txt").write_text(text, encoding="utf-8")
 
     rendered = render_alone(tmp_path / "render", "twiki")
-    plan = okg_plan(rendered, tmp_path / "render", {"twiki_eos_root": str(dump)})
+    # The data root holds the page index the reader writes; keep it out of the cwd.
+    answers = {"twiki_eos_root": str(dump), "archi_data_root": str(tmp_path / "data")}
+    plan = okg_plan(rendered, tmp_path / "render", answers)
     entry = yaml.safe_load(plan.source_defaults["twiki.twiki_eos"])["twiki.twiki_eos"]
     assert entry["params"]["eos_root"] == str(dump)
 
