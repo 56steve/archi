@@ -2,8 +2,7 @@ init_questions:
   - id: base_url
     prompt: Tracker URL
     type: string
-    required: false
-    default: https://redmine.example.org
+    required: true
     description: |
       The tracker's root URL; each ticket links to it (for Redmine,
       <url>/issues/<id>). Fill the cache with

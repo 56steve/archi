@@ -2,7 +2,7 @@
 
 # Pack: node-health
 
-Compute-node health, read from the per-node check results a site's health exporter writes.
+Compute-node health from a JSON list of per-node reports that a site's own health exporter writes to node-health/records.json (each report has node, cluster, observed_at and checks, a list of name, status ok or warn or fail, and detail).
 
 | Field | Value |
 |---|---|

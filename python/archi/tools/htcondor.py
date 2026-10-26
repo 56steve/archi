@@ -64,7 +64,7 @@ def archi_condor_status(
 ) -> dict[str, Any]:
     """Live ``condor_status``: slots with state, activity, cores, memory and load."""
     limit = bounded(max_results)
-    argv = ["condor_status", "-af:t", *STATUS_ATTRS]
+    argv = ["condor_status", "-limit", str(limit + 1), "-af:t", *STATUS_ATTRS]
     try:
         constraints = []
         if machine:
@@ -96,15 +96,16 @@ def archi_condor_q(
 ) -> dict[str, Any]:
     """Live ``condor_q``: jobs, optionally for one owner, one cluster id or the held ones."""
     limit = bounded(max_results)
-    argv = ["condor_q", "-allusers", "-af:t", *Q_ATTRS]
+    argv = ["condor_q", "-allusers", "-limit", str(limit + 1), "-af:t", *Q_ATTRS]
     try:
         constraints = []
         if owner:
             constraints.append(f'Owner == "{name_arg(owner, "owner")}"')
         if cluster_id:
-            if not str(cluster_id).isdigit():
+            text = str(cluster_id)
+            if not (text.isascii() and text.isdigit()):
                 raise ToolError(f"cluster id {cluster_id!r} is not a number")
-            constraints.append(f"ClusterId == {int(cluster_id)}")
+            constraints.append(f"ClusterId == {int(text)}")
         if held_only:
             constraints.append("JobStatus == 5")
         if constraints:

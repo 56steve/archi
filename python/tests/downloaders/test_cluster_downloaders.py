@@ -54,6 +54,7 @@ def test_servicenow_oauth_download_writes_the_cache_the_reader_reads(tmp_path):
     assert all(r[2]["headers"]["Authorization"] == "Bearer tok-fixture" for r in gets)
     assert {r[1].rsplit("/", 1)[1] for r in gets} == {"incident", "sc_request", "kb_knowledge"}
     assert all(r[2]["params"]["sysparm_display_value"] == "true" for r in gets)
+    assert all(r[2]["params"]["sysparm_query"] == "ORDERBYsys_id" for r in gets), "a stable order: paging cannot skip or repeat"
     assert len([r for r in gets if r[1].endswith("/incident")]) == 2, "three incidents at page size 2 take two pages"
 
     run = ServiceNowSource(records_path=str(tmp_path / "servicenow" / "records.json"),
@@ -105,6 +106,14 @@ def test_zero_records_is_not_written_as_an_empty_cache(tmp_path):
     with pytest.raises(servicenow.DownloadError, match="no records"):
         servicenow.download(session, INSTANCE, "oauth", OAUTH_ENV, tmp_path)
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("url", ["http://example.service-now.com", "ftp://x", "example.service-now.com"])
+def test_a_url_that_is_not_https_is_refused_before_any_request(tmp_path, url):
+    session = _snow_session(_rows())
+    with pytest.raises(servicenow.DownloadError, match="https"):
+        servicenow.download(session, url, "basic", BASIC_ENV, tmp_path)
+    assert session.requests == []
 
 
 def test_an_unknown_table_is_refused(tmp_path):

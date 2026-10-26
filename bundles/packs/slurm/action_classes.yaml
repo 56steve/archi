@@ -25,7 +25,7 @@ action_classes:
     blast_radius: One Slurm node's state (DRAIN) and its reason string, external_live. Running jobs are not killed; resume_node undoes it.
     max_level: L2
   resume_node:
-    description: Return one drained or down node to service.
+    description: Return one node that archi drained to service; force true also resumes a node someone else drained or that is down.
     payload_schema:
       type: object
       required: [node]
@@ -34,6 +34,8 @@ action_classes:
         node:
           type: string
           pattern: "^[A-Za-z0-9_][A-Za-z0-9_.:@-]{0,127}$"
+        force:
+          type: boolean
     mediator: archi.tools.slurm:resume_node
     reversible: true
     blast_radius: One Slurm node's state (RESUME), external_live. New jobs may start on it at once; drain_node undoes it.

@@ -29,7 +29,7 @@ Add it to an instance with `archi add tickets`.
 
 | Id | Type | Required | Default | Prompt |
 |---|---|---|---|---|
-| `base_url` | `string` | no | `https://redmine.example.org` | Tracker URL |
+| `base_url` | `string` | yes |  | Tracker URL |
 | `system` | `string` | no | `redmine` | Tracker system name (lowercase) |
 
 ## Credentials

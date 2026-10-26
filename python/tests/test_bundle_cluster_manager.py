@@ -11,7 +11,10 @@ import dataclasses
 import importlib
 import inspect
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,8 +28,10 @@ from packs.pack_support import PACKS_DIR, FIXTURES, manifest, shipped_catalog, t
 
 from okg.substrate.deployment_bootstrap.profile_init import build_plan, discover_profile
 
-from bundles.test_render_okg import _blockers, _okg, _write_scaffold
+from bundles.test_render_okg import _write_scaffold
 
+PYTHON_DIR = str(Path(__file__).resolve().parents[1])
+OKG = str(Path(sys.executable).with_name("okg"))
 BUNDLE = Path(__file__).resolve().parents[2] / "bundles" / "cluster-manager"
 NEW_PACKS = ["servicenow", "tickets", "slurm", "htcondor", "node-health"]
 #: Every pack that arrived from the CERN bundles: none may be a dependency of this bundle.
@@ -40,6 +45,7 @@ ANSWERS = {
     "archi_data_root": "/srv/archi-data",
     "git_code_repo_url": "https://example.org/demo.git",
     "servicenow_instance_url": "https://example.service-now.com",
+    "tickets_base_url": "https://redmine.example.org",
 }
 #: source id -> (primary subtype, adapter fixture writer)
 SOURCES = {
@@ -49,6 +55,21 @@ SOURCES = {
     "htcondor": ("condor_machine", cluster_fixtures.write_condor_cache),
     "node_health": ("compute_node", cluster_fixtures.write_node_health_cache),
 }
+
+
+def _okg(args, cwd):
+    """Run okg with this working tree's `archi` first on its path, so the subprocess loads the adapters
+    under test and not whichever archi the venv has installed (a stock venv may hold another checkout)."""
+    env = {k: v for k, v in os.environ.items() if k != "OKG_PROFILES_DIR"}
+    env["HOME"] = str(cwd)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (PYTHON_DIR, os.environ.get("PYTHONPATH", "")) if p)
+    return subprocess.run([OKG, *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
+
+
+def _blockers(deployment_dir, cwd):
+    report = json.loads(_okg(["deployment", "lint", str(deployment_dir), "--json"], cwd=cwd).stdout)
+    return {(f["location"].get("pointer", ""), f["code"]) for f in report["findings"]
+            if f["severity"] in ("blocker", "error")}
 
 
 def _bundle():
@@ -314,3 +335,18 @@ def test_the_chat_prompt_names_each_selected_packs_fragment(catalog, tmp_path):
     for heading in ("## Tickets", "## ServiceNow", "## Slurm", "## HTCondor", "## Node health"):
         assert heading in prompt
     assert "cern" not in prompt.lower()
+
+
+def test_tickets_asks_for_its_tracker_url_instead_of_defaulting_to_a_placeholder():
+    """ADR 0002 section 3.2: a bundle with nothing configured publishes when a default pack is credential-free
+    (docsite, which downloads public pages at init) or a required init question says what is missing. The ADR
+    and the PACT make tickets a default, and no tracker URL is a safe default, so its URL is a required question."""
+    questions = {q["id"]: q for q in yaml.safe_load((PACKS_DIR / "tickets" / "questions.yaml").read_text())["init_questions"]}
+    assert questions["base_url"]["required"] is True and "default" not in questions["base_url"]
+    assert manifest("docsite")["needs_credentials"] is False and manifest("docsite").get("prepare")
+
+
+def test_the_node_health_page_says_what_the_exporter_must_write():
+    description = manifest("node-health")["description"]
+    for word in ("node-health/records.json", "node", "cluster", "observed_at", "checks", "status", "detail"):
+        assert word in description

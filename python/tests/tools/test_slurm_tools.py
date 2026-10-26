@@ -6,6 +6,7 @@ plain `FakeRunner`; `no_process` makes any real process start fail the test, so 
 reach a scheduler. The real `subprocess_runner` is never called.
 """
 import functools
+import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from packs.cluster_fixtures import FakeRunner, text
 REPO = Path(__file__).resolve().parents[3]
 PACK = REPO / "bundles" / "packs" / "slurm"
 CONTEXT = {"dsn": "postgresql://unused", "proposal_id": "prop-1", "idempotency_key": "run-77", "workflow_id": "wf-1"}
+T0 = datetime(2026, 10, 25, 12, tzinfo=timezone.utc)
 
 
 @pytest.fixture(autouse=True)
@@ -32,17 +34,22 @@ def no_process(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", refuse)
 
 
-def approved(context):
+def approved(context, payload, action_class):
     return Approval("esc-1", context["proposal_id"], "alice")
+
+
+def never(*args):
+    pytest.fail("the approval check was asked")
 
 
 class FakeScheduler:
     """A runner holding node and job state, answering the commands the tools build."""
 
-    def __init__(self, nodes=None, jobs=None):
+    def __init__(self, nodes=None, jobs=None, fail_writes=None):
         self.nodes = {k: list(v) for k, v in (nodes or {}).items()}  # name -> [state, reason]
-        self.jobs = dict(jobs or {})  # id -> state
+        self.jobs = {k: list(v) if isinstance(v, (list, tuple)) else [v, ""] for k, v in (jobs or {}).items()}  # id -> [state, comment]
         self.calls = []
+        self.fail_writes = fail_writes  # an exception to raise from the first scontrol
 
     def __call__(self, argv, *, timeout):
         self.calls.append(list(argv))
@@ -57,17 +64,22 @@ class FakeScheduler:
             job = argv[argv.index("--jobs") + 1]
             if job not in self.jobs:
                 return RunResult(1, "", "slurm_load_jobs error: Invalid job id specified")
-            return RunResult(0, f"{job}|cpu|name|ada|{self.jobs[job]}|1:00|1|node001\n")
-        if program == "scontrol" and argv[1] == "update":
-            fields = dict(part.split("=", 1) for part in argv[2:])
-            name = fields["NodeName"]
-            if fields.get("State") == "DRAIN":
-                self.nodes[name] = ["drained", fields["Reason"]]
-            elif fields.get("State") == "RESUME":
-                self.nodes[name] = ["idle", ""]
-            return RunResult(0)
-        if program == "scontrol" and argv[1] == "requeue":
-            self.jobs[argv[2]] = "PENDING"
+            state, comment = self.jobs[job]
+            return RunResult(0, f"{job}|{state}|{comment or '(null)'}\n")
+        if program == "scontrol":
+            if self.fail_writes is not None:
+                raise self.fail_writes
+            if argv[1] == "update" and argv[2].startswith("NodeName="):
+                fields = dict(part.split("=", 1) for part in argv[2:])
+                name = fields["NodeName"]
+                if fields.get("State") == "DRAIN":
+                    self.nodes[name] = ["drained", fields["Reason"]]
+                elif fields.get("State") == "RESUME":
+                    self.nodes[name] = ["idle", ""]
+            elif argv[1] == "update" and argv[2].startswith("JobId="):
+                self.jobs[argv[2].split("=", 1)[1]][1] = argv[3].split("=", 1)[1]
+            elif argv[1] == "requeue":
+                self.jobs[argv[2]][0] = "PENDING"
             return RunResult(0)
         raise AssertionError(f"unexpected command {argv}")
 
@@ -116,12 +128,21 @@ def test_sinfo_returns_nodes_with_state_and_drain_reason():
     assert out["boundary"] == "external_live"
 
 
-def test_results_are_bounded_and_say_so():
+def test_output_is_capped_before_it_is_parsed_and_says_so():
+    parsed = []
+
+    def parse(output):
+        parsed.append(output.count("\n") + 1)
+        return slurm._sinfo_rows(output)
+
+    big = SINFO_OUT * 50  # 350 lines
+    out = _live.run_read(["sinfo"], FakeRunner().on(lambda a: True, big), parse, limit=2)
+    assert parsed == [3], "only limit + 1 lines reach the parser"
+    assert len(out["rows"]) == 2 and out["truncated"] is True
     runner = FakeRunner().on(lambda a: True, SINFO_OUT)
-    out = slurm.archi_slurm_sinfo(max_results=2, runner=runner)
-    assert len(out["rows"]) == 2 and out["count"] == 7 and out["truncated"] is True
     assert len(slurm.archi_slurm_sinfo(max_results=10**6, runner=runner)["rows"]) == 7
     assert len(slurm.archi_slurm_sinfo(max_results="x", runner=runner)["rows"]) == 7
+    assert slurm.archi_slurm_sinfo(max_results=2, runner=runner)["truncated"] is True
 
 
 @pytest.mark.parametrize("tool, kwargs", [
@@ -156,14 +177,12 @@ def test_a_failing_or_missing_command_comes_back_as_an_error_payload():
 
 # --- the gate: an act call without an approved escalation is refused ----------------------
 
+DRAIN_001 = {"node": "node001", "reason": "scratch full"}
 ACTS = [
     ("drain_node", {"node": "node042", "reason": "scratch full"}),
     ("resume_node", {"node": "node042"}),
     ("requeue_job", {"job_id": "1001"}),
 ]
-
-
-DRAIN_001 = {"node": "node001", "reason": "scratch full"}
 
 
 def _scheduler():
@@ -180,15 +199,15 @@ def _scheduler():
 def test_an_act_without_the_runtime_context_is_refused_and_runs_nothing(name, payload, context, why):
     scheduler = _scheduler()
     with pytest.raises(ActRefused, match=why):
-        getattr(slurm, name)(payload=payload, context=context, runner=scheduler, verify=lambda ctx: pytest.fail("asked"))
+        getattr(slurm, name)(payload=payload, context=context, runner=scheduler, verify=never)
     assert scheduler.calls == []
 
 
 @pytest.mark.parametrize("name, payload", ACTS)
 @pytest.mark.parametrize("verify, why", [
-    (lambda ctx: None, "no approved escalation"),
-    (lambda ctx: Approval("esc-1", "prop-OTHER", "alice"), "not prop-1"),
-    (lambda ctx: (_ for _ in ()).throw(RuntimeError("database unreachable")), "database unreachable"),
+    (lambda *a: None, "no approved escalation"),
+    (lambda *a: Approval("esc-1", "prop-OTHER", "alice"), "not prop-1"),
+    (lambda *a: (_ for _ in ()).throw(RuntimeError("database unreachable")), "database unreachable"),
 ])
 def test_an_act_without_an_approved_decision_is_refused_and_runs_nothing(name, payload, verify, why):
     scheduler = _scheduler()
@@ -200,51 +219,182 @@ def test_an_act_without_an_approved_decision_is_refused_and_runs_nothing(name, p
 @pytest.mark.parametrize("name, payload", ACTS)
 def test_the_refusal_comes_before_the_payload_is_looked_at(name, payload):
     with pytest.raises(ActRefused):
-        getattr(slurm, name)(payload={"bogus": 1}, context=CONTEXT, runner=_scheduler(), verify=lambda ctx: None)
+        getattr(slurm, name)(payload={"bogus": 1}, context=CONTEXT, runner=_scheduler(), verify=lambda *a: None)
+
+
+def reason_for(name, payload):
+    """The escalation reason the ops runtime writes (archi.ops.workflow._Decider.open)."""
+    return f"triage: summary\nAction: {name} {json.dumps(dict(payload), sort_keys=True)}\nRollback: x\nEvidence: e1"
 
 
 class FakeEscalations:
-    """Just `decision_for`: the okg escalation row as `ops_verifier` reads it."""
+    """What `ops_verifier` reads: `escalation()` as okg holds the row, and `schedules()` for the halt check."""
 
-    def __init__(self, status="applied", verdict="approve", by="alice", subject="ops_proposal:prop-1"):
-        self.row = (subject, {"status": status, "decision": {"verdict": verdict}, "decided_by": by,
-                              "decided_at": datetime(2026, 10, 25, 12, 1, tzinfo=timezone.utc).isoformat()})
+    def __init__(self, status="applied", verdict="approve", by="alice", subject="ops_proposal:prop-1",
+                 decided_at=T0 + timedelta(minutes=1), timeout_at=T0 + timedelta(minutes=10),
+                 action=("drain_node", DRAIN_001), workflow="wf-1", reason=None):
+        self.row = (subject, {
+            "status": status, "decision": {"verdict": verdict}, "decided_by": by,
+            "decided_at": decided_at.isoformat() if decided_at else None,
+            "timeout_at": timeout_at.isoformat() if timeout_at else None,
+            "requested_by_workflow": workflow,
+            "reason": reason if reason is not None else reason_for(*action),
+        })
         self.asked = []
 
-    def decision_for(self, escalation_id):
-        from archi.ops.escalation import decision_from_row
-
+    def escalation(self, escalation_id):
         self.asked.append(escalation_id)
-        return decision_from_row(escalation_id, *self.row)
+        return self.row
 
 
-@pytest.mark.parametrize("kwargs, ok", [
-    ({}, True),
-    ({"verdict": "reject"}, False),
-    ({"status": "timed_out"}, False),
-    ({"status": "pending"}, False),
-    ({"by": None}, False),
-    ({"subject": "ops_proposal:prop-9"}, False),
-])
-def test_the_default_check_reads_the_run_s_escalation_row_from_okg(kwargs, ok):
+NOW = T0 + timedelta(minutes=2)
+
+
+def _verify(io, *, now=NOW, halt=lambda io: None):
+    return functools.partial(_live.ops_verifier, io=io, now=lambda: now, halt=halt)
+
+
+def _drain(io, **kw):
+    scheduler = _scheduler()
+    out = slurm.drain_node(payload=DRAIN_001, context=CONTEXT, runner=scheduler, verify=_verify(io, **kw))
+    return out, scheduler
+
+
+def test_the_default_check_accepts_an_approval_in_time_for_exactly_this_action():
     pytest.importorskip("dbos")
     from archi.ops.workflow import expected_escalation_id
 
+    io = FakeEscalations()
+    out, scheduler = _drain(io)
+    assert out["status"] == "succeeded" and scheduler.writes()
+    assert io.asked == [expected_escalation_id("wf-1")], "the escalation named by this run's workflow id"
+
+
+@pytest.mark.parametrize("kwargs, fragment", [
+    ({"verdict": "reject"}, "decision is rejected"),
+    ({"status": "timed_out"}, "decision is timed_out"),
+    ({"status": "pending"}, "decision is error"),
+    ({"by": None}, "names no person"),
+    ({"subject": "ops_proposal:prop-9"}, "decision is for proposal 'prop-9'"),
+    ({"timeout_at": None}, "no deadline"),
+    ({"reason": ""}, "does not record the action"),
+    ({"reason": "Action: drain_node not-json"}, "not JSON"),
+])
+def test_the_default_check_refuses_a_decision_the_runtime_would_refuse(kwargs, fragment):
+    pytest.importorskip("dbos")
+    out = None
     io = FakeEscalations(**kwargs)
-    verify = functools.partial(_live.ops_verifier, io=io)
+    with pytest.raises(ActRefused, match=fragment):
+        _drain(io)
+
+
+def test_an_approval_made_after_the_deadline_is_refused():
+    pytest.importorskip("dbos")
+    io = FakeEscalations(decided_at=T0 + timedelta(minutes=11), timeout_at=T0 + timedelta(minutes=10))
+    with pytest.raises(ActRefused, match="after the deadline"):
+        _drain(io, now=T0 + timedelta(minutes=12))
+
+
+def test_a_stale_replay_of_an_approval_whose_deadline_has_passed_is_refused():
+    """Approved in time, but the call comes after the deadline: the deadline bounds the decision time, so
+    it still passes; an approval recorded for a time after `now` does not."""
+    pytest.importorskip("dbos")
+    io = FakeEscalations(decided_at=T0 + timedelta(minutes=1), timeout_at=T0 + timedelta(minutes=10))
+    out, _ = _drain(io, now=T0 + timedelta(days=3))
+    assert out["status"] == "succeeded"
+
+
+def test_a_decision_time_in_the_future_is_refused():
+    pytest.importorskip("dbos")
+    io = FakeEscalations(decided_at=NOW + timedelta(minutes=5), timeout_at=NOW + timedelta(minutes=30))
+    with pytest.raises(ActRefused, match="after now"):
+        _drain(io)
+
+
+def test_a_halted_instance_is_refused_even_with_an_approval():
+    pytest.importorskip("dbos")
+    io = FakeEscalations()
+    with pytest.raises(ActRefused, match="halted.*archi ops halt"):
+        _drain(io, halt=lambda io: "the archi_ops_scan schedule is paused (archi ops halt)")
+    assert io.asked == [], "the escalation is not even read"
+
+
+def test_a_halt_check_that_cannot_run_is_a_refusal():
+    pytest.importorskip("dbos")
+
+    def broken(io):
+        raise RuntimeError("schedule archi_ops_scan not found")
+
+    with pytest.raises(ActRefused, match="could not verify"):
+        _drain(FakeEscalations(), halt=broken)
+
+
+def test_the_default_halt_check_is_the_runtimes():
+    pytest.importorskip("dbos")
+    from archi.ops.workflow import halt_reason
+
+    class Paused(FakeEscalations):
+        def schedules(self):
+            return {"archi_ops_scan": True}
+
+    io = Paused()
+    with pytest.raises(ActRefused, match="paused"):
+        slurm.drain_node(payload=DRAIN_001, context=CONTEXT, runner=_scheduler(),
+                         verify=functools.partial(_live.ops_verifier, io=io, now=lambda: NOW))
+    assert halt_reason(io)
+
+
+@pytest.mark.parametrize("approved_action, run_payload", [
+    (("drain_node", {"node": "node001", "reason": "scratch full"}), {"node": "node002", "reason": "scratch full"}),
+    (("drain_node", {"node": "node001", "reason": "scratch full"}), {"node": "node001", "reason": "something else"}),
+    (("drain_node", {"node": "node001", "reason": "scratch full"}), {"node": "node001", "reason": "scratch full "}),
+])
+def test_an_approval_for_another_payload_is_refused_and_runs_nothing(approved_action, run_payload):
+    pytest.importorskip("dbos")
+    io = FakeEscalations(action=approved_action)
     scheduler = _scheduler()
-    call = lambda: slurm.drain_node(payload=DRAIN_001, context=CONTEXT, runner=scheduler, verify=verify)  # noqa: E731
-    if ok:
-        assert call()["status"] == "succeeded"
-        assert scheduler.writes()
-    else:
-        with pytest.raises(ActRefused):
-            call()
-        assert scheduler.calls == []
-    assert io.asked == [expected_escalation_id("wf-1")], "the escalation is the one named by this run's workflow id"
+    with pytest.raises(ActRefused, match="not the one being run"):
+        slurm.drain_node(payload=run_payload, context=CONTEXT, runner=scheduler, verify=_verify(io))
+    assert scheduler.calls == []
 
 
-def test_the_ops_runtime_mediator_step_and_the_tool_both_refuse(monkeypatch):
+def test_an_approval_for_another_action_class_is_refused():
+    pytest.importorskip("dbos")
+    io = FakeEscalations(action=("resume_node", {"node": "node001"}))
+    scheduler = _scheduler()
+    with pytest.raises(ActRefused, match="not the one being run"):
+        slurm.drain_node(payload={"node": "node001", "reason": "scratch full"}, context=CONTEXT, runner=scheduler,
+                         verify=_verify(io))
+    assert scheduler.calls == []
+
+
+def test_the_payload_is_compared_as_canonical_json_so_key_order_does_not_matter():
+    pytest.importorskip("dbos")
+    io = FakeEscalations(reason='Action: drain_node {"reason": "scratch full", "node": "node001"}')
+    scheduler = _scheduler()
+    out = slurm.drain_node(payload={"node": "node001", "reason": "scratch full"}, context=CONTEXT, runner=scheduler,
+                           verify=_verify(io))
+    assert out["status"] == "succeeded"
+
+
+def test_an_escalation_requested_by_another_workflow_is_not_this_runs_approval():
+    pytest.importorskip("dbos")
+    with pytest.raises(ActRefused, match="no approved escalation"):
+        _drain(FakeEscalations(workflow="wf-OTHER"))
+
+
+def test_a_missing_escalation_is_no_approval():
+    pytest.importorskip("dbos")
+
+    class Empty(FakeEscalations):
+        def escalation(self, escalation_id):
+            return None
+
+    with pytest.raises(ActRefused, match="no approved escalation"):
+        _drain(Empty())
+
+
+def test_the_ops_runtime_mediator_step_and_the_tool_both_refuse():
     """Through `run_mediation`: a missing escalation stops at the step; an approval the tool cannot confirm stops at the tool."""
     pytest.importorskip("dbos")
     from archi.ops import workflow as wf
@@ -257,16 +407,19 @@ def test_the_ops_runtime_mediator_step_and_the_tool_both_refuse(monkeypatch):
         def mediation(self, key):
             return self.attempts.get(key)
 
+        def decision_for(self, escalation_id):
+            from archi.ops.escalation import decision_from_row
+
+            return decision_from_row(escalation_id, *self.row)
+
         def begin_mediation(self, key, proposal_id):
             self.attempts[key] = {"status": "attempted", "result": None}
 
         def finish_mediation(self, key, status, result):
             self.attempts[key] = {"status": status, "result": result}
 
-    now = datetime(2026, 10, 25, 12, 2, tzinfo=timezone.utc)
     esc = {"escalation_id": wf.expected_escalation_id("wf-1"), "proposal_id": "prop-1",
-           "opened_at": datetime(2026, 10, 25, 12, tzinfo=timezone.utc).isoformat(),
-           "timeout_at": (datetime(2026, 10, 25, 12, tzinfo=timezone.utc) + timedelta(minutes=10)).isoformat()}
+           "opened_at": T0.isoformat(), "timeout_at": (T0 + timedelta(minutes=10)).isoformat()}
 
     def mediate(io, esc_arg, verify):
         scheduler = _scheduler()
@@ -274,24 +427,26 @@ def test_the_ops_runtime_mediator_step_and_the_tool_both_refuse(monkeypatch):
         out = wf.run_mediation(
             io, mediator_entry=lambda: "archi.tools.slurm:drain_node", action_class="drain_node",
             payload=DRAIN_001, proposal_id="prop-1", idempotency_key="run-77", esc=esc_arg, workflow_id="wf-1",
-            dsn="postgresql://unused", halt=lambda io: None, now=lambda: now, resolve=lambda entry: tool,
+            dsn="postgresql://unused", halt=lambda io: None, now=lambda: NOW, resolve=lambda entry: tool,
             refused=lambda *a: None)
         return out, scheduler
 
-    # approved by a person, in time, and the tool confirms it: the node is drained, once
     io = IO()
-    out, scheduler = mediate(io, esc, functools.partial(_live.ops_verifier, io=io))
+    out, scheduler = mediate(io, esc, _verify(io))
     assert out["status"] == "succeeded" and len(scheduler.writes()) == 1
 
-    # no escalation at all: refused by the step before the tool is called
     io = IO()
-    out, scheduler = mediate(io, None, lambda ctx: pytest.fail("the tool must not be reached"))
+    out, scheduler = mediate(io, None, never)
     assert out == {"refused": ["error", "no escalation was opened for this proposal"]} and scheduler.calls == []
 
-    # the step let it through but the tool cannot confirm the approval: recorded as a failed call, nothing run
     io = IO()
-    out, scheduler = mediate(io, esc, lambda ctx: None)
+    out, scheduler = mediate(io, esc, lambda *a: None)
     assert out["status"] == "failed" and "ActRefused" in out["result"] and scheduler.calls == []
+
+    # the step let it through, but the payload being run is not the approved one
+    io = IO(action=("drain_node", {"node": "node002", "reason": "scratch full"}))
+    out, scheduler = mediate(io, esc, _verify(io))
+    assert out["status"] == "failed" and "not the one being run" in out["result"] and scheduler.calls == []
 
 
 # --- payloads ------------------------------------------------------------------------------
@@ -306,9 +461,13 @@ def test_the_ops_runtime_mediator_step_and_the_tool_both_refuse(monkeypatch):
     ("drain_node", {"node": "node042", "reason": "scratch full", "force": True}),   # unknown field
     ("drain_node", {"node": "-w", "reason": "scratch full"}),              # looks like an option
     ("drain_node", {"node": "n1,n2", "reason": "scratch full"}),           # one node only
+    ("drain_node", {"node": "node042\n", "reason": "scratch full"}),       # a trailing newline passes `$`
+    ("resume_node", {"node": "node042\n"}),
     ("resume_node", {"node": "node[01-09]"}),
     ("resume_node", {}),
+    ("resume_node", {"node": "node042", "force": "yes"}),                  # a boolean
     ("requeue_job", {"job_id": "12; scancel 1"}),
+    ("requeue_job", {"job_id": "1001\n"}),
     ("requeue_job", {"job_id": 1001}),                                      # a string, as the schema says
     ("requeue_job", {"job_id": "1001", "hold": True}),
 ])
@@ -329,61 +488,96 @@ def test_a_payload_that_is_not_an_object_is_refused():
 
 def test_drain_sets_the_state_with_the_key_in_the_reason_and_a_repeat_changes_nothing():
     scheduler = FakeScheduler(nodes={"node001": ["mixed", ""]})
-    first = slurm.drain_node(payload={"node": "node001", "reason": "scratch full"}, context=CONTEXT, runner=scheduler, verify=approved)
+    first = slurm.drain_node(payload=DRAIN_001, context=CONTEXT, runner=scheduler, verify=approved)
     assert first["status"] == "succeeded" and first["boundary"] == "external_live"
     assert scheduler.writes() == [["scontrol", "update", "NodeName=node001", "State=DRAIN", "Reason=archi[run-77] scratch full"]]
-    again = slurm.drain_node(payload={"node": "node001", "reason": "scratch full"}, context=CONTEXT, runner=scheduler, verify=approved)
-    assert again["status"] == "succeeded" and "already drained by this call" in again["result"]
+    again = slurm.drain_node(payload=DRAIN_001, context=CONTEXT, runner=scheduler, verify=approved)
+    assert again["status"] == "no_change" and "already drained by this call" in again["result"]
     assert len(scheduler.writes()) == 1, "the repeat read the node and wrote nothing"
 
 
 def test_drain_leaves_a_node_someone_else_drained_alone():
     scheduler = FakeScheduler(nodes={"node001": ["drained", "bad DIMM [bob@2026-10-12]"]})
-    out = slurm.drain_node(payload={"node": "node001", "reason": "scratch full"}, context=CONTEXT, runner=scheduler, verify=approved)
-    assert out["status"] == "succeeded" and "bad DIMM" in out["result"] and scheduler.writes() == []
+    out = slurm.drain_node(payload=DRAIN_001, context=CONTEXT, runner=scheduler, verify=approved)
+    assert out["status"] == "no_change" and "bad DIMM" in out["result"] and scheduler.writes() == []
 
 
 def test_drain_of_an_unknown_node_fails_without_a_write():
     scheduler = FakeScheduler()
-    out = slurm.drain_node(payload={"node": "nope", "reason": "scratch full"}, context=CONTEXT, runner=scheduler, verify=approved)
+    out = slurm.drain_node(payload=DRAIN_001, context=CONTEXT, runner=scheduler, verify=approved)
     assert out["status"] == "failed" and "not known" in out["result"] and scheduler.writes() == []
 
 
-def test_resume_returns_a_drained_node_to_service_once():
-    scheduler = FakeScheduler(nodes={"node042": ["drained", "scratch full"], "node001": ["mixed", ""]})
+def test_resume_returns_a_node_archi_drained_once_and_a_repeat_reports_no_change():
+    scheduler = FakeScheduler(nodes={"node042": ["drained", "archi[run-1] scratch full"]})
     out = slurm.resume_node(payload={"node": "node042"}, context=CONTEXT, runner=scheduler, verify=approved)
     assert out["status"] == "succeeded"
     assert scheduler.writes() == [["scontrol", "update", "NodeName=node042", "State=RESUME"]]
     again = slurm.resume_node(payload={"node": "node042"}, context=CONTEXT, runner=scheduler, verify=approved)
-    assert "already in service" in again["result"] and len(scheduler.writes()) == 1
-    assert "already in service" in slurm.resume_node(
-        payload={"node": "node001"}, context=CONTEXT, runner=scheduler, verify=approved)["result"]
-    assert len(scheduler.writes()) == 1
+    assert again["status"] == "no_change" and "already in service" in again["result"] and len(scheduler.writes()) == 1
 
 
-def test_resume_also_returns_a_down_node():
+def test_resume_leaves_a_node_archi_did_not_drain_unless_forced():
+    scheduler = FakeScheduler(nodes={"node042": ["drained", "bad DIMM [bob@2026-10-12]"], "gpu02": ["down*", "Not responding"]})
+    out = slurm.resume_node(payload={"node": "node042"}, context=CONTEXT, runner=scheduler, verify=approved)
+    assert out["status"] == "no_change" and "did not drain it" in out["result"] and "force: true" in out["result"]
+    assert scheduler.writes() == []
+    down = slurm.resume_node(payload={"node": "gpu02"}, context=CONTEXT, runner=scheduler, verify=approved)
+    assert down["status"] == "no_change" and scheduler.writes() == []
+    forced = slurm.resume_node(payload={"node": "gpu02", "force": True}, context=CONTEXT, runner=scheduler, verify=approved)
+    assert forced["status"] == "succeeded" and len(scheduler.writes()) == 1
+    assert slurm.resume_node(payload={"node": "node042", "force": False}, context=CONTEXT, runner=scheduler,
+                             verify=approved)["status"] == "no_change"
+
+
+def test_force_is_part_of_what_the_approver_sees():
+    """The approval is bound to the payload, so a call that adds `force` is not the approved one."""
+    pytest.importorskip("dbos")
+    io = FakeEscalations(action=("resume_node", {"node": "gpu02"}))
     scheduler = FakeScheduler(nodes={"gpu02": ["down*", "Not responding"]})
-    assert slurm.resume_node(payload={"node": "gpu02"}, context=CONTEXT, runner=scheduler, verify=approved)["status"] == "succeeded"
-    assert len(scheduler.writes()) == 1
+    with pytest.raises(ActRefused, match="not the one being run"):
+        slurm.resume_node(payload={"node": "gpu02", "force": True}, context=CONTEXT, runner=scheduler, verify=_verify(io))
+    assert scheduler.calls == []
 
 
-def test_requeue_restarts_a_running_job_once_and_a_repeat_finds_it_waiting():
+def test_resume_of_a_node_in_service_reports_no_change():
+    scheduler = FakeScheduler(nodes={"node001": ["mixed", ""]})
+    out = slurm.resume_node(payload={"node": "node001"}, context=CONTEXT, runner=scheduler, verify=approved)
+    assert out["status"] == "no_change" and "nothing to resume" in out["result"] and scheduler.writes() == []
+
+
+def test_requeue_marks_the_job_with_the_key_then_requeues_once():
     scheduler = FakeScheduler(jobs={"1001": "RUNNING"})
     out = slurm.requeue_job(payload={"job_id": "1001"}, context=CONTEXT, runner=scheduler, verify=approved)
-    assert out["status"] == "succeeded" and scheduler.writes() == [["scontrol", "requeue", "1001"]]
+    assert out["status"] == "succeeded"
+    assert scheduler.writes() == [["scontrol", "update", "JobId=1001", "Comment=archi[run-77]"],
+                                  ["scontrol", "requeue", "1001"]]
     again = slurm.requeue_job(payload={"job_id": "1001"}, context=CONTEXT, runner=scheduler, verify=approved)
-    assert again["status"] == "succeeded" and "already waiting" in again["result"] and len(scheduler.writes()) == 1
+    assert again["status"] == "no_change" and "already requeued by this call" in again["result"]
+    assert len(scheduler.writes()) == 2
 
 
-@pytest.mark.parametrize("jobs, fragment", [
-    ({}, "not in the queue"),
-    ({"1001": "COMPLETED"}, "is COMPLETED, not running"),
-    ({"1001": "FAILED"}, "is FAILED, not running"),
+def test_a_second_call_with_the_same_key_does_nothing_even_after_the_job_runs_again():
+    scheduler = FakeScheduler(jobs={"1001": "RUNNING"})
+    slurm.requeue_job(payload={"job_id": "1001"}, context=CONTEXT, runner=scheduler, verify=approved)
+    scheduler.jobs["1001"][0] = "RUNNING"  # the scheduler started it again
+    again = slurm.requeue_job(payload={"job_id": "1001"}, context=CONTEXT, runner=scheduler, verify=approved)
+    assert again["status"] == "no_change" and len(scheduler.writes()) == 2
+    # a different key is a different decision and requeues again
+    other = {**CONTEXT, "idempotency_key": "run-78"}
+    assert slurm.requeue_job(payload={"job_id": "1001"}, context=other, runner=scheduler, verify=approved)["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("jobs, status, fragment", [
+    ({}, "failed", "not in the queue"),
+    ({"1001": "COMPLETED"}, "failed", "is COMPLETED, not running"),
+    ({"1001": "FAILED"}, "failed", "is FAILED, not running"),
+    ({"1001": "PENDING"}, "no_change", "already waiting"),
 ])
-def test_requeue_of_a_job_that_is_not_running_fails_without_a_write(jobs, fragment):
+def test_requeue_of_a_job_that_is_not_running_changes_nothing(jobs, status, fragment):
     scheduler = FakeScheduler(jobs=jobs)
     out = slurm.requeue_job(payload={"job_id": "1001"}, context=CONTEXT, runner=scheduler, verify=approved)
-    assert out["status"] == "failed" and fragment in out["result"] and scheduler.writes() == []
+    assert out["status"] == status and fragment in out["result"] and scheduler.writes() == []
 
 
 def test_a_failing_scontrol_is_a_failed_outcome_not_an_exception():
@@ -392,8 +586,29 @@ def test_a_failing_scontrol_is_a_failed_outcome_not_an_exception():
             return RunResult(0, "node001|cpu|mixed|64|256000|none\n")
         return RunResult(1, "", "scontrol: error: Invalid user id")
 
-    out = slurm.drain_node(payload={"node": "node001", "reason": "scratch full"}, context=CONTEXT, runner=runner, verify=approved)
+    out = slurm.drain_node(payload=DRAIN_001, context=CONTEXT, runner=runner, verify=approved)
     assert out["status"] == "failed" and "Invalid user id" in out["result"]
+
+
+@pytest.mark.parametrize("error", [subprocess.TimeoutExpired(["scontrol"], 30), FileNotFoundError(2, "scontrol")])
+@pytest.mark.parametrize("name, payload, nodes, jobs", [
+    ("drain_node", DRAIN_001, {"node001": ["mixed", ""]}, {}),
+    ("resume_node", {"node": "node042"}, {"node042": ["drained", "archi[run-1] x"]}, {}),
+    ("requeue_job", {"job_id": "1001"}, {}, {"1001": "RUNNING"}),
+])
+def test_a_write_that_times_out_or_cannot_start_is_unknown_not_failed(error, name, payload, nodes, jobs):
+    scheduler = FakeScheduler(nodes=nodes, jobs=jobs, fail_writes=error)
+    out = getattr(slurm, name)(payload=payload, context=CONTEXT, runner=scheduler, verify=approved)
+    assert out["status"] == "unknown" and "may have applied" in out["result"] and "check" in out["result"]
+
+
+def test_a_read_that_times_out_before_any_write_is_a_failure_with_nothing_changed():
+    def runner(argv, *, timeout):
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    for name, payload in (("drain_node", DRAIN_001), ("resume_node", {"node": "node001"}), ("requeue_job", {"job_id": "1001"})):
+        out = getattr(slurm, name)(payload=payload, context=CONTEXT, runner=runner, verify=approved)
+        assert out["status"] == "failed" and "nothing changed" in out["result"]
 
 
 # --- what the pack declares matches the code --------------------------------------------------------
@@ -425,5 +640,3 @@ def test_the_act_tools_are_mediators_only_never_agent_tools():
     """The module's docstring wires only the two reads as agent tools."""
     wired = [line.split(":")[0].strip() for line in slurm.__doc__.splitlines() if line.strip().endswith(":") and line.startswith("      archi_")]
     assert wired == ["archi_slurm_squeue", "archi_slurm_sinfo"]
-    for name in ("drain_node", "resume_node", "requeue_job"):
-        assert name not in " ".join(wired)

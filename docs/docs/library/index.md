@@ -34,7 +34,7 @@ Each page below is generated from the manifest in the repository, so it cannot d
 | [`instance-health`](packs/instance-health.md) | automation | Watches the instance itself (doctor, source freshness, failed ingests, automation error rates, eval trends) and keeps one issue per problem in the instance repository. |
 | [`jira`](packs/jira.md) | context | JIRA issues and their participants, read from the cache the JIRA downloader writes. |
 | [`monit-live`](packs/monit-live.md) | context | CERN MONIT monitoring snapshots (SAM, HTCondor, Rucio) and the live MONIT query tools. |
-| [`node-health`](packs/node-health.md) | context | Compute-node health, read from the per-node check results a site's health exporter writes. |
+| [`node-health`](packs/node-health.md) | context | Compute-node health from a JSON list of per-node reports that a site's own health exporter writes to node-health/records.json (each report has node, cluster, observed_at and checks, a list of name, status ok or warn or fail, and detail). |
 | [`ops-record`](packs/ops-record.md) | context | Operational memory, the incidents, proposals, decisions, actions and outcomes automations record through okg admission (ADR 0002 section 6.2). |
 | [`servicenow`](packs/servicenow.md) | context | ServiceNow incidents, requests and knowledge-base articles, read from the records cache the ServiceNow downloader writes. |
 | [`slurm`](packs/slurm.md) | context | Slurm partitions, nodes, reservations and job summaries from an exported snapshot, with live squeue and sinfo tools and gated drain, resume and requeue actions. |

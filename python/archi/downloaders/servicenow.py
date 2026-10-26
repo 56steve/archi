@@ -104,7 +104,7 @@ def fetch_table(
     *,
     page_size: int = 200,
     max_records: int = 0,
-    query: str = "ORDERBYDESCsys_updated_on",
+    query: str = "ORDERBYsys_id",  # stable: sys_id never changes, so paging cannot skip or repeat a row
 ) -> list[dict[str, Any]]:
     """Every row of one table, a page at a time, tagged with its ``table``."""
     rows: list[dict[str, Any]] = []
@@ -149,6 +149,9 @@ def download(
     max_records: int = 0,
 ) -> dict[str, Any]:
     instance_url = instance_url.rstrip("/")
+    if not instance_url.lower().startswith("https://"):
+        # the credentials and the token travel in this URL's requests
+        raise DownloadError(f"--instance-url must be https://, got {instance_url!r}")
     unknown = [t for t in tables if t not in TABLES]
     if unknown:
         raise DownloadError(f"unknown table(s) {unknown}; choose from {sorted(TABLES)}")

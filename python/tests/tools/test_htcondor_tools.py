@@ -24,7 +24,7 @@ def test_condor_status_lists_slots_with_a_constraint_built_from_validated_names(
     runner = FakeRunner().on(lambda a: a[0] == "condor_status", text("condor_status.out"))
     out = htcondor.archi_condor_status(machine="node001.example.org", state="claimed", runner=runner)
     assert runner.calls == [[
-        "condor_status", "-af:t", *htcondor.STATUS_ATTRS,
+        "condor_status", "-limit", "51", "-af:t", *htcondor.STATUS_ATTRS,
         "-constraint", 'Machine == "node001.example.org" && State == "Claimed"',
     ]]
     assert out["boundary"] == "external_live" and out["observed_at"] and out["count"] == 4
@@ -54,6 +54,8 @@ def test_no_constraint_when_no_filter_is_given():
     (htcondor.archi_condor_status, {"state": "Claimed\" || 1"}),
     (htcondor.archi_condor_q, {"owner": "a b"}),
     (htcondor.archi_condor_q, {"cluster_id": "1 || 2"}),
+    (htcondor.archi_condor_q, {"cluster_id": "\u0663\u0664"}),    # Arabic-Indic digits: isdigit() is true, int() accepts them
+    (htcondor.archi_condor_q, {"cluster_id": "\u00b2"}),          # a superscript two: isdigit() true, int() raises
 ])
 def test_an_argument_that_could_become_a_classad_or_an_option_never_reaches_a_command(tool, kwargs):
     runner = FakeRunner()
@@ -72,3 +74,10 @@ def test_the_pack_ships_only_idempotent_read_tools_and_no_action_class():
     assert set(pack["live_tools"]) == declared == set(pack["idempotent_tools"])
     assert all(meta["kind"] == "read" and meta["boundary"] == "external_live" for meta in htcondor.TOOLS.values())
     assert "action_classes" not in pack
+
+
+def test_the_query_and_the_output_are_both_capped():
+    runner = FakeRunner().on(lambda a: True, text("condor_q.out") * 40)
+    out = htcondor.archi_condor_q(max_results=2, runner=runner)
+    assert runner.calls[0][:5] == ["condor_q", "-allusers", "-limit", "3", "-af:t"], "the tool asks for limit + 1 rows"
+    assert len(out["rows"]) == 2 and out["truncated"] is True, "and a reply that ignores the flag is cut before parsing"

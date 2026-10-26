@@ -22,6 +22,7 @@ Every payload a tool returns carries ``boundary: external_live`` and
 """
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -136,7 +137,12 @@ def run_read(
         return error_payload(
             command, f"{command[0]} exited {result.returncode}: {result.stderr.strip()[:300]}", **extra
         )
-    return read_payload(command, rows=parse(result.stdout), limit=limit, **extra)
+    # Cap the output before parsing: at most limit + 1 lines (the extra one says "truncated").
+    lines = result.stdout.splitlines()
+    payload = read_payload(command, rows=parse("\n".join(lines[: limit + 1])), limit=limit, **extra)
+    if len(lines) > limit + 1:
+        payload["truncated"] = True
+    return payload
 
 
 def split_fields(line: str, names: Sequence[str], sep: str = "|") -> dict[str, str]:
@@ -156,46 +162,103 @@ class Approval:
     decided_by: str
 
 
-#: ``verify(context) -> Approval | None``: the approved decision bound to this call, else None.
-Verifier = Callable[[Mapping[str, Any]], Optional[Approval]]
+#: ``verify(context, payload, action_class) -> Approval | None``: the approved decision bound to this call, else None.
+Verifier = Callable[[Mapping[str, Any], Mapping[str, Any], str], Optional[Approval]]
+
+_ACTION_LINE = re.compile(r"^Action: (\S+) (.*)$", re.M)
 
 
-def ops_verifier(context: Mapping[str, Any], io: Optional[Any] = None) -> Optional[Approval]:
-    """The approved decision for the run in ``context``, read from okg.
+def canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
-    The runtime names the run's escalation from its workflow id, so the check
-    needs nothing from the caller beyond what the runtime already passes
-    (``dsn``, ``workflow_id``, ``proposal_id``). ``io`` is anything with
-    ``decision_for(escalation_id)`` (a test passes a fake; a deployed tool
-    builds an ``OpsIO`` on the run's database). Imported here, not at the top,
-    so reading these tools does not load the ops runtime.
+
+def ops_verifier(
+    context: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    action_class: str,
+    io: Optional[Any] = None,
+    now: Optional[Callable[[], datetime]] = None,
+    halt: Optional[Callable[[Any], Optional[str]]] = None,
+) -> Optional[Approval]:
+    """The approved decision for exactly this action, read from okg; None when there is none.
+
+    Checks, with the runtime's own rules (``archi.ops.escalation.may_execute`` and
+    ``archi.ops.workflow.halt_reason``): the instance is not halted; the run's escalation
+    (named from its workflow id, as the runtime names it) was requested by this workflow;
+    it was approved by a named person for this proposal, no later than its deadline and
+    not in the future; and the action it asked the person to approve is this action class
+    with this payload (canonical JSON).
+
+    The payload binding reads the escalation's own request: the runtime writes the
+    ``Action: <class> <payload JSON>`` line into the escalation reason, so that line is
+    what the approver saw. okg's escalation row stores no opening time, so the "not before
+    it opened" bound is not checked here (the runtime's mediator step has it); everything
+    else of ``may_execute`` is.
+
+    ``io`` is anything with ``escalation(escalation_id)`` and ``schedules()`` (a test
+    passes a fake; a deployed tool builds an ``OpsIO`` on the run's database). Imported
+    here, not at the top, so reading these tools does not load the ops runtime.
     """
-    from archi.ops.escalation import APPROVED
-    from archi.ops.workflow import expected_escalation_id
+    from archi.ops.escalation import Escalation, decision_from_row, may_execute
+    from archi.ops.workflow import expected_escalation_id, halt_reason
 
     if io is None:
         from archi.ops.okg_io import OpsIO
         from archi.ops.runtime_config import load_runtime
 
         io = OpsIO(str(context["dsn"]), load_runtime().deployment)
+    halted = (halt or halt_reason)(io)
+    if halted:
+        raise ActRefused(f"the instance is halted: {halted}")
     escalation_id = expected_escalation_id(str(context["workflow_id"]))
-    decision = io.decision_for(escalation_id)
-    if decision.status != APPROVED or not decision.decided_by:
+    found = io.escalation(escalation_id)
+    if found is None:
         return None
-    if decision.proposal_id != context.get("proposal_id") or decision.escalation_id != escalation_id:
+    subject, attrs = found
+    if attrs.get("requested_by_workflow") not in (None, context["workflow_id"]):
         return None
+    decision = decision_from_row(escalation_id, subject, attrs)
+    timeout = attrs.get("timeout_at")
+    if not timeout:
+        raise ActRefused("the escalation row has no deadline; refusing")
+    deadline = datetime.fromisoformat(str(timeout).replace("Z", "+00:00"))
+    escalation = Escalation(
+        escalation_id, str(context["proposal_id"]), datetime.min.replace(tzinfo=timezone.utc), deadline
+    )
+    allowed = may_execute(decision, escalation, (now or (lambda: datetime.now(timezone.utc)))())
+    if not allowed:
+        raise ActRefused(f"the approval cannot be used now: {allowed.reason}")
+    asked = _ACTION_LINE.search(str(attrs.get("reason") or ""))
+    if asked is None:
+        raise ActRefused("the escalation does not record the action it asked to approve; refusing")
+    try:
+        approved_payload = json.loads(asked.group(2))
+    except ValueError:
+        raise ActRefused("the escalation's recorded action payload is not JSON; refusing") from None
+    if asked.group(1) != action_class or canonical(approved_payload) != canonical(dict(payload)):
+        raise ActRefused(
+            f"the approved action ({asked.group(1)} {canonical(approved_payload)}) is not the one being run "
+            f"({action_class} {canonical(dict(payload))})"
+        )
     return Approval(escalation_id, str(decision.proposal_id), str(decision.decided_by))
 
 
 REQUIRED_CONTEXT = ("idempotency_key", "proposal_id", "workflow_id")
 
 
-def require_approval(context: Optional[Mapping[str, Any]], verify: Optional[Verifier] = None) -> Approval:
+def require_approval(
+    context: Optional[Mapping[str, Any]],
+    verify: Optional[Verifier] = None,
+    *,
+    payload: Optional[Mapping[str, Any]] = None,
+    action_class: str = "",
+) -> Approval:
     """Return the approved decision for this call or raise :class:`ActRefused`.
 
     Refuses when the context is missing a key the runtime always sets, when no
-    approved decision is bound to this proposal, and when the check itself
-    fails (it fails closed: a database that cannot be read is not an approval).
+    approved decision is bound to this proposal, this payload and this action class,
+    and when the check itself fails (it fails closed: a database that cannot be read
+    is not an approval).
     """
     if not isinstance(context, Mapping):
         raise ActRefused("no call context: an act tool runs only as a mediator, after an approved escalation")
@@ -203,7 +266,9 @@ def require_approval(context: Optional[Mapping[str, Any]], verify: Optional[Veri
     if missing:
         raise ActRefused(f"call context lacks {', '.join(missing)}: not called by the ops runtime")
     try:
-        approval = (verify or ops_verifier)(context)
+        approval = (verify or ops_verifier)(context, payload if isinstance(payload, Mapping) else {}, action_class)
+    except ActRefused:
+        raise
     except Exception as exc:  # noqa: BLE001 - a check that cannot run is a refusal
         raise ActRefused(f"could not verify an approved escalation ({type(exc).__name__}: {exc})") from exc
     if approval is None:
