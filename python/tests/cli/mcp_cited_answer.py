@@ -56,6 +56,8 @@ def main(argv=None) -> int:
         "question": args.question,
         "endpoint": url,
         "sources": sorted({r["source"] for r in rows if r["source"]}),
+        # Kept for the nightly workflow's summary step: the single source, or all of them.
+        "source": ", ".join(sorted({r["source"] for r in rows if r["source"]})) or None,
         "citations": rows[:10],
         "excerpt": text[:1200],
     }
