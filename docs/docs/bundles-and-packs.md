@@ -27,10 +27,11 @@ selects. It never sets the level itself.
 |---|---|
 | `cern-team` | A generic CERN team knowledge instance: documentation, meetings, wiki, documents, tickets and code. No automations. |
 | `cms-physics` | A CMS physics knowledge instance. Extends `cern-team`. |
+| `cms-comp-ops` | A CMS computing operations instance: CMS catalogs, site status, CMSSW releases and the operational memory. Extends `cern-team`. Optional: `monit-live`, `dqm`, `hypernews`, `jira`. |
 
-`cms-comp-ops` and `cluster-manager` are planned for 3.0 and are not in
-this branch. The [library](library/index.md) has one generated page per
-bundle and per pack, so it matches what ships.
+`cluster-manager` is planned for 3.0 and is not in this branch. The
+[library](library/index.md) has one generated page per bundle and per pack,
+so it matches what ships.
 
 ## Choosing packs
 

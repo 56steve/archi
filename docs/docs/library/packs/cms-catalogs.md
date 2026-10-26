@@ -14,7 +14,7 @@ CMS computing catalogs - CRIC, CRIC core, SITECONF, DBS, WMStats, GOCDB and Cond
 
 ## In which bundles
 
-- Default in: none
+- Default in: [`cms-comp-ops`](../bundles/cms-comp-ops.md)
 - Optional in: none
 
 Add it to an instance with `archi add cms-catalogs`.
@@ -76,4 +76,7 @@ The pack owns these checks. They leave with it.
 
 ## Playbooks
 
-The pack ships no playbook.
+- `incident_root_cause.md`
+- `rucio_command.md`
+- `rucio_dataset_hosting.md`
+- `site_profile.md`

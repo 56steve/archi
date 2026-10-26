@@ -214,3 +214,31 @@ def test_git_history_follows_the_repo_source():
     assert history["params"]["repo_root"] == repo["params"]["repo_root"]
     assert history["params"]["store_diffs"] is True
     assert {"git_commit", "git_file_diff", "git_tag"} <= set(manifest("git-code")["search_subtypes"])
+
+
+def _emitted_subtypes(pack: str) -> set[str]:
+    """Subtypes a pack emits: its sources' output signatures plus the
+    subtypes it declares for search (ops-record has no sources)."""
+    out = set(manifest(pack).get("search_subtypes", []))
+    for profile in manifest(pack).get("search_profiles", {}).values():
+        out |= set(profile.get("subtypes", []))
+    for entry in templates(pack).values():
+        out |= {n["subtype"] for n in entry["admission_policy"]["output_signature"]["nodes"]}
+    return out
+
+
+def test_every_pack_trigger_names_a_subtype_its_pack_can_see():
+    """A trigger fires on subtypes. At least one must be emitted by the owning
+    pack or a pack it requires; others may come from optional siblings."""
+    for path in PACKS_DIR.glob("*/*/skill-triggers.yaml"):
+        pack = path.parent.parent.name
+        if manifest(pack)["kind"] == "tool":
+            continue  # core-playbooks emits nothing; its triggers are generic
+        visible, todo = set(), [pack]
+        while todo:
+            name = todo.pop()
+            visible |= _emitted_subtypes(name)
+            todo += manifest(name).get("requires", {}).get("packs", [])
+        for intent, value in yaml.safe_load(path.read_text())["intents"].items():
+            wanted = set(value["subtypes"])
+            assert wanted & visible or "*" in wanted, f"{path}: {intent} names no subtype {pack} emits"

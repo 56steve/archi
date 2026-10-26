@@ -8,6 +8,8 @@ requires:
   packs: [cms-catalogs]
 schemas: schemas/
 sources: sources/
+playbooks: playbooks/
+skill_triggers: playbooks/skill-triggers.yaml
 invariants: invariants.yaml
 # Each source is a daily snapshot over the last 24 hours (from_time now-24h),
 # so a run a day apart is on schedule; 36h allows one late run before the

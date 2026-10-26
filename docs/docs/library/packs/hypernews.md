@@ -15,7 +15,7 @@ CMS HyperNews forum threads, from a records cache or a live SSO crawl.
 ## In which bundles
 
 - Default in: none
-- Optional in: none
+- Optional in: [`cms-comp-ops`](../bundles/cms-comp-ops.md)
 
 Add it to an instance with `archi add hypernews`.
 

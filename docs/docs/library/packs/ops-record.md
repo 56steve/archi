@@ -14,7 +14,7 @@ Operational memory, the incidents, proposals, decisions, actions and outcomes au
 
 ## In which bundles
 
-- Default in: none
+- Default in: [`cms-comp-ops`](../bundles/cms-comp-ops.md)
 - Optional in: none
 
 Add it to an instance with `archi add ops-record`.
