@@ -37,6 +37,8 @@ GITIGNORE = (
     "# Written by `archi init`. Secrets never enter the repository.\n"
     f"{ENV_FILE}\n"
     f"{SECRETS_DIR}/\n"
+    "# okg's own local state (PACT intents, coordination); `archi ops promote` writes it.\n"
+    ".okg/\n"
 )
 
 #: Every secret `archi init` generates. Values are random; none is ever a

@@ -8,6 +8,7 @@
 #   1. archi init gp --bundle cern-team     no answers: the bundle's defaults (docsite,
 #                                           indico) publish; instance repo, secrets, graph
 #   2. archi up                             graph-db, chat-db, mcp, webui; okg chat sync
+#      (then, not a user command: archi down + archi up keeps the same published graph)
 #   3. archi doctor --json                  every check passes
 #   4. mcp_cited_answer.py "<question>"     a search over MCP that cites node ids
 # (The nightly workflow adds the install as its first command.)
@@ -43,6 +44,24 @@ step "1. archi init"
 
 step "2. archi up"
 "$V/archi" up --instance "$INST"
+
+# Not a user command: the graph must survive `archi down` + `archi up`
+# (the published generation and its node count are unchanged).
+published() {
+  "$V/archi" doctor --instance "$INST" --json | "$V/python" -c '
+import json, sys
+c = next(c for c in json.load(sys.stdin)["checks"] if c["id"] == "published")
+print(c["message"], (c.get("data") or {}).get("nodes"))'
+}
+step "durability: archi down, archi up, same graph"
+before="$(published)"
+"$V/archi" down --instance "$INST"
+"$V/archi" up --instance "$INST"
+after="$(published)"
+echo "  before: $before"
+echo "  after:  $after"
+[ "$before" = "$after" ] && [ "${before#published }" != "$before" ] || {
+  echo "the published graph did not survive archi down + archi up"; exit 1; }
 
 step "3. archi doctor --json"
 "$V/archi" doctor --instance "$INST" --json > "$RUN/doctor.json" || {

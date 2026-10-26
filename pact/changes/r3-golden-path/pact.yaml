@@ -212,4 +212,22 @@ evidence:
     the two bundle-format asks are mitdbg/akmon#1 and #2 (#792, #793). Ask E was withdrawn: FG-39 is fixed
     in okg v0.2.0 (remove-source proven on a scratch instance). Task upstream (ADR 0002 section 9 items 1,
     4, 5, 6) is covered by asks 1, 4, 5 and 6.'
+- kind: executed_test
+  requirement: req.r3-golden-path.up
+  status: pass
+  command: python/tests/cli/golden_path_run.sh on submit76 (podman-compose 1.4.0, no shim), from a clean clone
+    of 74d81925; python -m pytest python/tests -q at c22aed61 (network off)
+  head: c22aed61784233007264fa3539b09685308f98e6
+  at: '2026-10-26T01:22:27+00:00'
+  note: 'Correction to the earlier acc.r3-golden-path.up entry: before this fix, "archi down stops it without
+    data loss" was not true. The compose file mounted the graph-db volume at /var/lib/postgresql/data, while
+    the AKMON image (akmon-postgres v0.2.0) keeps PGDATA at /home/postgres/pgdata/data, so the published
+    graph lived in the container layer and was lost whenever the container was recreated (podman-compose
+    recreates it on archi up). Also, podman-compose 1.4 rejected --project-directory, so archi init and up
+    failed there, and doctor''s services check read nothing. Fixed: the volume covers the image''s PGDATA
+    parent (a unit test pins it), compose runs without --project-directory, and services falls back to the
+    runtime''s ps by compose label. Proof: the golden-path script, which now runs archi down + archi up
+    after the first up and compares the published graph, gave the same generation
+    (gen:20261026T011532794261Z:8c3c3ba940b0) and node count (2481) before and after, then doctor, the
+    cited MCP answer and the purge, 179 s in all. Full suite 2723 passed, 29 skipped, network off.'
 decisions: []

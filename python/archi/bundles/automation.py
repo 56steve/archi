@@ -141,28 +141,40 @@ def _trigger_messages(trigger: Mapping[str, Any], budget: Mapping[str, Any]) -> 
 
 def _required_tools(
     data: Mapping[str, Any], packs: Optional[Mapping[str, Any]]
-) -> tuple[set[str], list[str]]:
-    """Live tools of this pack and of the packs it requires, and the required packs not resolved.
+) -> tuple[set[str], list[str], set[str]]:
+    """Live tools of this pack and of the packs it requires, the required packs not resolved,
+    and the tools among them declared `idempotent_tools`.
 
     Required packs come from `packs`, the catalog (any root). Without a
     catalog none resolve; nothing is guessed from neighbouring directories.
     """
     tools = set(data.get("live_tools", ()))
+    idempotent = set(data.get("idempotent_tools", ()))
     unresolved = []
     for dep in data.get("requires", {}).get("packs", ()):
         if packs is not None and dep in packs:
             tools |= set(packs[dep].live_tools)
+            idempotent |= set(packs[dep].idempotent_tools)
         else:
             unresolved.append(dep)
-    return tools, unresolved
+    return tools, unresolved, idempotent
 
 
 def _mediator_message(
-    where: str, cls: Mapping[str, Any], tools: set[str], unresolved: list[str], has_catalog: bool, check_requires: bool
+    where: str, cls: Mapping[str, Any], tools: set[str], unresolved: list[str], has_catalog: bool, check_requires: bool,
+    idempotent: Optional[set[str]] = None,
 ) -> Optional[str]:
     mediator = cls["mediator"]
     if TOOL_ENTRY.match(mediator):
         if not check_requires or mediator in tools:
+            if (check_requires and cls["max_level"] == "L2" and idempotent is not None
+                    and mediator not in idempotent):
+                return (
+                    f"{where}: live tool {mediator!r} can run at L2 but its pack does not declare it in "
+                    "`idempotent_tools:`. The runtime passes every mediator an idempotency key and never "
+                    "calls a mediator twice for one key, yet a tool that may have run once before a crash "
+                    "must make a repeat harmless; declare it only if it is"
+                )
             return None
         if unresolved and not has_catalog:
             return (
@@ -207,7 +219,7 @@ def _action_class_messages(
     if not isinstance(classes, Mapping):
         return []  # validate_pack already reports the shape
 
-    tools, unresolved = _required_tools(data, packs)
+    tools, unresolved, idempotent = _required_tools(data, packs)
     out = []
     for cid, cls in classes.items():
         where = f"{rel}: action class {cid!r}"
@@ -221,7 +233,7 @@ def _action_class_messages(
         msg = level_problem(cls["max_level"], f"{where}: max_level")
         if msg:
             out.append(msg)
-        msg = _mediator_message(where, cls, tools, unresolved, packs is not None, check_requires)
+        msg = _mediator_message(where, cls, tools, unresolved, packs is not None, check_requires, idempotent)
         if msg:
             out.append(msg)
     for name in names:

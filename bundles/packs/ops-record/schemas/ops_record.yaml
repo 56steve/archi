@@ -145,10 +145,21 @@ classes:
       autonomy_level:
         description: L0 | L1 | L2 (ADR 0002 §7.3; 3.0 stops at L2).
       mode:
-        description: shadow | live
+        description: >-
+          shadow | live | placeholder. `placeholder` marks a stand-in written
+          when a run stopped before any real proposal existed (budget spent,
+          proposal refused, proposer failed), so a decision has something to
+          link to. Shadow scoring skips placeholders.
         annotations:
           filterable: 'true'
           value_type: text
+      mode_reason:
+        description: >-
+          Why the run was not live: "demoted to shadow: ..." with the failing
+          context-gate checks, "context gate failed: ..." on a shadow
+          automation, or the note on a placeholder.
+      draft:
+        description: The reply or ticket text an L1 run drafted for a person to send.
       proposed_at:
       automation:
         annotations:
@@ -183,7 +194,15 @@ classes:
           value_type: text
       verdict:
         required: true
-        description: approved | rejected | timed_out
+        description: >-
+          approved | rejected | timed_out, from an escalation; observed (L0, or
+          any shadow run) | drafted (L1); and the stops: budget_exhausted,
+          invalid_proposal (the proposal broke the automation's schema),
+          action_class_capped (the class allows less than the run's level),
+          error (something failed; nothing ran), halted. A later record with
+          the same record_id supersedes the earlier one: `halted` replaces the
+          `approved` of a run halted before its mediator, so no approval is
+          left standing for an action that did not run.
         annotations:
           filterable: 'true'
           value_type: text
@@ -232,7 +251,10 @@ classes:
         description: The live tool or workflow step that ran it.
       payload:
       status:
-        description: succeeded | failed
+        description: >-
+          succeeded | failed | unknown. `unknown` means a replay found that the mediator
+          had been called and no end was recorded, so it was not called again; check
+          the external system.
         annotations:
           filterable: 'true'
           value_type: text
