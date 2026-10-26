@@ -32,7 +32,7 @@ affected_code:
 - python/archi/downloaders/__init__.py
 - python/archi/sources/cmssst.py
 - python/archi/snapshot/groups.py
-- docs/connector-caches.md
+- docs/docs/reference/connector-caches.md
 - docs/cache-snapshot.md
 - python/tests/downloaders/test_downloader_cmssst.py
 - python/tests/sources/test_cmssst.py

@@ -16,7 +16,7 @@ that says so. The default project list is the CMS set, which needs a token.
 
 Without ``--output-dir`` the cache goes to ``data/jira`` under
 ``ARCHI_DATA_ROOT`` (or under the current directory when that variable is
-unset), the path the reader's defaults and ``docs/connector-caches.md`` name.
+unset), the path the reader's defaults and ``docs/docs/reference/connector-caches.md`` name.
 
 Changes from the okg-deployments copy: the default output directory follows
 ``ARCHI_DATA_ROOT`` instead of the old repository layout

@@ -43,7 +43,7 @@ CHAT_DB_IMAGE = "docker.io/library/postgres:16"
 #: (okg.substrate.chat.instance.PINNED_VERSION). okg v0.2.0 pins a patched
 #: image under a placeholder registry (`your-registry.invalid/...`) that is
 #: not published; every okg tool result is plain text now, which
-#: the upstream image reads too. See docs/golden-path-footguns.md.
+#: the upstream image reads too. See docs/docs/operating/footguns.md.
 WEBUI_IMAGE = "ghcr.io/open-webui/open-webui:v0.11.4"
 #: Where the MCP server listens inside the network.
 MCP_CONTAINER_PORT = 8765

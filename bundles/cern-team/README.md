@@ -35,7 +35,7 @@ deployment directory, `okg ingest` and `okg run --once --apply`; the
 The two default sources carry their own input:
 
 - **docsite** declares a `prepare` step (see
-  [packs and bundles](../../docs/packs-and-bundles.md#preparing-a-packs-input)).
+  [packs and bundles](../../docs/docs/reference/pack-format.md#preparing-a-packs-input)).
   `archi init` and `archi add` run it before the first ingest: it downloads
   the pages of the `docsite_urls` answer into the records cache. The default is
   two small public CERN documentation sites, the FTS3 and Rucio docs, one
@@ -49,7 +49,7 @@ Answer `docsite_urls`, `indico_event_ids` or `indico_category_ids` to read
 your own. Any Indico event or category id you give replaces the default
 event; it is read only when you give neither. `cmssw-releases` is not part of this bundle; add it with
 `--with cmssw-releases` (existing instances: the
-[migration note](../../docs/cern-team-migration.md)).
+[migration note](../../docs/docs/operating/upgrade-and-migration.md)).
 
 When you install by hand with `okg install` instead of `archi init`, no
 `prepare` step runs: select only what you can feed, because every selected
@@ -65,7 +65,7 @@ are environment-variable names.
 ## Composition
 
 `archi render` merges the selected packs into one okg profile (the rules are
-in [packs and bundles](../../docs/packs-and-bundles.md)) and writes
+in [packs and bundles](../../docs/docs/reference/pack-format.md)) and writes
 `archi.lock` beside it. The shared HEP vocabulary
 (`python/archi/schemas/`) ships in every pack that needs it as identical
 files, so composing packs never conflicts on a schema.

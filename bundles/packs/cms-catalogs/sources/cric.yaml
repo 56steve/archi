@@ -1,6 +1,6 @@
 # CRIC topology (cache-backed): facilities, sites, storage and compute
 # endpoints, and the operators responsible for each site. Reads the JSON
-# caches under ${archi_data_root}/cric/ (docs/connector-caches.md has
+# caches under ${archi_data_root}/cric/ (docs/docs/reference/connector-caches.md has
 # their shape). Nothing in archi downloads them yet; the CRIC API needs a
 # CERN grid certificate or SSO.
 cric:

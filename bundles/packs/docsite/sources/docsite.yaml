@@ -7,7 +7,7 @@
 # publishes an empty, "complete" scope.
 #
 # The reader can also link page text to other packs' records (JIRA issues,
-# CMSSW releases, sites; docs/connector-caches.md "Reference caches"). Those
+# CMSSW releases, sites; docs/docs/reference/connector-caches.md "Reference caches"). Those
 # caches belong to other packs, and a configured reference cache that is
 # missing fails the run, so this template configures none: the pack
 # installs and publishes alone. To link pages to JIRA issues on an instance

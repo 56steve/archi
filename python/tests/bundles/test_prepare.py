@@ -1,6 +1,6 @@
 """req.r3-bundle-cern-team.bundle: pack `prepare` steps and the bare cern-team install.
 
-A pack declares `prepare:` (docs/packs-and-bundles.md); `archi init` and
+A pack declares `prepare:` (docs/docs/reference/pack-format.md); `archi init` and
 `archi add` run it before okg's first ingest. These tests hold the mechanism
 (substitution, order, failure) and what it gives the shipped cern-team bundle:
 a bare install that has its inputs. The published bare install on a real

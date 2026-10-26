@@ -1,5 +1,5 @@
 """`archi doctor`'s checks: okg's own lint and doctor, plus one check per
-quickstart trap archi absorbs (docs/golden-path-footguns.md lists them all).
+quickstart trap archi absorbs (docs/docs/operating/footguns.md lists them all).
 
 Each check returns a `Result` with one remediation line when it fails. The
 probes that touch the outside world (git, the database, HTTP, compose, okg,
@@ -118,7 +118,7 @@ CHECKS: list[tuple[str, str, Check]] = []
 
 
 def check(check_id: str, footgun: str):
-    """Register a check; `footgun` is its ledger id in docs/golden-path-footguns.md."""
+    """Register a check; `footgun` is its ledger id in docs/docs/operating/footguns.md."""
 
     def wrap(fn: Check) -> Check:
         CHECKS.append((check_id, footgun, fn))
