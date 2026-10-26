@@ -25,7 +25,6 @@ import secrets
 import shlex
 import sys
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
 
 TESTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TESTS))
@@ -167,9 +166,9 @@ def build(dsn: str, work: Path, port: int) -> dict:
         server.close()
 
     roles = json.loads((work / "role-secrets.json").read_text())["roles"]
-    mcp_password = unquote(urlsplit(roles["okg_mcp"]).password)
     token = secrets.token_hex(24)
-    ro_dsn = psycopg.conninfo.make_conninfo(dsn, user="okg_mcp", password=mcp_password)
+    # okg wrote the read role's URL (with its password) into the secrets file.
+    ro_dsn = roles["okg_mcp"]
     (work / "mcp.env").write_text(
         f"OKG_DEPLOYMENTS_DIR={deployments}\nOKG_DSN={dsn}\nOKG_MCP_RO_DSN={ro_dsn}\nOKG_CHAT_MCP_TOKEN={token}\n"
     )
