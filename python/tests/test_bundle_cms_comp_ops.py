@@ -92,5 +92,9 @@ def test_a_playbook_is_absent_without_its_pack(bare):
 
 
 def test_the_chat_site_is_comp_ops(bare):
+    site = next(q for q in bare.composition.questions if q["id"] == "chat_site_name")
+    assert site["default"] == "CMS computing operations chat"
     defaults = yaml.safe_load((bare.profile_dir / "deployment-defaults.yaml").read_text())
-    assert "computing operations" in defaults["chat"]["preset"]["site_name"]
+    preset = defaults["chat"]["preset"]
+    assert "computing operations" in preset["description"]
+    assert len(preset["suggestions"]) == 3
