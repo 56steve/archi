@@ -15,7 +15,7 @@ JIRA issues and their participants, read from the cache the JIRA downloader writ
 ## In which bundles
 
 - Default in: none
-- Optional in: [`cern-team`](../bundles/cern-team.md)
+- Optional in: [`cern-team`](../bundles/cern-team.md), [`cms-comp-ops`](../bundles/cms-comp-ops.md)
 
 Add it to an instance with `archi add jira`.
 

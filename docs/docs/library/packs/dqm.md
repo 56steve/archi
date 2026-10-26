@@ -15,7 +15,7 @@ CMS DQM data-quality certifications, with the runs and datasets they cover.
 ## In which bundles
 
 - Default in: none
-- Optional in: none
+- Optional in: [`cms-comp-ops`](../bundles/cms-comp-ops.md)
 
 Add it to an instance with `archi add dqm`.
 

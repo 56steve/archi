@@ -39,8 +39,9 @@ branch of 3.0:
 - **Document upload through the chat UI.** The design points to an OKG upload
   source. Archi does not ship one in this branch.
 - **Helm deployment.** 3.0 runs one compose project with podman or docker.
-- **The `cms-comp-ops` and `cluster-manager` bundles.** Planned for 3.0, not
-  in this branch.
+- **The `cluster-manager` bundle.** Planned for 3.0, not in this branch.
+  The `cms-comp-ops` bundle is here; the live comp-ops instance has not been
+  rebuilt from it yet.
 
 ## How to move
 

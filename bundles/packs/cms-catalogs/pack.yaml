@@ -6,6 +6,8 @@ requires:
   modules: [document_starter, person, extraction, dataset]
 schemas: schemas/
 sources: sources/
+playbooks: playbooks/
+skill_triggers: playbooks/skill-triggers.yaml
 init_questions: questions.yaml
 invariants: invariants.yaml
 # No template here sets a schedule (triggers are manual and reconcile), so each
