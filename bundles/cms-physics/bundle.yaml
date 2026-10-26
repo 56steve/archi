@@ -4,9 +4,9 @@ description: A CMS physics knowledge instance - physics TWiki pages, CDS records
 # ADR 0002 section 5. Extends cern-team for its documentation, meetings and
 # generic playbooks; the physics sources are added on top.
 extends: [cern-team]
-# Install answers this bundle fixes. The note floor is the one the cms-kb
-# deployment calibrated on a real build; the physics filter keeps the TWiki read to physics topics. Override either with
-# the flag on `okg install`.
+# Install answers this bundle fixes. The note floor was calibrated on a real
+# mirror build; the physics filter keeps the TWiki read to physics topics.
+# Override either with the flag on `okg install`.
 answers:
   analysis_notes_min_notes: 2500
   twiki_physics_filter: "true"

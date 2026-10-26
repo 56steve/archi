@@ -22,7 +22,7 @@ okg install --profile cms-physics --deployment-name <slug> \
 
 The bundle sets two answers you can override with their flags:
 `--twiki-physics-filter` is `true`, and `--analysis-notes-min-notes` is 2500
-(the floor the cms-kb deployment calibrated; a smaller mirror fails
+(calibrated on a real mirror build; a smaller mirror fails
 preflight).
 
 **Wire the cross-link enricher.** Packs cannot yet install an enricher, and
