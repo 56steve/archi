@@ -199,7 +199,7 @@ def test_the_mediator_wrapper_raises_a_refusal_and_maps_an_unknown_result(monkey
     escalation = Escalation("esc-1", "prop-1", OPENED, DEADLINE)
     seen = {}
 
-    def step(automation, action_class, payload, proposal_id, key, esc):
+    def step(automation, action_class, payload, proposal_id, key, esc, level):
         seen["esc"] = esc
         return {"refused": ["halted", "paused"]}
 

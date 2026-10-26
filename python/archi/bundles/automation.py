@@ -163,6 +163,7 @@ def _required_tools(
 def _mediator_message(
     where: str, cls: Mapping[str, Any], tools: set[str], unresolved: list[str], has_catalog: bool, check_requires: bool,
     idempotent: Optional[set[str]] = None,
+    own_signals: bool = False,
 ) -> Optional[str]:
     mediator = cls["mediator"]
     if TOOL_ENTRY.match(mediator):
@@ -184,6 +185,11 @@ def _mediator_message(
         hint = f" (required pack(s) not found: {', '.join(unresolved)})" if unresolved else ""
         return f"{where}: mediator {mediator!r} is not a live tool of this pack or of a pack it requires{hint}"
     step = steps.get_step(mediator)
+    if step is not None and step.impl and not own_signals:
+        return (
+            f"{where}: workflow step {mediator!r} runs at L1 with no escalation and is allowed only in a pack that "
+            "declares `automation.evidence: own_signals`"
+        )
     if step is None:
         return (
             f"{where}: mediator {mediator!r} is neither a live tool entry (archi.tools.x:fn) "
@@ -233,7 +239,8 @@ def _action_class_messages(
         msg = level_problem(cls["max_level"], f"{where}: max_level")
         if msg:
             out.append(msg)
-        msg = _mediator_message(where, cls, tools, unresolved, packs is not None, check_requires, idempotent)
+        msg = _mediator_message(where, cls, tools, unresolved, packs is not None, check_requires, idempotent,
+                                own_signals=data["automation"].get("evidence") == "own_signals")
         if msg:
             out.append(msg)
     for name in names:
@@ -297,6 +304,10 @@ def automation_problems(
 
     auto = data["automation"]
     messages: list[str] = []
+    own_signals = auto.get("evidence") == "own_signals"
+    if own_signals and level_problem(auto["default_level"], "x") is None and rank(auto["default_level"]) > rank("L1"):
+        messages.append("automation.evidence: own_signals is for a monitor that starts at L0 or L1; default_level is "
+                        f"{auto['default_level']}")
 
     messages.extend(_trigger_messages(auto["trigger"], auto["budget"]))
 
@@ -305,9 +316,12 @@ def automation_problems(
     except GateSpecError as exc:
         messages.append(f"automation.context_gate: {exc}")
     else:
-        if not (gate.sources or gate.invariants or gate.min_context_eval_score is not None):
+        measured = gate.sources or gate.invariants or gate.min_context_eval_score is not None
+        if not measured and not (gate.published and own_signals):
             messages.append(
-                "automation.context_gate: declares no check; name at least one source, invariant or min_context_eval_score (ADR 0002 D12)"
+                "automation.context_gate: declares no check; name at least one source, invariant or "
+                "min_context_eval_score (ADR 0002 D12). `published: true` alone is allowed only with "
+                "`automation.evidence: own_signals`"
             )
 
     playbooks = data.get("playbooks")

@@ -22,7 +22,11 @@ generation, and `archi eval --context` (not built yet) will record the score.
 A missing score or invariant result is a failure, never a pass: a gate that
 cannot see a fact has not shown it holds.
 
-Check names: `freshness:<source>`, `context_eval`, `invariant:<name>`.
+Check names: `freshness:<source>`, `context_eval`, `invariant:<name>`, `published`.
+
+`published: true` asks only whether the graph has a published generation to read. It is the gate of an
+automation that reports on the instance's health: a freshness check there would hold the monitor in
+shadow exactly when the thing it reports is stale.
 """
 from __future__ import annotations
 
@@ -38,7 +42,7 @@ PASSING = frozenset({"pass", "passed", "ok"})
 
 def _holds(result: Any) -> bool:
     return result is True or (isinstance(result, str) and result in PASSING)
-SPEC_KEYS = frozenset({"sources", "max_staleness", "min_context_eval_score", "invariants"})
+SPEC_KEYS = frozenset({"sources", "max_staleness", "min_context_eval_score", "invariants", "published"})
 
 
 class GateSpecError(ValueError):
@@ -52,6 +56,8 @@ class GateSpec:
     max_staleness: Optional[int] = None
     min_context_eval_score: Optional[float] = None
     invariants: tuple[str, ...] = ()
+    #: require a published generation (and nothing about how old its sources are)
+    published: bool = False
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "GateSpec":
@@ -71,7 +77,10 @@ class GateSpec:
             if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 1:
                 raise GateSpecError(f"min_context_eval_score must be a number from 0 to 1, got {score!r}")
             score = float(score)
-        return cls(sources, staleness, score, invariants)
+        published = data.get("published", False)
+        if not isinstance(published, bool):
+            raise GateSpecError(f"published must be true or false, got {published!r}")
+        return cls(sources, staleness, score, invariants, published)
 
 
 def _names(data: Mapping[str, Any], key: str) -> tuple[str, ...]:
@@ -91,6 +100,8 @@ class GateFacts:
     #: invariant name -> True/False or "pass"/"fail"/"warn"/"error"
     invariants: Mapping[str, Any] = field(default_factory=dict)
     context_eval_score: Optional[float] = None
+    #: does the graph have a published generation? None: not asked
+    published: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +181,11 @@ def evaluate_gate(spec: GateSpec, facts: GateFacts) -> GateResult:
     """Pass, or fail with every failing check named."""
     checks: list[GateCheck] = []
     rows = {r.get("source"): r for r in facts.freshness}
+    if spec.published:
+        if facts.published:
+            checks.append(GateCheck("published", True, "the graph has a published generation"))
+        else:
+            checks.append(GateCheck("published", False, "the graph has no published generation to read"))
     for source in spec.sources:
         checks.append(_freshness_check(source, rows.get(source), spec.max_staleness))
 

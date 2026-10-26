@@ -36,5 +36,25 @@ tasks:
     Test plan:
 
     - instance runs [evidence: executed_test]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.r3-ops-self-monitoring.health
+  status: pass
+  command: python/tests/ops/scratch_instance_health_run.sh on submit76 (okg 0.2.0 worker, a clean clone of the
+    head); python -m pytest python/tests -q (network off)
+  head: 3cd8d739fcd42fd89fdf8baa5da22a93f9ebb052
+  at: '2026-10-26T03:21:50+00:00'
+  note: 'acc.r3-ops-self-monitoring.issue: the instance-health automation pack (schedule trigger, default L1,
+    max L2) reads archi doctor --json (per-source freshness), okg sync frontier (failed or blocked ingests)
+    and automation error rates from the ops records; eval trends are skipped and said so until an eval
+    report exists. On a scratch cern-team instance with one source made stale, every run started by the
+    worker''s own scanner: a shadow tick wrote nothing; after promotion, three live ticks left exactly one
+    local issue file (.archi/issues/source-freshness--jira.jira.md) with no duplicate and no new commit;
+    after the refresh the issue was marked resolved. Issues go through a local backend (files committed in
+    the instance repo, L1 draft step) by default; GitLab and GitHub backends are a live tool (https only, no
+    redirects, token by env-var name) usable only at L2, so each forge issue needs an approved escalation,
+    and they are tested against mocked HTTP only. Self-cited evidence and a published-only gate are an
+    explicit pack opt-in (evidence: own_signals). Full suite 2828 passed, 29 skipped, network off. Two
+    independent reviews; findings fixed. Turning it on for cms-compops and SubMIT (task rollout) is not
+    done and needs a go.'
 decisions: []
