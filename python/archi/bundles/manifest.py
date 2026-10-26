@@ -195,6 +195,11 @@ class Pack:
         return tuple(dict(t) for t in self.manifest.get("link_coverage", ()))
 
     @property
+    def prepare(self) -> tuple[dict[str, Any], ...]:
+        """The pack's declared preparation steps (see archi.bundles.prepare)."""
+        return tuple(dict(step) for step in self.manifest.get("prepare", ()))
+
+    @property
     def files(self) -> tuple[str, ...]:
         return tuple(self.manifest.get("files", ()))
 
@@ -431,6 +436,18 @@ def validate_pack(
             )
         problems.extend(_credential_value_problems(body, "", template))
         declared_edges |= _output_edges(body[source])
+
+    seen_steps: set[str] = set()
+    for i, step in enumerate(data.get("prepare", ())):
+        where = f"prepare[{i}]"
+        if step["name"] in seen_steps:
+            problems.append(Problem(manifest_path, f"{where}.name: duplicate step {step['name']!r}"))
+        seen_steps.add(step["name"])
+        for j, arg in enumerate(step.get("args", ())):
+            for ref in sorted(_template_refs(arg) - known_refs):
+                problems.append(
+                    Problem(manifest_path, f"{where}.args[{j}]: references ${{{ref}}}, which is neither a base question nor one of this pack's questions")
+                )
 
     for source_id, slo in data.get("freshness", {}).items():
         pack_name, _, source = source_id.partition(".")

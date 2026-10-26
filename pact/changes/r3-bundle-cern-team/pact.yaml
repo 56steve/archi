@@ -45,5 +45,18 @@ tasks:
     Test plan:
 
     - review [evidence: manual]'
-evidence: []
+evidence:
+- kind: manual
+  requirement: req.r3-bundle-cern-team.migrate
+  status: pass
+  command: docs/cern-team-migration.md, reviewed by an independent agent review of the branch
+  head: cd1e35af2b7e914c7e5444c6ba05292ef9172c3d
+  at: '2026-10-26T01:52:20+00:00'
+  note: 'acc.r3-bundle-cern-team.doc: docs/cern-team-migration.md gives existing cern-team instances a written
+    route to the pack layout: what changes in the source registry (cmssw_releases leaves the defaults; docsite
+    and indico become defaults, with docsite''s prepare step and indico''s default event), how to keep the
+    CMSSW release catalog (archi add cmssw-releases), that archi add --no-okg skips prepare steps, that
+    instances without an archi.lock have no in-place route, and that instances created before 2026-10-26
+    kept their graph only in the container and should be re-initialised. The review found the commands
+    correct and asked for the --no-okg and podman-compose caveats, both added.'
 decisions: []

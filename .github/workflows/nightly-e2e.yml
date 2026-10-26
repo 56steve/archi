@@ -6,12 +6,13 @@
 # Everything else here is runner housekeeping (disk space, timing, logs,
 # teardown), not part of the path.
 #
-# No secret is involved: the run selects the cmssw-releases pack (the public
-# CMSSW release catalog) in place of cern-team's docsite and indico defaults,
-# which need a records cache and an event scope that a bare runner lacks
-# (choosing defaults that publish with no input is PACT r3-bundle-cern-team).
-# The answer is read over MCP, so no model provider is needed. It also runs on pushes and pull requests that touch the stack,
-# so a change to it is proven the same way before it merges.
+# No secret is involved: cern-team's defaults (docsite, which downloads two
+# small public CERN documentation sites, and indico, which reads one public
+# event) publish with no answer and no credential (PACT r3-bundle-cern-team).
+# The answer is read over MCP, so no model provider is needed. After the timed
+# user commands, the run also checks that `archi down` + `archi up` keeps the
+# same published graph. It also runs on pushes and pull requests that touch the
+# stack, so a change to it is proven the same way before it merges.
 name: nightly-e2e
 
 on:
@@ -49,7 +50,7 @@ jobs:
     timeout-minutes: 40
     env:
       OKG_WHEEL: "okg @ https://github.com/mitdbg/akmon/releases/download/v0.2.0/okg-0.2.0-py3-none-any.whl#sha256=72bac3b67cf29cccd27e77e58ad309104f19fcce255a04a4a6f23b8318b88e12"
-      QUESTION: "Which CMSSW_14_0 releases are in the graph?"
+      QUESTION: "What is the Knowledge Bases and Agents for CERN workshop?"
     steps:
       # The AKMON Postgres image is 6.3 GB and Open WebUI about 4 GB; the
       # runner's free disk does not hold both without this.
@@ -72,7 +73,7 @@ jobs:
 
       - name: "user command 2: archi init"
         working-directory: ${{ runner.temp }}
-        run: archi init gp --bundle cern-team --without docsite,indico --with cmssw-releases
+        run: archi init gp --bundle cern-team
 
       - name: "user command 3: archi up"
         working-directory: ${{ runner.temp }}/gp
@@ -99,6 +100,24 @@ jobs:
               print(f"- `{c['node_id']}` ({c['subtype']})")
           EOF
           test "$elapsed" -le 900
+
+      - name: The graph survives archi down + archi up (housekeeping)
+        working-directory: ${{ runner.temp }}/gp
+        run: |
+          published() {
+            archi doctor --json | python -c '
+          import json, sys
+          c = next(c for c in json.load(sys.stdin)["checks"] if c["id"] == "published")
+          print(c["message"], (c.get("data") or {}).get("nodes"))'
+          }
+          before="$(published)"
+          archi down
+          archi up
+          after="$(published)"
+          echo "before: $before"
+          echo "after:  $after"
+          echo "durability: \`$before\` before and after archi down + archi up" >> "$GITHUB_STEP_SUMMARY"
+          [ "$before" = "$after" ] && [ "${before#published }" != "$before" ]
 
       - name: Diagnostics on failure (housekeeping)
         if: failure()

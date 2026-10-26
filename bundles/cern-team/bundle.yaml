@@ -1,5 +1,5 @@
 name: cern-team
-version: 0.2.0
+version: 0.3.0
 description: A generic CERN team knowledge instance - documentation, meetings, wiki, documents, tickets and code.
 # ADR 0002 section 5. docsite is the credential-free default context pack.
 # cmssw-releases moved to the CMS bundles.
