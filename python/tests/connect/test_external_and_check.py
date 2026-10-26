@@ -125,6 +125,7 @@ def test_recipe_check_calls_search_and_echo_from_a_written_config(client, tmp_pa
     inst = report["servers"]["archi-demo"]
     assert inst["role"] == "instance" and inst["calls"][0]["tool"] == "search"
     assert "search ok" in inst["calls"][0]["text"]
+    assert inst["citations"] == [{"rank": 1, "node_id": "doc:fixture:readme", "subtype": "document"}]
     ext = report["servers"]["notes"]
     assert ext["role"] == "external" and ext["calls"][0]["text"] == "echo: archi-connect"
     assert TOKEN not in json.dumps(report)

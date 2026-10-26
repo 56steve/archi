@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 JSON_CLIENTS = ("claude-code", "openclaw", "mcp")
+ROW = re.compile(r"^\[(\d+)\] (\S+:\S+) \(([^)]+)\)", re.M)
 _REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -110,7 +111,7 @@ async def call_server(url: str, headers: dict[str, str], calls: list[tuple[str, 
                     out["calls"].append({"tool": tool, "ok": False, "text": f"server has no tool {tool!r}"})
                     continue
                 result = await session.call_tool(tool, arguments)
-                out["calls"].append({"tool": tool, "ok": not result.isError, "text": _text(result)[:600]})
+                out["calls"].append({"tool": tool, "ok": not result.isError, "text": _text(result)[:2000]})
     return out
 
 
@@ -130,6 +131,11 @@ async def check(client: str, servers: dict[str, dict[str, Any]], instance_server
             result = {"url": spec["url"], "error": f"{type(exc).__name__}: {exc}"}
         result["role"] = "instance" if name == primary else "external"
         ok = "error" not in result and all(c["ok"] for c in result["calls"])
+        if name == primary and ok:
+            # search must return cited rows: `[n] <node id> (<subtype>)`
+            rows = ROW.findall(result["calls"][0]["text"]) if result["calls"] else []
+            result["citations"] = [{"rank": int(n), "node_id": nid, "subtype": sub} for n, nid, sub in rows]
+            ok = bool(rows)
         if name != primary and "error" not in result and "echo" not in result.get("tools", []):
             # an external server without an echo tool is only connected to, not called
             result["calls"] = []
