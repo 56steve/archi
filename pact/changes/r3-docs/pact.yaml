@@ -55,5 +55,33 @@ tasks:
     Test plan:
 
     - review [evidence: manual]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.r3-docs.site
+  status: pass
+  command: 'mkdocs build --strict -f docs/mkdocs.yml; python -m pytest python/tests/test_docs_quickstart.py -q;
+    python -m pytest python/tests -q -k "not is_linear"'
+  head: 4c8d0f7132d251e8d2a94e0eabab48c6b9ea19d6
+  at: '2026-10-26T04:12:20+00:00'
+  note: 'acc.r3-docs.build: mkdocs build --strict is green. The site (docs/docs/) covers what Archi is, a one-page
+    quickstart, the context layer, the operations layer, bundles and packs, connecting an agent, adding a
+    source, writing an automation, operating (doctor, evals marked coming, data persistence, upgrade and
+    migration, the footgun ledger), contributing a pack, a v2 to 3.0 migration guide, and reference (the
+    CLI generated from argparse, archi.yaml and ops.yaml keys, the pack format, connector caches, design
+    records). Every v2 page sits under docs/docs/v2/ with a v2 (legacy) banner. acc.r3-docs.quickstart:
+    test_docs_quickstart.py compares the quickstart''s command block with the nightly workflow''s five
+    "user command" steps. An independent review checked 20 claims against the code and found none wrong;
+    its three small fixes are in. Full suite 3084 passed, 19 skipped at b96b413e (this head changes only
+    docs and PACT text).'
+- kind: executed_test
+  requirement: req.r3-docs.generated
+  status: pass
+  command: python -m pytest python/tests/test_docs_generated.py -q
+  head: 4c8d0f7132d251e8d2a94e0eabab48c6b9ea19d6
+  at: '2026-10-26T04:12:20+00:00'
+  note: 'acc.r3-docs.gen: python -m archi.docs_gen renders one page per bundle and per pack (19 packs, 2
+    bundles) from their manifests, with the same loaders as archi bundles validate, plus the CLI
+    reference. The pages are committed under docs/docs/library/ and docs/docs/reference/;
+    test_docs_generated.py fails on a stale, missing or orphan page, and checks determinism and that a
+    manifest change changes its page. 11 passed.'
 decisions: []
