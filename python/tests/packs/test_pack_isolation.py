@@ -119,6 +119,21 @@ def test_cluster_manager_installs_from_packs_and_publishes(tmp_path, with_option
     _install_and_publish(tmp_path, resolution, "cluster-manager")
 
 
+@needs_db
+def test_cms_comp_ops_installs_from_packs_and_publishes(tmp_path):
+    """The cms-comp-ops bundle (PACT r3-bundle-cms-comp-ops): every default and
+    optional pack selected, from fixture inputs."""
+    from packs.pack_support import shipped_catalog
+
+    catalog = shipped_catalog()
+    bundle = catalog.bundles["cms-comp-ops"]
+    optional = list(bundle.optional_packs)
+    resolution = resolve(catalog, ["cms-comp-ops"], with_packs=optional)
+    expected = set(bundle.default_packs) | set(optional)
+    assert expected <= set(resolution.pack_names)
+    _install_and_publish(tmp_path, resolution, "cms-comp-ops")
+
+
 def _install_and_publish(tmp_path: Path, resolution, name: str) -> None:
     """Render, install with okg, commit, ingest and publish; then check lint
     and that each selected pack's invariants were installed."""

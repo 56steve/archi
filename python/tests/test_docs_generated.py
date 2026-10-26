@@ -76,7 +76,7 @@ def test_pack_manifest_change_changes_the_page(tmp_path: Path):
     assert "`12h`" in changed and "`12h`" not in docs_gen.generate()["library/packs/indico.md"]
 
 
-@pytest.mark.parametrize("name", ["cern-team", "cms-physics"])
+@pytest.mark.parametrize("name", ["cern-team", "cms-physics", "cms-comp-ops"])
 def test_bundle_pages_link_to_existing_pack_pages(name: str):
     page = docs_gen.generate()[f"library/bundles/{name}.md"]
     import re

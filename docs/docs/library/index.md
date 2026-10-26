@@ -10,6 +10,7 @@ Each page below is generated from the manifest in the repository, so it cannot d
 |---|---|
 | [`cern-team`](bundles/cern-team.md) | A generic CERN team knowledge instance - documentation, meetings, wiki, documents, tickets and code. |
 | [`cluster-manager`](bundles/cluster-manager.md) | A cluster manager's knowledge instance - documentation, tickets, operational memory and, optionally, ServiceNow, Slurm, HTCondor, node health and code. |
+| [`cms-comp-ops`](bundles/cms-comp-ops.md) | A CMS computing operations knowledge instance - sites, storage, datasets and workflows from the CMS catalogs, site status, CMSSW releases, and the operational memory of past incidents. |
 | [`cms-physics`](bundles/cms-physics.md) | A CMS physics knowledge instance - physics TWiki pages, CDS records, CMSSW releases, analysis notes, and the analysis ids, groups and techniques that link them. |
 
 ## Packs

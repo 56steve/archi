@@ -62,6 +62,8 @@ intents:
     skill: rucio_command
     description: Return canonical Rucio CLI syntax before CMS-specific examples.
     subtypes:
+      - dataset
+      - storage_endpoint
       - documentation_page
       - document_chunk
       - jira_issue

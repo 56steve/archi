@@ -15,7 +15,7 @@ CERN MONIT monitoring snapshots (SAM, HTCondor, Rucio) and the live MONIT query 
 ## In which bundles
 
 - Default in: none
-- Optional in: none
+- Optional in: [`cms-comp-ops`](../bundles/cms-comp-ops.md)
 
 Add it to an instance with `archi add monit-live`.
 
@@ -64,7 +64,7 @@ The pack owns these checks. They leave with it.
 
 ## Playbooks
 
-The pack ships no playbook.
+- `monitoring_condor_snapshot.md`
 
 ## Live tools
 
