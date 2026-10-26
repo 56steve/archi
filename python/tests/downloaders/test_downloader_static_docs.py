@@ -178,3 +178,15 @@ def test_urls_is_strict_a_page_that_cannot_be_cached_fails_and_writes_nothing(
 def test_urls_naming_nothing_is_refused(tmp_path, monkeypatch, fake_session, capsys):
     monkeypatch.setenv("ARCHI_DATA_ROOT", str(tmp_path))
     assert static_docs.main(["--skip-gitlab", "--urls", " , "]) == 2
+
+
+def test_urls_connection_error_is_a_clean_failure(tmp_path, monkeypatch, capsys):
+    class Down:
+        def get(self, url, **kwargs):
+            raise static_docs.requests.ConnectionError("name resolution failed")
+
+    monkeypatch.setattr(static_docs.requests, "Session", Down)
+    monkeypatch.setenv("ARCHI_DATA_ROOT", str(tmp_path))
+    assert static_docs.main(["--skip-gitlab", "--urls", PUBLIC_URL]) == 1
+    assert "could not be fetched: name resolution failed" in capsys.readouterr().err
+    assert not (tmp_path / "data/docsite").exists()

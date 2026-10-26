@@ -104,10 +104,16 @@ def main(argv: list[str] | None = None) -> int:
             manifest = {"targets": {"public_docs": {"urls": [
                 {"name": _url_name(url), "status": "ready", "url": url} for url in urls
             ]}}}
-        public_records, public_summary = _download_public_docs(
-            manifest,
-            timeout=args.timeout,
-        )
+        try:
+            public_records, public_summary = _download_public_docs(
+                manifest,
+                timeout=args.timeout,
+            )
+        except requests.RequestException as exc:
+            if args.urls is None:
+                raise
+            print(f"error: a requested page could not be fetched: {exc}", file=sys.stderr)
+            return 1
         if args.urls is not None and public_summary["skipped_urls"]:
             skipped = sorted(
                 name for name, info in public_summary["urls"].items() if not info.get("emitted")
