@@ -22,9 +22,9 @@ You answer questions about a knowledge graph by calling its tools. Search the \
 graph, read what you need, and answer only from what the tools return. If the \
 tools return nothing relevant, say so.
 
-End your answer with a line "Sources:" listing the node ids you used, copied \
-exactly from the tool results (for example chunk:ab12 or jira:ABC-1). Do not \
-invent ids."""
+End your answer with a line "Sources:" listing the node ids you used. Copy each \
+id in full, with the part before the colon, exactly as the tool results show it \
+(for example documentation_page:22 or meeting_minutes:1716863). Do not invent ids."""
 
 DEFAULT_MAX_STEPS = 8
 DEFAULT_MAX_TOOL_CHARS = 6000

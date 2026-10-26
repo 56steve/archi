@@ -194,14 +194,28 @@ class Verdict:
     reasons: list[str] = field(default_factory=list)
 
 
+MIN_BARE_ID = 6
+
+
 def cited_nodes(answer: str, seen: Mapping[str, NodeInfo]) -> list[NodeInfo]:
-    """The nodes the answer names that a tool returned."""
-    out = [
-        info
-        for nid, info in seen.items()
-        if re.search(rf"(?<![\w:]){re.escape(nid)}(?![\w=])", answer)
-    ]
-    return sorted(out, key=lambda n: n.id)
+    """The nodes the answer names that a tool returned.
+
+    A node is named by its full id (`documentation_page:2275b50c`), or by the part
+    after the colon when that part is at least six characters long and no other
+    returned node ends the same way: small models often drop the prefix.
+    """
+    tails: dict[str, list[str]] = {}
+    for nid in seen:
+        tails.setdefault(nid.split(":", 1)[-1], []).append(nid)
+    found: dict[str, NodeInfo] = {}
+    for nid, info in seen.items():
+        if re.search(rf"(?<![\w:]){re.escape(nid)}(?![\w=])", answer):
+            found[nid] = info
+    for tail, ids in tails.items():
+        if len(ids) == 1 and len(tail) >= MIN_BARE_ID and ids[0] not in found:
+            if re.search(rf"(?<![\w:]){re.escape(tail)}(?![\w=])", answer):
+                found[ids[0]] = seen[ids[0]]
+    return sorted(found.values(), key=lambda n: n.id)
 
 
 def _from_source(source: Optional[str], wanted: tuple[str, ...]) -> bool:

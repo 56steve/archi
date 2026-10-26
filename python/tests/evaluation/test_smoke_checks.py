@@ -73,6 +73,18 @@ def test_an_id_that_only_contains_a_seen_id_does_not_count():
     assert not verdict.passed
 
 
+def test_the_part_after_the_colon_counts_when_it_is_long_and_unique():
+    seen = nodes_in(SEARCH_TEXT)
+    assert check_answer(q(must_cite={"sources": ["indico-live"]}), "Sources: 1716863", seen).passed
+    short = check_answer(q(), "Sources: 22", seen)
+    assert not short.passed
+
+
+def test_a_bare_tail_shared_by_two_nodes_is_ambiguous():
+    seen = nodes_in("[1] chunk:abcdef12 (document_chunk) · source gp.docsite\n[2] doc:abcdef12 (document) · source gp.docsite\n")
+    assert not check_answer(q(), "Sources: abcdef12", seen).passed
+
+
 def test_the_wrong_source_fails():
     verdict = check_answer(q(), "Sources: meeting_minutes:1716863", nodes_in(SEARCH_TEXT))
     assert not verdict.passed
