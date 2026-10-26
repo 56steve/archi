@@ -1,7 +1,7 @@
 # The same physics group, reached by two names.
 #
 # Six groups are declared in BOTH vocabularies, because CMS uses two
-# naming systems for them. An analysis is coded BTV-25-002 and lands on
+# naming systems for them. An analysis is coded BTV-99-002 and lands on
 # the PAG hub; its documentation is titled BTagRecipes and lands on the
 # POG hub. Neither name is wrong and neither is the other's alias, so
 # collapsing them would lose a real distinction -- but leaving them

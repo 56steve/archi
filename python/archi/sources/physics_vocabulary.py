@@ -63,7 +63,7 @@ PAGS: tuple[tuple[str, str], ...] = (
 #: rule matches on -- physicists write "MuonPOGRecipes", not "MUO".
 #: `pag_code` is the token the SAME group carries in the analysis-code
 #: namespace, where `PAGS` declares it. Six groups exist in both: an
-#: analysis is coded BTV-25-002 while its documentation is titled
+#: analysis is coded BTV-99-002 while its documentation is titled
 #: BTagRecipes, so the pages reached one hub and the notes the other,
 #: and the neighbourhood of each group split in two. Carrying the code here
 #: lets one rule join the pair, without collapsing either namespace:
