@@ -332,8 +332,18 @@ def requeue_job(
 ) -> dict[str, Any]:
     """Requeue one running job so it starts again from the queue, once per idempotency key.
 
-    The key is written into the job's comment before the requeue. A repeat with the same key finds
-    it and does nothing, even when the job is running again by then.
+    The job's own state decides, and the key is recorded only after the requeue is confirmed:
+
+    1. read the job; a comment already holding this call's mark means it was requeued, so nothing is done
+       (even when the job is running again by then);
+    2. `scontrol requeue`; a failure or a timeout leaves no mark, so a retry reads the job again and acts on
+       what it finds (waiting: nothing to do; still running: requeue);
+    3. read the job again; only when it is waiting is the mark appended to the job's comment, after what the
+       user wrote there, within Slurm's comment length. A job still running after a requeue that exited 0
+       is `unknown`.
+
+    A timeout leaves one case a mark cannot settle: if the requeue applied and the job started again before
+    the retry, the retry sees it running and requeues once more. The result of a timeout says to check the job.
     """
     data = _prepare(payload, context, verify, "requeue_job")
     run = runner or subprocess_runner
@@ -349,12 +359,34 @@ def requeue_job(
     if mark in job["comment"]:
         return outcome("no_change", f"job {job_id} was already requeued by this call ({job['state']})")
     state = job["state"].upper()
-    if state in ("PENDING", "REQUEUED", "REQUEUE_HOLD", "REQUEUE_FED"):
+    if state in _WAITING:
         return outcome("no_change", f"job {job_id} is already waiting in the queue ({state}); nothing to requeue")
     if state != "RUNNING":
         return outcome("failed", f"job {job_id} is {state}, not running; nothing changed")
-    failed = _write(["scontrol", "update", f"JobId={job_id}", f"Comment={mark}"], run, f"job {job_id}")
-    if failed:
-        return failed
     failed = _write(["scontrol", "requeue", job_id], run, f"job {job_id}")
-    return failed or outcome("succeeded", f"job {job_id} requeued ({mark})")
+    if failed:
+        return failed  # no mark was written: a retry reads the job again
+    try:
+        after = _job(job_id, run)
+    except (OSError, subprocess.TimeoutExpired):
+        after = None
+    if after is None or after["state"].upper() not in _WAITING:
+        seen = "not listed" if after is None else after["state"]
+        return outcome("unknown", f"scontrol requeue exited 0 but job {job_id} is {seen}; check the job")
+    comment = _with_mark(after["comment"], mark)
+    marked = _write(["scontrol", "update", f"JobId={job_id}", f"Comment={comment}"], run, f"job {job_id}")
+    note = "" if marked is None else "; the comment mark could not be written, so a repeat checks the job's state instead"
+    return outcome("succeeded", f"job {job_id} requeued ({after['state']}){note}")
+
+
+#: Slurm job states that mean a job is waiting for a node again
+_WAITING = ("PENDING", "REQUEUED", "REQUEUE_HOLD", "REQUEUE_FED")
+#: a job comment is kept within this many characters
+COMMENT_LIMIT = 255
+
+
+def _with_mark(comment: str, mark: str) -> str:
+    """The user's comment, then the mark; the user's text is cut (never the mark) to stay within the limit."""
+    existing = "" if comment in ("", "(null)") else comment
+    room = COMMENT_LIMIT - len(mark) - 1
+    return f"{existing[:max(room, 0)]} {mark}".strip()

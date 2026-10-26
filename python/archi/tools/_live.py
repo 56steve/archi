@@ -215,8 +215,8 @@ def ops_verifier(
     if found is None:
         return None
     subject, attrs = found
-    if attrs.get("requested_by_workflow") not in (None, context["workflow_id"]):
-        return None
+    if attrs.get("requested_by_workflow") != context["workflow_id"]:
+        return None  # absent or another run's: not this run's approval
     decision = decision_from_row(escalation_id, subject, attrs)
     timeout = attrs.get("timeout_at")
     if not timeout:
@@ -228,9 +228,19 @@ def ops_verifier(
     allowed = may_execute(decision, escalation, (now or (lambda: datetime.now(timezone.utc)))())
     if not allowed:
         raise ActRefused(f"the approval cannot be used now: {allowed.reason}")
-    asked = _ACTION_LINE.search(str(attrs.get("reason") or ""))
+    # Exactly one line starts with "Action: ", and it is line 2 (archi.ops.workflow.escalation_reason). A
+    # proposer's summary is line 1 and has its newlines removed, so it cannot plant or move an Action line.
+    lines = str(attrs.get("reason") or "").split("\n")
+    action_lines = [i for i, line in enumerate(lines) if line.startswith("Action: ")]
+    if len(action_lines) != 1:
+        raise ActRefused(
+            f"the escalation reason has {len(action_lines)} lines starting with 'Action: ', not exactly one; refusing"
+        )
+    if action_lines[0] != 1:
+        raise ActRefused("the escalation's Action line is not in its fixed position (line 2); refusing")
+    asked = _ACTION_LINE.match(lines[1])
     if asked is None:
-        raise ActRefused("the escalation does not record the action it asked to approve; refusing")
+        raise ActRefused("the escalation's Action line is not '<class> <payload JSON>'; refusing")
     try:
         approved_payload = json.loads(asked.group(2))
     except ValueError:
