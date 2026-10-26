@@ -117,6 +117,27 @@ evidence:
     report, and the archi down + archi up check still ran; the job passed. acc.r3-bundle-evals.sets
     is NOT evidenced: no local model reached 7/10 (best 4/10); GPT-6 Luna did (8/10 and 10/10), and
     whether that counts is Jason''s decision (board d358).'
+- kind: executed_test
+  requirement: req.r3-bundle-evals.ci
+  status: pass
+  command: archi eval smoke sets (cern-team, cms-physics) on submit76 lab instances with GPT-6 Luna
+    (reasoning medium, OpenAI Responses API, lab-only ledgered wrapper around archi.evaluation)
+  head: 5105bfdd58e5271c4993f1ac28ffb8bbc01c80d3
+  at: '2026-10-26T21:26:05+00:00'
+  note: 'acc.r3-bundle-evals.sets, accepted on GPT-6 Luna by Jason (board d366, 2026-10-26 21:32Z:
+    "keep 7/10; record bundle acceptance as proven with GPT-6 Luna (lab run, ledgered); nightly
+    stays local and $0"). Both shipped sets have 10 questions; threshold 7/10. Run 1 at ed895186:
+    cern-team 7/10, cms-physics 10/10. Run 2 at 5105bfdd (independent re-measure; the only harness
+    change was hyphen-insensitive must_contain): cern-team 8/10, cms-physics 10/10. The two cern-team
+    misses in both runs ran out of the 8-step limit on the 64K-character Indico record. Cost $0.0332
+    over 187 calls (run 1 and run 2 together), every call ledgered; ledger and reports archived
+    in /ceph/submit/data/group/mit/okg-artifacts/archi-r3-bundle-evals-20261026/ (ledger-a3-luna.jsonl,
+    sha256 prefix 300b9338b0240579), served
+    model gpt-6-luna, 21:18:44Z to 21:26:05Z. Reports (report.json sha256 prefixes): cern-luna
+    8f3ba56ef8e67d94, phys-luna c1f23abf11c01ff0, cern-luna2 13193106afd05675, phys-luna2
+    b569c1c911c74961, in the same folder. No local model reached
+    the threshold (qwen2.5:7b-instruct best 4/10), so the requirement''s "local-model run" wording is
+    met by decision, not by a local run; the nightly stays local and $0.'
 decisions:
 - digest: sha256:49f890825bdd36608b28a511db88a7dac5d31b19a13f0e9d2b800d26bd41a05d
   reviewer: Jason Mohoney
