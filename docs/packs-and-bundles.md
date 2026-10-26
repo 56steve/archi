@@ -47,6 +47,7 @@ not leave that directory (`..`, absolute paths and `~` are refused).
 | `automation` | automation packs | The automation: trigger, context gate, playbook, action classes, proposal schema, budget, levels. See [Automation packs](#automation-packs). |
 | `files` | | Files installed at the same path in the deployment root (okg's `files:` allow-list applies). |
 | `prompt_fragment` | | Markdown appended to the chat system prompt. |
+| `prepare` | | Steps run before the pack's first ingest, see [Preparing a pack's input](#preparing-a-packs-input). |
 | `credentials` | | Environment-variable **names** the pack reads. |
 
 Source templates may reference three kinds of answers: the base questions
@@ -58,6 +59,43 @@ a pack listed in `requires.packs`, by their rendered id
 (`${git_code_repo_name}` for `git-code`'s `repo_name`). The last kind is
 checked when the packs are composed: a reference no selected pack asks stops
 the render.
+
+### Preparing a pack's input
+
+Some sources read a cache that nothing else writes (docsite reads a records
+cache). A pack declares the step that writes it, so a bare install has its
+input and no operator runs a downloader by hand:
+
+```yaml
+prepare:
+  - name: records-cache                      # unique within the pack
+    module: archi.downloaders.static_docs    # run as `python -m <module>`
+    args: [--skip-gitlab, --docsite-output, "${archi_data_root}/docsite/records.json",
+           --urls, "${urls}"]
+    timeout: 300                             # seconds, 1 to 3600; default 600
+```
+
+- `${id}` in an argument is the answer to the pack's own init question `id`
+  (or to a base question such as `archi_data_root`), including its default.
+  `validate` refuses a reference to anything else.
+- A step is `python -m <module> <args>` in archi's own Python, with no shell
+  and `ARCHI_DATA_ROOT` set to the instance's data root. `module` must be a
+  dotted Python name, so a pack can name only code that is installed; it runs
+  as the operator, like any installed package.
+- `archi init` runs every selected pack's steps, in resolution order, after
+  rendering and before it starts the graph database or reads any source.
+  `archi add` runs the new pack's steps before it edits the deployment. Neither
+  runs them with `--no-okg`.
+- A step that exits non-zero, cannot start or passes its `timeout` stops the
+  command with the pack and step named and the end of its output. Nothing is
+  skipped and no empty result stands in for the missing input. After a failed
+  `archi init`, remove the half-made instance directory and run it again; a
+  failed `archi add` leaves the deployment as it was.
+- A step should be safe to repeat. The static-docs downloader merges pages by
+  URL, so a second run only updates them.
+- Steps run once, at install. They are not a refresh: to refresh a cache,
+  run the same module again (for docsite,
+  `python -m archi.downloaders.static_docs`), or schedule it.
 
 ## bundle.yaml
 
@@ -91,6 +129,8 @@ Besides the schema, `validate` refuses:
 - a template reference to a question that neither the base nor the pack
   declares, unless it names a required pack's question (`${<pack>_<id>}`,
   checked when the packs are composed);
+- a `prepare` step whose `module` is not a dotted Python name, that repeats
+  another step's `name`, or whose `args` reference an unknown question;
 - a `freshness` key that is not one of the pack's own sources, a value that is
   not a duration, or a context pack source with no `freshness` entry;
 - a `link_coverage` target whose edge (`from -[edge]-> to`, or the reverse for

@@ -480,7 +480,18 @@ def add(
     plan = expected_scaffold(instance_dir, rendered.name, deployment_dir, all_answers)
     new_answers = {k: v for k, v in plan.answers.items() if k not in deployment_answers(deployment_dir)}
     new_answers.pop("HOME", None)
-    changed = _merge_into_deployment(plan, deployment_dir, new_sources, new_answers, echo)
+    if run_okg:
+        # Before the deployment changes: a failed step leaves it as it was.
+        from archi.bundles.prepare import PrepareError, run_steps, steps_for
+
+        try:
+            run_steps(
+                steps_for([catalog.packs[p] for p in added_packs], plan.answers),
+                Path(plan.answers["archi_data_root"]), echo=echo,
+            )
+        except PrepareError as exc:
+            raise LockError(f"preparing the new pack failed: {exc}") from exc
+    changed =_merge_into_deployment(plan, deployment_dir, new_sources, new_answers, echo)
     echo(f"added to {deployment_dir}: {', '.join(changed)}")
 
     commands: list[list[str]] = []

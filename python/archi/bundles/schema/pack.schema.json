@@ -215,6 +215,31 @@
       "description": "Markdown appended to the chat system prompt, in resolution order.",
       "$ref": "#/$defs/relpath"
     },
+    "prepare": {
+      "description": "Steps `archi init` and `archi add` run, in order, before okg's first ingest of this pack: they fetch or build the input a source reads from the data root (a records cache, for example). Each runs `python -m <module> <args>` in archi's own environment with ARCHI_DATA_ROOT set to the instance's data root and no shell. A step that exits non-zero or runs past its timeout stops the command; nothing is skipped quietly.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "module"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+          "module": {
+            "description": "Dotted Python module run with `python -m`.",
+            "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+          },
+          "args": {
+            "description": "Arguments, passed as given (no shell). `${id}` is replaced by the answer to the pack's init question `id` (or a base question such as archi_data_root).",
+            "type": "array", "items": {"type": "string"}
+          },
+          "timeout": {
+            "description": "Seconds before the step is stopped and counted as failed. Default 600.",
+            "type": "integer", "minimum": 1, "maximum": 3600
+          }
+        }
+      }
+    },
     "credentials": {
       "description": "Environment-variable NAMES the pack reads. Never values.",
       "type": "array",

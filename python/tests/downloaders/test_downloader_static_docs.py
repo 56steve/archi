@@ -153,3 +153,28 @@ def test_packaged_manifest_names_archi_cache_paths():
     assert manifest["targets"]["public_docs"]["cache_path"] == "data/docsite/records.json"
     ready = [r for r in manifest["targets"]["gitlab_docs"]["repos"] if r["status"] == "ready"]
     assert len(ready) == 6
+
+
+def test_urls_replace_the_manifest_targets_and_skip_gitlab(tmp_path, monkeypatch, fake_session, capsys):
+    monkeypatch.setenv("ARCHI_DATA_ROOT", str(tmp_path))
+    assert static_docs.main(["--skip-gitlab", "--urls", f"{PUBLIC_URL}, {PUBLIC_URL}"]) == 0
+    docsite = json.loads((tmp_path / "data/docsite/records.json").read_text())
+    assert [r["url"] for r in docsite] == [PUBLIC_URL]  # repeated URLs fetch once
+    assert [url for url, _ in FakeSession.requests] == [PUBLIC_URL]  # no manifest target, no GitLab
+    assert not (tmp_path / "data/gitlab-docs").exists()
+
+
+def test_urls_is_strict_a_page_that_cannot_be_cached_fails_and_writes_nothing(
+    tmp_path, monkeypatch, fake_session, capsys
+):
+    monkeypatch.setenv("ARCHI_DATA_ROOT", str(tmp_path))
+    gone = "https://example.invalid/missing/"
+    assert static_docs.main(["--skip-gitlab", "--urls", f"{PUBLIC_URL},{gone}"]) == 1
+    captured = capsys.readouterr()
+    assert "not cached" in captured.err and "example_invalid_missing" in captured.err
+    assert not (tmp_path / "data/docsite").exists()
+
+
+def test_urls_naming_nothing_is_refused(tmp_path, monkeypatch, fake_session, capsys):
+    monkeypatch.setenv("ARCHI_DATA_ROOT", str(tmp_path))
+    assert static_docs.main(["--skip-gitlab", "--urls", " , "]) == 2

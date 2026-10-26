@@ -9,6 +9,7 @@ existing cache files by URL, so an expansion run does not remove older cache
 entries that are outside the current manifest.
 
     python -m archi.downloaders.static_docs [--manifest <file>]
+    python -m archi.downloaders.static_docs --skip-gitlab --urls URL[,URL...]
 
 Outputs default to ``data/gitlab-docs/records.json`` and
 ``data/docsite/records.json`` under ``ARCHI_DATA_ROOT`` (or the current
@@ -28,6 +29,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -61,6 +63,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--skip-public", action="store_true")
     parser.add_argument("--skip-gitlab", action="store_true")
+    parser.add_argument(
+        "--urls", default=None,
+        help="comma- or space-separated public page URLs to fetch instead of the "
+             "manifest's public_docs targets. Strict: a page that cannot be "
+             "fetched fails the run and nothing is written.",
+    )
     args = parser.parse_args(argv)
     if args.gitlab_output is None:
         args.gitlab_output = str(_data_root() / GITLAB_OUTPUT)
@@ -88,10 +96,29 @@ def main(argv: list[str] | None = None) -> int:
         ) | gitlab_summary
 
     if not args.skip_public:
+        if args.urls is not None:
+            urls = _split_urls(args.urls)
+            if not urls:
+                print("error: --urls names no URL", file=sys.stderr)
+                return 2
+            manifest = {"targets": {"public_docs": {"urls": [
+                {"name": _url_name(url), "status": "ready", "url": url} for url in urls
+            ]}}}
         public_records, public_summary = _download_public_docs(
             manifest,
             timeout=args.timeout,
         )
+        if args.urls is not None and public_summary["skipped_urls"]:
+            skipped = sorted(
+                name for name, info in public_summary["urls"].items() if not info.get("emitted")
+            ) or ["a page with no text"]
+            print(json.dumps(summary | {"public_docs": public_summary}, indent=2, sort_keys=True))
+            print(
+                f"error: {public_summary['skipped_urls']} requested page(s) not cached "
+                f"({', '.join(skipped)}); nothing was written",
+                file=sys.stderr,
+            )
+            return 1
         summary["public_docs"] = _merge_records(
             Path(args.docsite_output),
             public_records,
@@ -100,6 +127,19 @@ def main(argv: list[str] | None = None) -> int:
 
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
+
+
+def _split_urls(raw: str) -> list[str]:
+    seen: list[str] = []
+    for item in re.split(r"[\s,]+", raw.strip()):
+        if item and item not in seen:
+            seen.append(item)
+    return seen
+
+
+def _url_name(url: str) -> str:
+    parsed = urlparse(url)
+    return re.sub(r"[^a-z0-9]+", "_", (parsed.netloc + parsed.path).lower()).strip("_") or url
 
 
 def _download_gitlab_docs(

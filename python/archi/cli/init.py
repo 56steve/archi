@@ -21,6 +21,8 @@ this does instead:
    -> `okg install --no-publish`, commit, `okg provision`;
 7. set role passwords after the migration
    -> `okg db role-passwords --apply`, into the instance's .secrets/.
+8. run each source's cache downloader by hand before the first ingest
+   -> the selected packs' `prepare` steps, before anything is started.
 """
 from __future__ import annotations
 
@@ -220,6 +222,38 @@ def profile_questions(profile_dir: Path) -> list[dict[str, Any]]:
     return list(profile.get("init_questions") or [])
 
 
+def prepare_packs(
+    instance_dir: Path,
+    catalog: discovery.Catalog,
+    questions: Sequence[Mapping[str, Any]],
+    answers: Mapping[str, str],
+    data_root: Path,
+    echo: Callable[[str], None],
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> None:
+    """Run the selected packs' `prepare` steps, before okg's first ingest.
+
+    A legacy okg profile has no archi.lock and no packs, so nothing runs.
+    """
+    from archi.bundles.lock import LockError, read_lock
+    from archi.bundles.prepare import PrepareError, question_values, run_steps, steps_for
+
+    try:
+        names = list(read_lock(instance_dir)["packs"])
+    except LockError:
+        return
+    try:
+        steps = steps_for(
+            [catalog.packs[n] for n in names], question_values(questions, answers)
+        )
+        run_steps(steps, data_root, echo=echo, runner=runner)
+    except PrepareError as exc:
+        raise InitError(
+            f"{exc}\nThe instance at {instance_dir} was rendered but not installed; remove "
+            "it and run `archi init` again, or pass --answer to change what the step reads."
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # init
 # ---------------------------------------------------------------------------
@@ -242,6 +276,7 @@ def init(
     okg_runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     compose_runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     wait_db: Optional[Callable[[str], None]] = None,
+    prepare_runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> Instance:
     if not NAME_RE.match(name):
         raise InitError(
@@ -292,6 +327,9 @@ def init(
     echo(f"rendered profile {profile!r}; secrets in {instance.env_path} (git-ignored)")
     if not run_okg:
         return instance
+
+    prepare_packs(instance_dir, catalog, profile_questions(profile_dir), resolved, root, echo,
+                  prepare_runner)
 
     compose = stack_compose.Compose(instance, runner=compose_runner)
     echo("starting the graph database ...")
