@@ -36,7 +36,7 @@ graph.
 | `--model M` | The model name at the endpoint. Default: the bundle's `chat.default_model`, if it sets one. |
 | `--model-url URL` | An OpenAI-compatible base URL. Must be on this host or a private network. |
 | `--out DIR` | Where to write the report. Default: `eval/<bundle>/` under the instance's data root, outside the instance repository. |
-| `--mcp-url URL` | An MCP endpoint other than the instance's own. The bearer token then comes from `OKG_CHAT_MCP_TOKEN`. |
+| `--mcp-url URL` | An MCP endpoint other than the instance's own. The instance is then not read at all: the bearer token comes from `OKG_CHAT_MCP_TOKEN`, `--bundle` is required, and there is no default chat prompt. An instance's token is never sent to another endpoint. |
 | `--chat-prompt FILE` | The chat system prompt to give the agent. Default: the instance's `deployments/<name>/skills/chat-system-prompt.md`, the one `archi up` gives the chat. |
 | `--max-steps N` | Tool-call rounds allowed per question (default 8). |
 | `--no-think` | Ask a reasoning model to skip its thinking pass. |
@@ -49,14 +49,17 @@ The command prints one line per question, writes `report.md` and
 |---|---|
 | 0 | The set passed at least the bundle's threshold. |
 | 1 | It passed fewer than the threshold. |
-| 2 | The run could not execute: the MCP endpoint offered no tools or was unreachable, the model failed on every question, or a file was unusable. |
+| 2 | The run could not execute: the MCP endpoint offered no tools or was unreachable, the model failed on every question, a file was unusable, or the run stopped on an unexpected error. The report is still written; questions answered before the stop keep their result. |
 
 ## What the agent is given
 
-The system message holds three things: a short answer-format note, the
-instructions the MCP server serves in its `initialize` reply (how to search,
-filter and read), and the bundle's chat system prompt. That is what an
-operator's chat agent sees. The report records a hash of each.
+The system message holds three things, in this order: the instructions the
+MCP server serves in its `initialize` reply (how to search, filter and read),
+the bundle's chat system prompt, and a short answer-format note. The first two
+are what an operator's chat agent sees. The note comes last because it
+overrides the chat prompt's citation style: the checks read node ids. Its
+example ids are placeholders that no shipped set expects, so a model that
+copies them gains nothing. The report records a hash of each part.
 
 ## What a question checks
 

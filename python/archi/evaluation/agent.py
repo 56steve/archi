@@ -19,12 +19,17 @@ from urllib.parse import urlparse
 
 #: The harness's own part of the system message: only the answer format. How to search and
 #: read comes from the MCP server's instructions and the bundle's chat prompt, the same
-#: guidance an operator's chat agent gets.
+#: guidance an operator's chat agent gets. It comes last and overrides the chat prompt's
+#: citation style, since the checks read node ids. The example ids are placeholders that
+#: no smoke set uses, so copying them never passes a check.
 ANSWER_FORMAT = """\
+# Answer format for this run (overrides any other citation style above)
+
 Answer only from what the tools return; if they return nothing relevant, say so.
 End your answer with a line "Sources:" listing the node ids you used. Copy each \
 id in full, with the part before the colon, exactly as the tool results show it \
-(for example documentation_page:22 or meeting_minutes:1716863). Do not invent ids."""
+(ids look like some_type:12345 or other_type:abc-1; those two are only examples of \
+the shape). Do not invent ids."""
 
 DEFAULT_MAX_STEPS = 8
 DEFAULT_MAX_TOOL_CHARS = 6000
@@ -83,13 +88,15 @@ def sha(text: Optional[str]) -> Optional[str]:
 
 
 def build_system_prompt(instructions: Optional[str], chat_prompt: Optional[str]) -> str:
-    """The system message: the answer format, then what the MCP server serves about itself
-    (`instructions` in its initialize result), then the bundle's chat system prompt."""
-    parts = [ANSWER_FORMAT]
+    """The system message: what the MCP server serves about itself (`instructions` in its
+    initialize result), then the bundle's chat system prompt, then the answer format last,
+    so a small model keeps the citation rule the checks depend on."""
+    parts = []
     if instructions:
         parts.append("# Instructions served by the MCP server\n\n" + instructions.strip())
     if chat_prompt:
         parts.append("# The chat agent's system prompt\n\n" + chat_prompt.strip())
+    parts.append(ANSWER_FORMAT)
     return "\n\n".join(parts)
 
 
@@ -174,8 +181,10 @@ class OpenAIChat:
         try:
             payload = response.json()
             message = payload["choices"][0]["message"]
-        except (ValueError, KeyError, IndexError) as exc:
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ModelError(f"{self.base_url}: unreadable reply: {response.text[:300]}") from exc
+        if not isinstance(message, dict):
+            raise ModelError(f"{self.base_url}: unreadable reply: {response.text[:300]}")
         calls = []
         for i, raw in enumerate(message.get("tool_calls") or []):
             fn = raw.get("function") or {}

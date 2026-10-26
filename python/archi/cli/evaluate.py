@@ -71,12 +71,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
     mcp_url = args.mcp_url
     report_root = Path("eval-reports")
     chat_prompt_file = args.chat_prompt
-    try:
-        instance = Instance.load(args.instance)
-    except InstanceError as exc:
-        if not mcp_url:
+    instance = None
+    # With --mcp-url the endpoint is not the instance's own, so nothing is taken from an
+    # instance: its bearer token must never be sent to another server.
+    if not mcp_url:
+        try:
+            instance = Instance.load(args.instance)
+        except InstanceError as exc:
             return _fail(str(exc))
-        instance = None
     if instance is not None:
         # The data root lies outside the instance repository: `archi up` commits
         # everything inside it, and a report is not configuration.
@@ -85,7 +87,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
             found = instance.deployment_dir / "skills" / "chat-system-prompt.md"
             chat_prompt_file = found if found.is_file() else None
         bundles = bundles or list(instance.bundles)
-        mcp_url = mcp_url or f"http://127.0.0.1:{instance.ports.mcp}/mcp"
+        mcp_url = f"http://127.0.0.1:{instance.ports.mcp}/mcp"
         try:
             token = read_env(instance.env_path).get(TOKEN_VAR) or token
         except InstanceError as exc:

@@ -20,6 +20,14 @@ affected_code:
 - bundles/*/eval/
 - .github/workflows/nightly-e2e.yml
 - docs/docs/operating/evals.md
+- docs/docs/operating/commands.md
+- docs/docs/operating/index.md
+- docs/docs/context-layer.md
+- docs/docs/reference/cli.md
+- docs/mkdocs.yml
+- python/archi/cli/__init__.py
+- python/archi/bundles/cli.py
+- python/tests/test_bundle_cern_team.py
 requirements:
 - id: req.r3-bundle-evals.harness
   statement: '`archi eval [--bundle X] [--instance DIR] [--model M] [--model-url URL] [--out DIR]`

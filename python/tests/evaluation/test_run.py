@@ -242,8 +242,10 @@ def test_the_system_message_carries_the_server_instructions_and_the_chat_prompt(
     model = FakeModel(searches(), answers("documentation_page:22"))
     report = run(smoke_of("a"), model, tools, chat_prompt="You are the team chat.", chat_prompt_file="p.md")
     system = model.seen[0][0][0]["content"]
-    assert system.startswith(agent_mod.ANSWER_FORMAT)
-    assert "Use search first" in system and "You are the team chat." in system
+    # The answer format comes last, after the chat prompt's own citation style.
+    assert system.endswith(agent_mod.ANSWER_FORMAT)
+    assert system.index("Use search first") < system.index("You are the team chat.")
+    assert system.index("You are the team chat.") < system.index(agent_mod.ANSWER_FORMAT)
     assert report.mcp_instructions_hash == agent_mod.sha(tools.instructions)
     assert report.chat_prompt_hash == agent_mod.sha("You are the team chat.")
     assert report.system_prompt_hash == agent_mod.sha(system)
@@ -256,3 +258,60 @@ def test_a_server_without_instructions_and_no_chat_prompt_is_recorded_as_none():
     report = run(smoke_of("a"), model, FakeTools())
     assert model.seen[0][0][0]["content"] == agent_mod.ANSWER_FORMAT
     assert report.mcp_instructions_hash is None and report.chat_prompt_hash is None
+
+
+def test_the_answer_format_examples_are_no_id_a_smoke_set_expects():
+    import re
+    from pathlib import Path
+
+    examples = re.findall(r"\b[a-z_]+:[\w-]+", agent_mod.ANSWER_FORMAT)
+    assert examples
+    repo = Path(__file__).resolve().parents[3]
+    for path in sorted((repo / "bundles").glob("*/eval/smoke.yaml")):
+        text = path.read_text(encoding="utf-8")
+        for example in examples:
+            assert example.split(":", 1)[1] not in text, (example, path)
+
+
+class ListFails(FakeTools):
+    async def list_tools(self):
+        raise RuntimeError("session dropped")
+
+
+def test_an_unexpected_error_is_execution_failed_and_keeps_the_report():
+    report = run(smoke_of("a", "b"), FakeModel(), ListFails())
+    assert report.status == EXECUTION_FAILED and report.exit_code == 2
+    assert "session dropped" in report.error
+    assert [q.status for q in report.questions] == [EXECUTION_FAILED, EXECUTION_FAILED]
+
+
+def test_a_run_that_stops_midway_keeps_the_answered_questions(monkeypatch):
+    async def broken_one(question, *a, **kw):
+        if question.id == "b":
+            raise ValueError("model reply was not a mapping")
+        return await real_one(question, *a, **kw)
+
+    from archi.evaluation import runner as runner_mod
+
+    real_one = runner_mod._one
+    monkeypatch.setattr(runner_mod, "_one", broken_one)
+    model = FakeModel(searches(), answers("FTS3 moves files.\nSources: documentation_page:22"))
+    report = run(smoke_of("a", "b", "c"), model, FakeTools())
+    assert [q.id for q in report.questions] == ["a", "b", "c"]
+    assert [q.status for q in report.questions] == [PASS, EXECUTION_FAILED, EXECUTION_FAILED]
+    assert report.exit_code == 2 and "not a mapping" in report.error
+
+
+def test_a_reply_whose_message_is_not_a_mapping_is_a_model_error(monkeypatch):
+    class Response:
+        status_code = 200
+        text = '{"choices": [{"message": "hi"}]}'
+
+        def json(self):
+            return json.loads(self.text)
+
+    import requests
+
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: Response())
+    with pytest.raises(ModelError, match="unreadable reply"):
+        agent_mod.OpenAIChat("http://127.0.0.1:1/v1", "m").complete([], [])

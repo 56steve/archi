@@ -107,6 +107,30 @@ def test_the_default_model_is_the_bundles_chat_model(fakes, tmp_path):
     assert json.loads((tmp_path / "out" / "report.json").read_text())["model"] == "llama3.1:8b"
 
 
+def test_with_mcp_url_no_instance_is_read_and_the_environment_token_is_sent(fakes, monkeypatch, tmp_path):
+    from archi.stack.instance import Instance
+
+    def no_instance(*a, **kw):
+        raise AssertionError("an instance was read although --mcp-url names another endpoint")
+
+    seen = []
+
+    class Recording(Tools):
+        def __init__(self, url, token):
+            super().__init__(url, token)
+            seen.append((url, token))
+
+    monkeypatch.setattr(Instance, "load", no_instance)
+    monkeypatch.setattr(agent_mod, "McpToolBox", Recording)
+    assert main(eval_args(tmp_path)) == 1
+    assert seen == [("http://127.0.0.1:9/mcp", "t0ken")]
+
+
+def test_an_unreadable_chat_prompt_exits_2(fakes, tmp_path, capsys):
+    assert main(eval_args(tmp_path, "--chat-prompt", str(tmp_path / "missing.md"))) == 2
+    assert "missing.md" in capsys.readouterr().err
+
+
 def test_eval_is_listed_in_the_help(capsys):
     with pytest.raises(SystemExit):
         main(["--help"])

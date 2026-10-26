@@ -15,6 +15,7 @@ from archi.evaluation.agent import (
     ToolBox,
     ToolError,
     ToolSpec,
+    _describe,
     ask,
     build_system_prompt,
     prompt_hash,
@@ -174,12 +175,21 @@ async def run_smoke(
                     if progress:
                         progress(result, i, len(smoke.questions))
     except ToolError as exc:
-        report.error = f"MCP endpoint not usable: {exc}"
-        report.questions = [
-            QuestionResult(q.id, q.question, EXECUTION_FAILED, error=report.error) for q in smoke.questions
-        ]
+        _abandon(report, smoke, f"MCP endpoint not usable: {exc}")
+    except Exception as exc:  # noqa: BLE001 - any other failure is a run that could not execute
+        _abandon(report, smoke, f"the run stopped: {_describe(exc)}")
     report.seconds = time.monotonic() - started
     return report
+
+
+def _abandon(report: Report, smoke: SmokeSet, error: str) -> None:
+    """Record why the run stopped and mark every question not yet answered as not executed,
+    so the report is still written and the exit code is 2, not 1."""
+    report.error = error
+    done = {q.id for q in report.questions}
+    report.questions += [
+        QuestionResult(q.id, q.question, EXECUTION_FAILED, error=error) for q in smoke.questions if q.id not in done
+    ]
 
 
 async def _one(question, model, tools: ToolBox, specs, system, max_steps, max_tool_chars) -> QuestionResult:

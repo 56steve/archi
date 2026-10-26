@@ -47,11 +47,18 @@ concurrency:
   group: nightly-e2e-${{ github.ref }}
   cancel-in-progress: false
 
+# The job only reads the repository; the token it holds can do nothing else.
+permissions:
+  contents: read
+
 jobs:
   golden-path:
     name: empty runner to a cited answer
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # 40 minutes for the golden path and the down/up check, plus room for the
+    # report-only eval step's own 25-minute limit, so a slow eval ends that
+    # step and never the job.
+    timeout-minutes: 70
     env:
       OKG_WHEEL: "okg @ https://github.com/mitdbg/akmon/releases/download/v0.2.0/okg-0.2.0-py3-none-any.whl#sha256=72bac3b67cf29cccd27e77e58ad309104f19fcce255a04a4a6f23b8318b88e12"
       QUESTION: "What is the Knowledge Bases and Agents for CERN workshop?"
@@ -64,6 +71,8 @@ jobs:
           df -h /
 
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -121,6 +130,8 @@ jobs:
           # Ollama's default 4096-token window cuts off the graph tools' descriptions.
           OLLAMA_CONTEXT_LENGTH: "16384"
           EVAL_MODEL: "qwen2.5:1.5b-instruct"
+          # The installer fetches exactly this release, not the latest one.
+          OLLAMA_VERSION: "0.32.13"
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           sudo systemctl stop ollama || true
