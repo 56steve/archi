@@ -68,7 +68,9 @@ check failed.
 **`archi down`** stops the project and keeps every volume. `archi down
 --purge --yes` also deletes the graph, chat and webui volumes; that is the
 reset (okg keeps its ownership claim in the database, so deleting the
-folder alone is not one).
+folder alone is not one). Your data persists across `archi down` and
+`archi up` (the published graph is the same generation), but not across
+`--purge`.
 
 ## Adding sources
 

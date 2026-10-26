@@ -29,6 +29,17 @@ older single-file profile). Its registry ids are bare names (`cmssw_releases`,
 `docsite`, `indico_live`, `twiki_eos`, ...). See
 [Instances without an archi.lock](#instances-without-an-archilock).
 
+## Instances created before the graph-volume fix
+
+Before this change the graph database volume was mounted at a path the AKMON
+image does not use (the image keeps its data in `/home/postgres/pgdata/data`).
+The graph lived only in the container, so `archi down` followed by `archi up`,
+or any container recreation (podman-compose recreates on every `up`), lost it.
+After you upgrade, the next `archi up` recreates the container on the corrected
+volume, which starts empty. Re-init the instance (`archi down --purge --yes`,
+remove the directory, `archi init` again) or re-run `okg install` and
+`okg provision`. From then on the graph survives `down` and `up`.
+
 ## Instances with an archi.lock
 
 ### What changes in the registry

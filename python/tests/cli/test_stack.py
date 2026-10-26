@@ -57,8 +57,13 @@ def test_compose_graph_db_has_preload_cron_and_shm(instance):
 def test_graph_volume_holds_the_images_own_pgdata(instance):
     """The AKMON image sets PGDATA=/home/postgres/pgdata/data; the volume must
     cover it or the graph lives in the container layer and dies with it."""
+    # ghcr.io/mitdbg/akmon-postgres:v0.2.0 sets PGDATA=/home/postgres/pgdata/data
+    # (GRAPH_DB_PGDATA); the volume target is its parent.
+    assert stack_compose.GRAPH_DB_IMAGE.endswith(":v{okg_version}")
+    assert stack_compose.GRAPH_DB_PGDATA == "/home/postgres/pgdata/data"
     db = render_compose(instance)["services"]["graph-db"]
     assert db["volumes"] == ["graph-data:/home/postgres/pgdata"]
+    assert stack_compose.GRAPH_DB_PGDATA.startswith(db["volumes"][0].split(":")[1] + "/")
 
 
 def test_compose_services_reach_each_other_by_name(instance):

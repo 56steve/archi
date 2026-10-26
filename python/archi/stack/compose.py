@@ -33,6 +33,11 @@ GRAPH_DB_IMAGE = "ghcr.io/mitdbg/akmon-postgres:v{okg_version}"
 PRELOAD_LIBRARIES = ("timescaledb", "pg_cron", "pg_textsearch")
 #: The 64 MB container default is too small for okg's index builds.
 GRAPH_DB_SHM = "2g"
+#: PGDATA inside ghcr.io/mitdbg/akmon-postgres:v0.2.0 (`podman image inspect`
+#: shows PGDATA=/home/postgres/pgdata/data). The graph volume must cover its
+#: parent; mounted anywhere else it holds nothing and the graph dies with the
+#: container. Re-check when GRAPH_DB_IMAGE changes.
+GRAPH_DB_PGDATA = "/home/postgres/pgdata/data"
 CHAT_DB_IMAGE = "docker.io/library/postgres:16"
 #: Upstream Open WebUI at the version okg's chat code is measured against
 #: (okg.substrate.chat.instance.PINNED_VERSION). okg v0.2.0 pins a patched
@@ -131,7 +136,7 @@ def render_compose(instance: Instance) -> dict[str, Any]:
                 # The AKMON image keeps its cluster in PGDATA=/home/postgres/pgdata/data,
                 # not in the stock /var/lib/postgresql/data; a volume mounted there
                 # holds nothing, and the graph is lost when the container is recreated.
-                "volumes": ["graph-data:/home/postgres/pgdata"],
+                "volumes": [f"graph-data:{GRAPH_DB_PGDATA.rsplit('/', 1)[0]}"],
                 "healthcheck": {
                     "test": ["CMD-SHELL", f"pg_isready -U postgres -d {db}"],
                     "interval": "2s",
