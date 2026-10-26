@@ -19,16 +19,18 @@ repositories and carry only configuration and secrets.
 archi init myteam && cd myteam && archi up && archi doctor
 ```
 
-[Quickstart](docs/quickstart.md): install, the four commands, and what each
-one does.
+[Quickstart](docs/docs/quickstart.md): install, the five commands, and what
+each one does. The full documentation is the MkDocs site built from
+[`docs/docs/`](docs/docs/) and published at
+<https://archi-physics.github.io/archi/>.
 
 ## Repository layout
 
 - [`python/`](python/) — the `archi` package (wheel source, tests).
 - [`bundles/`](bundles/) — bundles (e.g. [`cern-team`](bundles/cern-team/)) and the
-  [packs](bundles/packs/) they select; see [packs and bundles](docs/packs-and-bundles.md).
+  [packs](bundles/packs/) they select; see [bundles and packs](docs/docs/bundles-and-packs.md).
 - [`skills/`](skills/) — playbooks for agents operating over the graph.
-- [`docs/`](docs/) — program docs and the MkDocs site.
+- [`docs/`](docs/) — program docs (ADRs) and the MkDocs site (`docs/mkdocs.yml`, pages in `docs/docs/`). The library and command reference pages are generated: `cd python && python -m archi.docs_gen`.
 - [`pact/`](pact/) — PACT change ledger (requirements, tasks, evidence).
 
 ## Key documents

@@ -19,7 +19,7 @@ The schemas were read off the reader code in ``archi/sources/`` at archi-okg
 ``b4dac901f5``. When a reader starts reading a new field, the build refuses
 the group (the facts differ) until the schema here names that field.
 
-Paths follow the reader defaults and ``docs/connector-caches.md``
+Paths follow the reader defaults and ``docs/docs/reference/connector-caches.md``
 (``data/<group>/...``); the TWiki EOS tree goes to ``data/twiki-eos``.
 """
 from __future__ import annotations

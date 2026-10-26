@@ -5,7 +5,7 @@
 > `source-defaults/` and `.yaml.example` files. cern-team is now a bundle of
 > packs (`bundles/cern-team/bundle.yaml`, `bundles/packs/`); the current
 > install steps are in [the cern-team quickstart](cern-team-quickstart.md)
-> and [packs and bundles](packs-and-bundles.md). The results below are kept as
+> and [packs and bundles](docs/reference/pack-format.md). The results below are kept as
 > the record of that run.
 
 The Archi v3 assembly milestone: install the `cern-team` bundle

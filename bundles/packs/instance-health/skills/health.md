@@ -19,4 +19,4 @@ At L1 the issues are Markdown files in `.archi/issues/` of the instance reposito
 with `ls .archi/issues/` and `git log -- .archi/issues/`. If a signal could not be read, the problem
 `monitor/<signal>` says so, and that signal's own issues are left alone until it can be read again.
 
-GitLab and GitHub issues need the pack raised to L2 and an approval for each sync; see docs/packs-and-bundles.md.
+GitLab and GitHub issues need the pack raised to L2 and an approval for each sync; see docs/docs/reference/pack-format.md.

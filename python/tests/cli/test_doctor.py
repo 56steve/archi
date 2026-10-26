@@ -7,7 +7,7 @@ and `archi up` would add) passes every check with fake probes. Each fixture
 below breaks exactly one thing and asserts that its check fails with a
 remediation line. `test_every_check_has_a_failing_fixture` keeps the two
 lists equal, and `test_every_check_is_in_the_ledger` ties each check to its
-entry in docs/golden-path-footguns.md.
+entry in docs/docs/operating/footguns.md.
 """
 import json
 import os
@@ -26,7 +26,7 @@ from archi.stack.checks import CHECKS, FAIL, PASS, WARN, Context, Probes, run_ch
 from archi.stack.instance import Instance, read_env, write_env
 
 REPO = Path(__file__).resolve().parents[3]
-LEDGER = REPO / "docs" / "golden-path-footguns.md"
+LEDGER = REPO / "docs" / "docs" / "operating" / "footguns.md"
 
 
 @pytest.fixture(autouse=True)

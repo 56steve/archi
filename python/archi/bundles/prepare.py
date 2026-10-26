@@ -1,6 +1,6 @@
 """Pack preparation steps: what a pack needs on disk before okg's first ingest.
 
-A pack declares `prepare:` in pack.yaml (docs/packs-and-bundles.md). Each step
+A pack declares `prepare:` in pack.yaml (docs/docs/reference/pack-format.md). Each step
 is `python -m <module> <args>`, run by `archi init` and `archi add` after the
 pack's answers are known and before okg reads the pack's sources. The docsite
 pack uses it to write its records cache.

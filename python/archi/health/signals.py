@@ -87,7 +87,7 @@ def _doctor_detail(check: Mapping[str, Any]) -> str:
     if check.get("remediation"):
         lines += ["", f"Fix: {check['remediation']}"]
     if check.get("footgun"):
-        lines += ["", f"Footgun ledger: {check['footgun']} (docs/golden-path-footguns.md)."]
+        lines += ["", f"Footgun ledger: {check['footgun']} (docs/docs/operating/footguns.md)."]
     return "\n".join(lines)
 
 
