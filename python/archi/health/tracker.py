@@ -8,6 +8,10 @@
     resolved issue, problem is back   -> reopen it (the same issue; never a second one)
     open issue, key not found now     -> resolve, if its family was read in this run
 
+An issue a person closed is not reopened while the problem lasts: the run notes once, on the issue, that the
+problem is still found, and leaves it closed (it was the person's decision). Only an issue this automation
+resolved itself is reopened when its problem returns.
+
 A family that could not be read in this run is not in `scope`: its issues stay as they are. Reading
 nothing is not evidence that the problem is gone.
 
@@ -25,7 +29,10 @@ from archi.health.problems import Problem
 
 OPEN, RESOLVED = "open", "resolved"
 LABEL = "archi-health"
-MARKER = re.compile(r"<!--\s*archi-health\s+key=(\S+)\s+family=(\S+)\s*-->")
+#: `<!-- archi-health key=K family=F [resolved-by=archi] [noted=1] -->`: how a forge issue is found by its body
+MARKER = re.compile(r"<!--\s*archi-health\s+key=(\S+)\s+family=(\S+)((?:\s+[a-z-]+=[^\s>]+)*)\s*-->")
+STILL_PRESENT = ("The problem is still found, but this issue was closed by a person, so it stays closed. "
+                 "Reopen it, or fix the problem.")
 
 
 class TrackerError(RuntimeError):
@@ -42,12 +49,16 @@ class Issue:
     state: str
     #: where a person finds it: a repository path, or the forge's issue URL
     ref: str = ""
+    #: for a resolved issue: did this automation resolve it (False: a person closed it)
+    resolved_by_us: bool = True
+    #: a person-closed issue already carries the note that the problem is still found
+    noted: bool = False
 
 
 @dataclass(frozen=True)
 class Change:
     key: str
-    action: str  # created | updated | reopened | resolved | unchanged
+    action: str  # created | updated | reopened | resolved | noted | unchanged
     ref: str = ""
 
 
@@ -64,6 +75,9 @@ class IssueTracker(Protocol):
         """Rewrite the issue's text, and reopen it if it was resolved."""
 
     def resolve(self, issue: Issue, note: str) -> Issue: ...
+
+    def note_still_present(self, issue: Issue, text: str) -> Issue:
+        """Record, once, on an issue a person closed, that the problem is still found. Does not reopen it."""
 
     def finish(self) -> None:
         """Make the run's changes durable (the local backend commits them). A no-op for a forge."""
@@ -113,6 +127,12 @@ def reconcile(
             if issue is None:
                 made = tracker.create(problem)
                 changes.append(Change(key, "created", made.ref))
+            elif issue.state != OPEN and not issue.resolved_by_us:
+                if issue.noted:
+                    changes.append(Change(key, "unchanged", issue.ref))
+                else:
+                    made = tracker.note_still_present(issue, STILL_PRESENT)
+                    changes.append(Change(key, "noted", made.ref))
             elif needs_update(issue, problem):
                 reopened = issue.state != OPEN
                 made = tracker.update(issue, problem)

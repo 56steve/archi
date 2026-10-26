@@ -323,12 +323,14 @@ def run_mediation(
     resolve: Callable[[str], Callable[..., Mapping[str, Any]]] = resolve_mediator,
     refused: Callable[[str, str], None] = log_refusal,
     instance_dir: Optional[str] = None,
+    at_l1: bool = False,
 ) -> dict:
     """The body of the mediator step: the only place an action happens.
 
     Order: (1) an earlier attempt for this idempotency key decides everything (a replay never
     asks again); (2) halt; (3) the escalation row, read again, must pass `may_execute` (a workflow step
-    with an implementation, which runs at L1, has no escalation: it has no external effect); (4) the
+    with an implementation has no escalation only at L1, where it has no external effect; at L2 the
+    escalation is re-read for a step too); (4) the
     attempt is recorded durably; (5) the mediator is called with the key. Any exception in
     1 to 3 is a refusal with verdict `error`, never a failed action. Returns `{"refused":
     [verdict, reason]}` or `{"status", "result"}` (`unknown` when an earlier attempt has no recorded end).
@@ -342,7 +344,7 @@ def run_mediation(
             refused("halted", reason)
             return {"refused": ["halted", reason]}
         entry = mediator_entry()
-        if local_step(entry) is None:
+        if not (at_l1 and local_step(entry) is not None):
             if esc is None:
                 refused("error", "no escalation was opened for this proposal")
                 return {"refused": ["error", "no escalation was opened for this proposal"]}
@@ -381,13 +383,14 @@ def _earlier_attempt(earlier: Mapping[str, Any]) -> dict:
 
 @deployment_step(name="archi_ops_mediate")
 def _mediate_step(automation: str, action_class: str, payload: dict, proposal_id: str,
-                  idempotency_key: str, esc: Optional[dict]) -> dict:
+                  idempotency_key: str, esc: Optional[dict], level: str = "L2") -> dict:
     """The mediator step. The loop has already decided; this re-checks everything (see run_mediation)."""
     rt = _runtime()
     return run_mediation(
         _io(rt), mediator_entry=lambda: rt.automation(automation).action_classes[action_class].mediator,
         action_class=action_class, payload=payload, proposal_id=proposal_id, idempotency_key=idempotency_key,
-        esc=esc, workflow_id=DBOS.workflow_id, dsn=rt.dsn, instance_dir=str(rt.instance_dir))
+        esc=esc, workflow_id=DBOS.workflow_id, dsn=rt.dsn, instance_dir=str(rt.instance_dir),
+        at_l1=level == "L1")
 
 
 @deployment_step(name="archi_ops_decision")
@@ -578,7 +581,8 @@ class _Mediator:
     def __init__(self, automation: str):
         self.automation = automation
 
-    def execute(self, *, action_class, payload, proposal_id, idempotency_key, generation, escalation=None):
+    def execute(self, *, action_class, payload, proposal_id, idempotency_key, generation, escalation=None,
+                level="L2"):
         esc = None if escalation is None else {
             "escalation_id": escalation.escalation_id, "proposal_id": escalation.proposal_id,
             "opened_at": escalation.opened_at.isoformat(), "timeout_at": escalation.timeout_at.isoformat()}
@@ -590,7 +594,7 @@ class _Mediator:
             print(f"archi_ops test gate: waiting up to {gate_seconds:g}s on {TEST_GATE_TOPIC!r}",
                   file=sys.stderr, flush=True)
             DBOS.recv(topic=TEST_GATE_TOPIC, timeout_seconds=gate_seconds)
-        d = _mediate_step(self.automation, action_class, dict(payload), proposal_id, idempotency_key, esc)
+        d = _mediate_step(self.automation, action_class, dict(payload), proposal_id, idempotency_key, esc, level)
         if "refused" in d:
             raise MediationRefused(*d["refused"])
         return MediatorResult(d["status"], d["result"])

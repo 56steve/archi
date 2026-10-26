@@ -12,6 +12,7 @@ among the problems (see `archi.health.tracker.reconcile`).
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -21,7 +22,7 @@ SEVERITIES = ("error", "warning")
 
 _CHECK = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _SUBJECT = re.compile(r"[^A-Za-z0-9._-]+")
-KEY = re.compile(r"^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9._-]+$")
+KEY = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9._-]+$")
 
 
 class ProblemError(ValueError):
@@ -29,10 +30,18 @@ class ProblemError(ValueError):
 
 
 def make_key(check: str, subject: str) -> str:
-    """`<check>/<subject>`. A subject character outside letters, digits, `.`, `_` and `-` becomes `_`."""
+    """`<check>/<subject>`, all lowercase (a key is a file name, and file systems and forges may ignore case).
+
+    A subject that is not already lowercase letters, digits, `.`, `_` and `-` is lowercased and cleaned (any
+    other character becomes `_`), and a short hash of the original is added, so `Foo` and `foo`, or `a b` and
+    `a_b`, never make the same key.
+    """
     if not _CHECK.match(check):
         raise ProblemError(f"check id {check!r} must be lowercase letters, digits, '.', '_' or '-'")
-    cleaned = _SUBJECT.sub("_", str(subject)).strip("_") or "instance"
+    raw = str(subject)
+    cleaned = _SUBJECT.sub("_", raw.lower()).strip("_") or "instance"
+    if cleaned != raw:
+        cleaned = f"{cleaned}-{hashlib.sha1(raw.encode()).hexdigest()[:6]}" if raw else "instance"
     return f"{check}/{cleaned}"
 
 

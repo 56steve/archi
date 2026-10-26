@@ -52,6 +52,10 @@ class HealthProposer:
             summary = f"Instance health: {len(keys)} problem(s): {', '.join(keys)}"
         else:
             summary = f"Instance health: no problems found in {', '.join(s for s in obs.scope if s != 'monitor')}"
+        if spec.kind != "local" and request.level < 2:
+            summary += (f"; WARNING: the {spec.kind} tracker is configured but this run is at L{request.level}: "
+                        "an issue on a forge is an external post, so it is only drafted here and nothing was sent. "
+                        "Set the instance level to L2 (an approval per run) or use the local tracker")
         if obs.skipped:
             summary += "; skipped: " + "; ".join(f"{s['signal']} ({s['reason']})" for s in obs.skipped)
         return Proposed({

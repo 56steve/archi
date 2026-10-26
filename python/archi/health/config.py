@@ -14,7 +14,8 @@
           # kind: github
           # repo: myorg/my-instance
           # token_env: ARCHI_HEALTH_GITHUB_TOKEN
-          # api_url: https://api.github.com           # optional (GitHub Enterprise)
+          # api_url: https://api.github.com           # optional (GitHub Enterprise); https only
+          # Issue bodies carry doctor messages and errors: point a forge tracker at a PRIVATE project.
           ignore_checks: []             # doctor check ids to leave out (e.g. services)
           include_warnings: false       # doctor `warn` results are problems too
           error_rate: {window_hours: 24, min_decisions: 3, max_rate: 0.5}
@@ -76,6 +77,9 @@ class TrackerSpec:
                                "write the name of the variable, never the token itself")
         if kind == "gitlab" and not (spec.url and spec.project):
             raise TrackerError("tracker: gitlab needs url (https://gitlab.example) and project (path or id)")
+        for label, url in (("url", spec.url), ("api_url", spec.api_url)):
+            if url and not url.lower().startswith("https://"):
+                raise TrackerError(f"tracker.{label} must be an https:// URL (the token is sent with every request)")
         if kind == "github" and not spec.repo:
             raise TrackerError("tracker: github needs repo (owner/name)")
         return spec

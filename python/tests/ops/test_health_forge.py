@@ -30,17 +30,32 @@ class FakeForge:
     def __init__(self, flavour, page=100, seed=None, fail=None):
         self.flavour, self.page, self.calls, self.issues, self.next = flavour, page, [], list(seed or []), len(seed or []) + 1
         self.fail = fail or {}
+        self.redirect = False
+        self.notes = []
 
-    def request(self, method, url, headers=None, json=None, params=None, timeout=None):
+    def request(self, method, url, headers=None, json=None, params=None, timeout=None, allow_redirects=True):
+        assert allow_redirects is False, "a tracker must never follow redirects"
         self.calls.append((method, url, dict(headers or {}), json, dict(params or {}), timeout))
+        if self.redirect:
+            return Response(status_code=302, body={}, text="moved")
         for needle, status in self.fail.items():
             if needle in f"{method} {url}":
                 return Response(status_code=status, body={}, text=f"denied; token {TOKEN} was refused")
         gl = self.flavour == "gitlab"
+        if url.endswith("/search/issues"):
+            needle = re.search(r'"(archi-health key=[^"]+)"', params["q"]).group(1)
+            return Response(status_code=200, body={"items": [i for i in self.issues if needle in (i.get("body") or "")]}, text="")
+        lab = re.search(r"/issues/(\d+)/labels$", url)
+        if lab and method == "POST":
+            found = next(i for i in self.issues if i["id"] == int(lab.group(1)))
+            found["labels"] += [{"name": l} for l in json["labels"] if l not in [x["name"] for x in found["labels"]]]
+            return Response(status_code=200, body=found["labels"], text="")
         coll = re.search(r"/issues$", url)
         item = re.search(r"/issues/(\d+)$", url)
         sub = re.search(r"/issues/(\d+)/(notes|comments)$", url)
         if method == "GET" and coll:
+            if params.get("search"):
+                return Response(status_code=200, body=[i for i in self.issues if params["search"] in i["description"]], text="")
             labelled = [i for i in self.issues if LABEL in (i["labels"] if gl else [l["name"] for l in i["labels"]])]
             if params.get("state") != "all":
                 labelled = [i for i in labelled if i["state"] in ("opened", "open")]
@@ -54,13 +69,15 @@ class FakeForge:
             self.issues.append(made)
             return Response(status_code=201, body=made, text="")
         if sub:
-            self.issues_note = json
+            self.notes.append((method, url, json["body"]))
             return Response(status_code=201, body={}, text="")
         if item and method in ("PUT", "PATCH"):
             found = next(i for i in self.issues if i["id"] == int(item.group(1)))
             for field in ("title", "description", "body"):
                 if field in json:
                     found[field] = json[field]
+            if "add_labels" in json:
+                found["labels"] = sorted(set(found["labels"]) | set(json["add_labels"].split(",")))
             if json.get("state_event") == "close" or json.get("state") == "closed":
                 found["state"] = "closed"
             if json.get("state_event") == "reopen" or json.get("state") == "open":
@@ -176,7 +193,7 @@ def test_two_issues_with_one_key_stop_the_run():
 def test_gitlab_requests_use_the_private_token_header_and_an_encoded_project_path():
     fake = FakeForge("gitlab")
     reconcile(gitlab(fake), [problem()], ["doctor"])
-    method, url, headers, body, params, timeout = fake.calls[0]
+    method, url, headers, body, params, timeout, *_ = fake.calls[0]
     assert (method, url) == ("GET", "https://gl.example/api/v4/projects/grp%2Fproj/issues")
     assert headers["PRIVATE-TOKEN"] == TOKEN and params["labels"] == LABEL and timeout == forge.TIMEOUT
     assert TOKEN not in url and TOKEN not in str(body)
@@ -257,3 +274,76 @@ def test_the_live_tool_refuses_the_local_tracker():
     with pytest.raises(TrackerError, match="draft_issue step"):
         sync_forge_issues(payload={"tracker": {"kind": "local"}, "observed_at": "2026-10-25T12:00:00Z", "problems": [],
                                    "scope": []}, context={})
+
+
+# --- review fixes -----------------------------------------------------------------------------------------------------
+
+
+def close_by_person(fake):
+    issue = fake.issues[0]
+    issue["state"] = "closed"
+    return issue
+
+
+def fresh(fake):
+    return gitlab(fake) if fake.flavour == "gitlab" else github(fake)  # a run builds its tracker anew
+
+
+def test_an_issue_a_person_closed_gets_one_comment_and_stays_closed(pair):
+    fake, _ = pair
+    reconcile(fresh(fake), [problem()], ["doctor"])
+    close_by_person(fake)
+    (first,) = reconcile(fresh(fake), [problem()], ["doctor"])
+    writes = len(fake.writes())
+    (second,) = reconcile(fresh(fake), [problem()], ["doctor"])
+    assert first.action == "noted" and second.action == "unchanged"
+    assert fake.issues[0]["state"] == "closed" and len(fake.notes) == 1 and "closed by a person" in fake.notes[0][2]
+    assert len(fake.writes()) == writes  # nothing written the second time
+
+
+def test_an_issue_the_automation_closed_is_reopened_when_the_problem_returns(pair):
+    fake, _ = pair
+    reconcile(fresh(fake), [problem()], ["doctor"])
+    reconcile(fresh(fake), [], ["doctor"])
+    body = fake.issues[0].get("description") or fake.issues[0].get("body")
+    assert "resolved-by=archi" in body
+    assert reconcile(fresh(fake), [problem()], ["doctor"])[0].action == "reopened"
+    assert len(fake.issues) == 1
+
+
+@pytest.mark.parametrize("flavour", ["gitlab", "github"])
+def test_removing_the_label_does_not_make_a_duplicate_and_the_label_comes_back(flavour):
+    fake = FakeForge(flavour)
+    make = (lambda: gitlab(fake)) if flavour == "gitlab" else (lambda: github(fake))
+    reconcile(make(), [problem()], ["doctor"])
+    fake.issues[0]["labels"] = [] if flavour == "gitlab" else [{"name": "bug"}]  # a person removes the label
+    (change,) = reconcile(make(), [problem(detail="changed text")], ["doctor"])
+    assert change.action == "updated" and len(fake.issues) == 1
+    names = fake.issues[0]["labels"] if flavour == "gitlab" else [l["name"] for l in fake.issues[0]["labels"]]
+    assert LABEL in names and (flavour == "gitlab" or "bug" in names)
+
+
+@pytest.mark.parametrize("make", [
+    lambda s: forge.GitLabTracker("http://gl.example", "p", TOKEN, s),
+    lambda s: forge.GitHubTracker("o/r", TOKEN, s, api_url="http://api.example"),
+])
+def test_a_plain_http_url_is_refused_before_any_request(make):
+    fake = FakeForge("gitlab")
+    with pytest.raises(TrackerError, match="https"):
+        make(fake)
+    assert fake.calls == []
+
+
+def test_the_config_refuses_http_too():
+    with pytest.raises(TrackerError, match="https"):
+        TrackerSpec.from_mapping({"kind": "gitlab", "url": "http://gl.example", "project": "p", "token_env": "T"})
+    with pytest.raises(TrackerError, match="https"):
+        TrackerSpec.from_mapping({"kind": "github", "repo": "o/r", "token_env": "T", "api_url": "http://x"})
+
+
+def test_a_redirect_is_an_error_and_is_never_followed():
+    fake = FakeForge("github")
+    fake.redirect = True
+    with pytest.raises(TrackerError, match="302 \\(redirects are not followed\\)"):
+        reconcile(github(fake), [problem()], ["doctor"])
+    assert len(fake.calls) == 1  # asserts allow_redirects=False inside the fake

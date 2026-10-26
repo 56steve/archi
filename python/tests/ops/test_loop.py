@@ -241,7 +241,7 @@ def test_l2_approved_runs_the_mediator_then_checks_the_outcome():
     assert w.mediator.calls == [{
         "action_class": "restart_service", "payload": {"service": "xrootd"}, "proposal_id": f"prop-{RUN}",
         "idempotency_key": RUN, "generation": GEN,
-        "escalation": Escalation("esc-1", f"prop-{RUN}", at(0), at(TIMEOUT)),
+        "escalation": Escalation("esc-1", f"prop-{RUN}", at(0), at(TIMEOUT)), "level": "L2",
     }]
     assert w.decider.opened[0]["timeout_at"] == at(TIMEOUT)
     assert w.halt.calls == 2  # at the start, and as the first statement of the mediator step

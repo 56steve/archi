@@ -178,3 +178,66 @@ def test_text_comparison_ignores_line_endings_a_forge_may_add():
     assert not needs_update(Issue(p.key, p.family, p.title, body, OPEN), p)
     assert needs_update(Issue(p.key, p.family, p.title, body, RESOLVED), p)
     assert needs_update(Issue(p.key, p.family, "other title", body, OPEN), p)
+
+
+# --- review fixes -----------------------------------------------------------------------------------------------------
+
+
+def test_a_failed_commit_rolls_the_written_files_back_and_leaves_nothing_behind(repo):
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho nope >&2\nexit 1\n")
+    hook.chmod(0o755)
+    with pytest.raises(TrackerError, match="git commit failed"):
+        reconcile(tracker(repo), [problem()], ["doctor"])
+    assert issue_files(repo) == [] and git(repo, "status", "--porcelain") == ""
+    hook.unlink()
+    reconcile(tracker(repo), [problem()], ["doctor"])  # the next run starts clean and succeeds
+    assert issue_files(repo) == ["source-freshness--jira.jira.md"]
+
+
+def test_a_rollback_restores_an_issue_that_was_updated_in_the_failed_run(repo):
+    reconcile(tracker(repo), [problem(detail="one")], ["doctor"])
+    before = (repo / ISSUES_DIR / "source-freshness--jira.jira.md").read_text()
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    with pytest.raises(TrackerError):
+        reconcile(tracker(repo), [problem(detail="two")], ["doctor"])
+    assert (repo / ISSUES_DIR / "source-freshness--jira.jira.md").read_text() == before
+    assert git(repo, "status", "--porcelain") == ""
+
+
+def test_an_issue_a_person_closed_stays_closed_and_is_noted_once(repo):
+    reconcile(tracker(repo), [problem()], ["doctor"])
+    path = repo / ISSUES_DIR / "source-freshness--jira.jira.md"
+    path.write_text(path.read_text().replace("state: open", "state: resolved"))  # a person closes it
+    git(repo, "commit", "-qam", "person closes the issue")
+    (first,) = reconcile(tracker(repo), [problem()], ["doctor"])
+    (second,) = reconcile(tracker(repo), [problem()], ["doctor"])
+    assert first.action == "noted" and second.action == "unchanged"
+    found = tracker(repo).find("source-freshness/jira.jira")
+    assert found.state == RESOLVED and not found.resolved_by_us and found.noted
+    assert path.read_text().count("still_present") == 1 and len(commits(repo)) == 4
+
+
+def test_an_issue_the_automation_resolved_is_reopened_but_one_a_person_closed_after_that_is_not(repo):
+    reconcile(tracker(repo), [problem()], ["doctor"])
+    reconcile(tracker(repo), [], ["doctor"])
+    assert reconcile(tracker(repo), [problem()], ["doctor"])[0].action == "reopened"
+    path = repo / ISSUES_DIR / "source-freshness--jira.jira.md"
+    path.write_text(path.read_text().replace("state: open", "state: resolved"))
+    git(repo, "commit", "-qam", "person closes it again")
+    assert reconcile(tracker(repo), [problem()], ["doctor"])[0].action == "noted"
+
+
+def test_two_keys_that_differ_only_in_case_are_two_issues_with_two_files(repo):
+    from archi.health.problems import make_key
+
+    a, b = make_key("source-freshness", "Foo"), make_key("source-freshness", "foo")
+    assert a != b and a == a.lower() and b == b.lower()
+    pa = Problem(key=a, family="doctor", title="a", detail="a")
+    pb = Problem(key=b, family="doctor", title="b", detail="b")
+    reconcile(tracker(repo), [pa, pb], ["doctor"])
+    assert len(issue_files(repo)) == 2
+    with pytest.raises(Exception):
+        Problem(key="source-freshness/Foo", family="doctor", title="t", detail="d")  # upper case is not a key

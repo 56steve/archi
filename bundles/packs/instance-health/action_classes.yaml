@@ -20,7 +20,7 @@ action_classes:
             required: [key, family, title, detail, severity]
             additionalProperties: false
             properties:
-              key: {type: string, pattern: "^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9._-]+$"}
+              key: {type: string, pattern: "^[a-z0-9][a-z0-9._-]*/[a-z0-9._-]+$"}
               family: {enum: [doctor, ingest, automation-errors, eval, monitor]}
               title: {type: string, minLength: 1}
               detail: {type: string}
@@ -67,7 +67,7 @@ action_classes:
             required: [key, family, title, detail, severity]
             additionalProperties: false
             properties:
-              key: {type: string, pattern: "^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9._-]+$"}
+              key: {type: string, pattern: "^[a-z0-9][a-z0-9._-]*/[a-z0-9._-]+$"}
               family: {enum: [doctor, ingest, automation-errors, eval, monitor]}
               title: {type: string, minLength: 1}
               detail: {type: string}

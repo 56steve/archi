@@ -94,6 +94,42 @@ def cmd_signals(a: argparse.Namespace) -> None:
     print(json.dumps([{"signal_id": r[0], "source": r[1], "status": r[2]} for r in rows]))
 
 
+def cmd_latest(a: argparse.Namespace) -> None:
+    """Wait for the newest signal not among the ids already seen (`--seen a,b`) and print its run id."""
+    import time
+
+    import psycopg
+
+    seen = set(filter(None, a.seen.split(",")))
+    deadline = time.time() + a.timeout
+    while time.time() < deadline:
+        with psycopg.connect(os.environ["OKG_DSN"], autocommit=True) as conn:
+            rows = conn.execute("SELECT signal_id FROM archi_ops.signals WHERE automation = %s ORDER BY created_at DESC",
+                                (AUTOMATION,)).fetchall()
+        fresh = [r[0] for r in rows if r[0] not in seen]
+        if fresh:
+            print(f"{AUTOMATION}~{fresh[0]}~1")
+            return
+        time.sleep(1)
+    sys.exit(3)
+
+
+def cmd_runs(a: argparse.Namespace) -> None:
+    """Every instance-health run, oldest first: id, DBOS state, and the loop's status, mode and mediated flag."""
+    import psycopg
+
+    with psycopg.connect(os.environ["OKG_DSN"], autocommit=True) as conn:
+        rows = conn.execute("SELECT workflow_uuid, status, output FROM dbos.workflow_status WHERE workflow_uuid LIKE %s "
+                            "ORDER BY created_at", (f"{AUTOMATION}~%",)).fetchall()
+    out = []
+    for wid, state, output in rows:
+        body = base.decode(output) if output else {}
+        body = body if isinstance(body, dict) else {}
+        out.append({"id": wid, "state": state, "status": body.get("status"), "mode": body.get("mode"),
+                    "mediated": bool(body.get("mediated"))})
+    print(json.dumps(out))
+
+
 def cmd_issues(a: argparse.Namespace) -> None:
     """The issue files in the instance repository: key, state, events, content hash; and the commits that touched them."""
     inst = Path(os.environ["ARCHI_INSTANCE"])
@@ -124,7 +160,12 @@ def main() -> None:
     s.add_argument("id")
     s.set_defaults(f=cmd_signal)
     sub.add_parser("tick").set_defaults(f=cmd_tick)
+    sub.add_parser("runs").set_defaults(f=cmd_runs)
     sub.add_parser("signals").set_defaults(f=cmd_signals)
+    lt = sub.add_parser("latest")
+    lt.add_argument("--seen", default="")
+    lt.add_argument("--timeout", type=int, default=90)
+    lt.set_defaults(f=cmd_latest)
     sub.add_parser("issues").set_defaults(f=cmd_issues)
     w = sub.add_parser("wait")
     w.add_argument("wid")

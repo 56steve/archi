@@ -201,6 +201,10 @@
             "runs_per_hour": {"type": "integer"}
           }
         },
+        "evidence": {
+          "description": "Opt-in for a monitor whose evidence is the state of the instance, not graph nodes: `own_signals` lets a proposal cite the incident its own run wrote, allows a context gate that asks only `published: true` (the monitor must run while sources are stale), and allows workflow steps that run at L1 (`draft_issue`). Refused unless default_level is L0 or L1. Every other automation must cite a node of the pinned read and gate on freshness, invariants or a context-eval score (ADR 0002 D12).",
+          "enum": ["own_signals"]
+        },
         "default_level": {
           "description": "Autonomy level the automation starts at when the instance sets none. L0, L1 or L2; anything above L2 is refused (ADR 0002 D13).",
           "type": "string"

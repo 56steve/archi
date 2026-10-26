@@ -122,6 +122,9 @@ class AutomationConfig:
     promotion_change: Optional[str] = None
     #: the rendered trigger (`{type: schedule, cron: ...}`); the scanner makes a signal per cron time
     trigger: Mapping[str, Any] = field(default_factory=dict)
+    #: the pack's opt-in `evidence: own_signals` (a monitor): a proposal may cite its own run's incident,
+    #: and a step with an implementation runs at L1. False for every other automation.
+    own_signals: bool = False
 
     @classmethod
     def from_block(
@@ -161,6 +164,7 @@ class AutomationConfig:
             promoted_at=promoted_at,
             promotion_change=promotion_change,
             trigger=dict(block.get("trigger") or {}),
+            own_signals=block.get("evidence") == "own_signals",
         )
 
 
@@ -438,7 +442,7 @@ class MediationRefused(Exception):
 class Mediator(Protocol):
     def execute(
         self, *, action_class: str, payload: Mapping[str, Any], proposal_id: str, idempotency_key: str,
-        generation: str, escalation: Optional[Escalation] = None,
+        generation: str, escalation: Optional[Escalation] = None, level: str = "L2",
     ) -> MediatorResult:
         """Run the action. May raise MediationRefused after re-checking halt and the
         escalation (the durable step does both before it acts)."""
@@ -706,7 +710,7 @@ class _Run:
                 exceeded = exc
                 exceeded_scope = scope
         try:
-            proposal = validate_proposal(proposed.proposal, a, self.level, {*read.node_ids, self.incident_node})
+            proposal = validate_proposal(proposed.proposal, a, self.level, ({*read.node_ids, self.incident_node} if a.own_signals else read.node_ids))
         except ProposalError as exc:
             return self.stop("invalid_proposal", f"proposal refused: {exc}")
 
@@ -760,12 +764,23 @@ class _Run:
         """
         cls = self.a.action_classes.get(proposal.action_class or "")
         step = get_step(cls.mediator) if cls and cls.mediator else None
-        if step is None or step.impl is None:
+        if step is None or step.impl is None or not self.a.own_signals:
             return self.result("drafted", "L1")
         mediated, why, refused = self._mediate(proposal, None)
         if mediated is None:
             self.decide(refused, f"{why}; the draft step did not run")  # supersedes "drafted" (same record id)
             return self.result(refused, why)
+        if mediated.status != "succeeded":
+            # a broken draft step is an error, not a draft: the decision says so (and the error rate counts it)
+            reason = f"the draft step {cls.mediator} {mediated.status}: {mediated.result}"[:500]
+            self.write(
+                "action", f"act-{self.run_id}", proposal_id=self.proposal_id, decision_id=self.decision_id,
+                action_class=proposal.action_class, mediator=cls.mediator,
+                payload=json.dumps(dict(proposal.payload), sort_keys=True) if proposal.payload else None,
+                status=mediated.status, result=mediated.result, executed_at=self.now(),
+            )
+            self.decide(ERROR, reason)
+            return self.result(ERROR, reason, mediated=True)
         self.write(
             "action", f"act-{self.run_id}", proposal_id=self.proposal_id, decision_id=self.decision_id,
             action_class=proposal.action_class, mediator=cls.mediator,
@@ -866,7 +881,7 @@ class _Run:
             return self.deps.mediator.execute(
                 action_class=proposal.action_class or "", payload=dict(proposal.payload),
                 proposal_id=self.proposal_id, idempotency_key=self.run_id, generation=self.generation or "",
-                escalation=escalation,
+                escalation=escalation, level=self.level or "L2",
             ), "", ""
         except MediationRefused as exc:
             return None, exc.reason, exc.verdict

@@ -50,14 +50,14 @@ def test_the_pack_is_valid_and_pulls_in_the_ops_record_it_writes_to(instance):
     lock = read_lock(instance)
     assert NAME in lock["selection"]["with"] or NAME in str(lock["composed"]["automations"])
     block = lock["composed"]["automations"][NAME]
-    assert block["pack_max_level"] == "L1" and block["default_level"] == "L1"
+    assert block["pack_max_level"] == "L2" and block["default_level"] == "L1" and block["evidence"] == "own_signals"
     assert (instance / "profiles" / "cern-team" / "skills" / "health.md").is_file()
 
 
 def test_it_runs_on_a_schedule_within_its_budget_and_asks_only_for_a_published_graph(auto):
     assert auto.trigger == {"type": "schedule", "cron": "7 * * * *"}
     assert auto.gate.published and auto.gate.sources == ()
-    assert auto.pack_max_level == "L1" and auto.cost_per_run == 0.01
+    assert auto.pack_max_level == "L2" and auto.cost_per_run == 0.01 and auto.own_signals
     assert {n: c.max_level for n, c in auto.action_classes.items()} == {"draft_issue": "L1", "sync_forge_issues": "L2"}
     assert auto.action_classes["draft_issue"].mediator == "draft_issue"
     assert auto.action_classes["sync_forge_issues"].mediator == "archi.tools.instance_health:sync_forge_issues"
@@ -205,11 +205,11 @@ def test_in_shadow_the_step_does_not_run(instance):
 # --- the mediator step: a step needs no escalation, a live tool still does ---------------------------------
 
 
-def mediate(io, entry, tool, esc=None):
+def mediate(io, entry, tool, esc=None, at_l1=True):
     return wf.run_mediation(
         io, mediator_entry=lambda: entry, action_class="x", payload={"p": 1}, proposal_id="prop-1",
         idempotency_key="k", esc=esc, workflow_id="k", dsn="postgresql://x", halt=lambda io: None,
-        resolve=lambda e: tool, refused=lambda v, r: None, instance_dir="/inst")
+        resolve=lambda e: tool, refused=lambda v, r: None, instance_dir="/inst", at_l1=at_l1)
 
 
 def test_a_step_runs_without_an_escalation_and_gets_the_instance_directory():
@@ -230,7 +230,7 @@ def test_a_step_is_still_stopped_by_halt_and_by_an_earlier_attempt():
     assert mediate(io, "draft_issue", tool)["status"] == "unknown" and tool.calls == []
     halted = wf.run_mediation(FakeIO(), mediator_entry=lambda: "draft_issue", action_class="x", payload={}, proposal_id="p",
                               idempotency_key="k2", esc=None, workflow_id="k2", dsn="d", halt=lambda io: "paused",
-                              resolve=lambda e: tool, refused=lambda v, r: None)
+                              resolve=lambda e: tool, refused=lambda v, r: None, at_l1=True)
     assert halted["refused"][0] == "halted" and tool.calls == []
 
 
@@ -322,13 +322,13 @@ def test_a_stale_source_over_two_runs_leaves_exactly_one_committed_issue(tmp_pat
         def __init__(self):
             self.io = FakeIO()
 
-        def execute(self, *, action_class, payload, proposal_id, idempotency_key, generation, escalation=None):
+        def execute(self, *, action_class, payload, proposal_id, idempotency_key, generation, escalation=None, level="L2"):
             from archi.ops.stubs import resolve_mediator
 
             out = wf.run_mediation(self.io, mediator_entry=lambda: auto.action_classes[action_class].mediator,
                                    action_class=action_class, payload=payload, proposal_id=proposal_id,
                                    idempotency_key=idempotency_key, esc=None, workflow_id=idempotency_key, dsn="d",
-                                   halt=lambda io: None, instance_dir=str(tmp_path))
+                                   halt=lambda io: None, instance_dir=str(tmp_path), at_l1=level == "L1")
             return MediatorResult(out["status"], out["result"])
 
     results = []
@@ -345,3 +345,99 @@ def test_a_stale_source_over_two_runs_leaves_exactly_one_committed_issue(tmp_pat
     assert files == ["source-freshness--jira.jira.md"]
     assert git("log", "--format=%s").splitlines() == ["health: open source-freshness/jira.jira", "init"]
     assert git("status", "--porcelain") == ""
+
+
+# --- review fixes -----------------------------------------------------------------------------------------------------
+
+import dataclasses
+import shutil
+
+from archi.bundles.manifest import validate_pack
+from archi.health.signals import ERROR_VERDICTS, automation_error_problems
+
+SHIPPED = Path(__file__).resolve().parents[3] / "bundles" / "packs" / NAME
+
+
+def pack_problems(tmp_path, change):
+    dest = tmp_path / NAME
+    shutil.copytree(SHIPPED, dest)
+    data = yaml.safe_load((dest / "pack.yaml").read_text())
+    change(data["automation"])
+    (dest / "pack.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    return [p.message for p in validate_pack(dest, defer_requires=True)]
+
+
+def test_the_shipped_pack_is_valid_with_its_opt_in(tmp_path):
+    assert pack_problems(tmp_path, lambda a: None) == []
+
+
+def test_a_published_only_gate_is_refused_without_the_opt_in(tmp_path):
+    def drop(a):
+        del a["evidence"]
+
+    messages = pack_problems(tmp_path, drop)
+    assert any("`published: true` alone is allowed only with `automation.evidence: own_signals`" in m for m in messages)
+    assert any("draft_issue" in m and "own_signals" in m for m in messages)  # the L1 step needs the opt-in too
+
+
+def test_a_gate_with_a_freshness_check_needs_no_opt_in_for_its_gate(tmp_path):
+    def swap(a):
+        del a["evidence"]
+        a["context_gate"] = {"sources": ["ops-record.x"], "max_staleness": "24h"}
+
+    messages = pack_problems(tmp_path, swap)
+    assert not any("declares no check" in m for m in messages)
+
+
+def test_the_opt_in_is_for_a_monitor_that_starts_at_l1_or_below(tmp_path):
+    def high(a):
+        a["default_level"] = "L2"
+
+    assert any("starts at L0 or L1" in m for m in pack_problems(tmp_path, high))
+
+
+def test_without_the_opt_in_a_run_cannot_cite_its_own_incident(auto):
+    plain = dataclasses.replace(auto, own_signals=False)
+    result = World(health_proposal()).run(plain)
+    assert result.status == "invalid_proposal"
+    assert World(health_proposal()).run(auto).status == "drafted"  # the opt-in
+
+
+def test_without_the_opt_in_the_draft_step_does_not_run_at_l1(auto):
+    plain = dataclasses.replace(auto, own_signals=False)
+    cited = {**health_proposal(), "evidence_ids": ["jira:A-1"]}  # cites the pinned read, as any automation must
+    w = World(cited)
+    assert w.run(plain).status == "drafted" and w.mediator.calls == []
+
+
+def test_at_l2_a_step_still_needs_the_escalation_to_be_re_read():
+    io, tool = FakeIO(), Tool()
+    out = mediate(io, "draft_issue", tool, at_l1=False)
+    assert out["refused"][0] == "error" and "no escalation" in out["refused"][1] and tool.calls == []
+
+
+def test_a_failing_draft_step_is_an_error_decision_not_a_draft(auto):
+    w = World(health_proposal(), result=MediatorResult("failed", "TrackerError: git commit failed"))
+    result = w.run(auto)
+    assert result.status == "error" and "git commit failed" in result.reason
+    verdicts = [c[2]["verdict"] for c in w.recorder.calls if c[0] == "decision"]
+    assert verdicts == ["drafted", "error"]
+    assert [c[2]["status"] for c in w.recorder.calls if c[0] == "action"] == ["failed"]
+    assert "error" in ERROR_VERDICTS
+
+
+def test_an_automation_whose_draft_step_keeps_failing_shows_up_in_the_error_rate():
+    rows = [{"node_id": f"d{i}", "attrs": {"automation": NAME, "verdict": "error", "decided_at": "2026-10-25T11:00:00Z"}}
+            for i in range(3)]
+    (p,) = automation_error_problems(lambda s: rows, T)
+    assert p.key == f"automation-errors/{NAME}"
+
+
+def test_a_forge_tracker_at_l1_says_in_the_proposal_that_nothing_was_posted(tmp_path):
+    cfg = HealthConfig.from_proposer({"kind": "instance-health", "tracker": {
+        "kind": "github", "repo": "o/r", "token_env": "T_ENV"}})
+    p = HealthProposer(cfg, instance_dir=tmp_path, deployment="i", dsn="d", now=lambda: T, read_doctor=lambda: {"checks": []},
+                       read_frontier=lambda: {"rows": []}, read_ops_records=lambda s: [])
+    l1 = p.propose(request()).proposal["summary"]
+    l2 = p.propose(ProposeRequest(NAME, {"id": "t"}, {"run_incident": "ops_incident:inc-1"}, GEN, 2)).proposal["summary"]
+    assert "WARNING" in l1 and "only drafted" in l1 and "WARNING" not in l2

@@ -43,6 +43,7 @@ class LocalTracker:
         self.now = now
         self.commit = commit
         self._log: list[str] = []
+        self._before: dict[Path, Optional[str]] = {}  # file -> its text before this run first wrote it (None: new)
 
     # --- files ---------------------------------------------------------------
 
@@ -65,10 +66,16 @@ class LocalTracker:
         for field in ("key", "family", "title", "state"):
             if field not in meta:
                 raise TrackerError(f"{path}: front matter has no {field!r}")
+        events = list(meta.get("events") or [])
+        last = events[-1] if events else {}
+        by_us = meta["state"] != RESOLVED or (last.get("event") == "resolved" and last.get("by") == "archi")
+        noted = last.get("event") == "still_present"
         return Issue(meta["key"], meta["family"], meta["title"], body, meta["state"],
-                     ref=str(path.relative_to(self.root)))
+                     ref=str(path.relative_to(self.root)), resolved_by_us=by_us, noted=noted)
 
     def _write(self, path: Path, meta: dict, body: str) -> None:
+        if path not in self._before:
+            self._before[path] = path.read_text(encoding="utf-8") if path.is_file() else None
         path.parent.mkdir(parents=True, exist_ok=True)
         head = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).rstrip("\n")
         path.write_text(f"---\n{head}\n---\n\n{body}", encoding="utf-8")
@@ -112,9 +119,18 @@ class LocalTracker:
         path = self.path(issue.key)
         meta, body = self._read(path)
         meta["state"] = RESOLVED
-        meta["events"] = list(meta.get("events") or []) + [{"at": _stamp(self.now()), "event": "resolved", "note": note}]
+        meta["events"] = list(meta.get("events") or []) + [{"at": _stamp(self.now()), "event": "resolved", "by": "archi", "note": note}]
         self._write(path, meta, body)
         self._log.append(f"resolve {issue.key}")
+        return self.find(issue.key)
+
+    def note_still_present(self, issue: Issue, text: str) -> Issue:
+        path = self.path(issue.key)
+        meta, body = self._read(path)
+        meta["events"] = list(meta.get("events") or []) + [
+            {"at": _stamp(self.now()), "event": "still_present", "note": text}]
+        self._write(path, meta, body)
+        self._log.append(f"note {issue.key}")
         return self.find(issue.key)
 
     @staticmethod
@@ -127,10 +143,30 @@ class LocalTracker:
     def _git(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True)
 
+    def _roll_back(self) -> None:
+        """Put back every file this run wrote and unstage the issues directory, so a failed commit leaves
+        no half-written issue (and the next run starts from the committed state)."""
+        for path, before in self._before.items():
+            if before is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(before, encoding="utf-8")
+        self._git("reset", "-q", "--", ISSUES_DIR)
+        self._before, self._log = {}, []
+
     def finish(self) -> None:
-        """Commit every uncommitted change under `.archi/issues/`, in one commit limited to that path."""
+        """Commit every uncommitted change under `.archi/issues/`, in one commit limited to that path.
+        If git fails, the files this run wrote are put back and the run fails."""
         if not self.commit or not self.dir.exists():
             return
+        try:
+            self._commit()
+        except TrackerError:
+            self._roll_back()
+            raise
+        self._before = {}
+
+    def _commit(self) -> None:
         status = self._git("status", "--porcelain", "--untracked-files=all", "--", ISSUES_DIR)
         if status.returncode != 0:
             raise TrackerError(f"{self.root} is not a usable git repository: {status.stderr.strip()[-300:]}")

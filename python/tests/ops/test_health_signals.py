@@ -34,7 +34,8 @@ def row(source, ok, last="2026-09-20T10:00:00+00:00", limit="24h", age="35d", re
 
 def test_a_key_names_the_check_and_the_subject_and_a_file():
     assert make_key("source-freshness", "jira.jira") == "source-freshness/jira.jira"
-    assert make_key("services", "weird name!") == "services/weird_name"
+    weird = make_key("services", "weird name!")
+    assert weird.startswith("services/weird_name-") and weird == make_key("services", "weird name!")
     assert slug("source-freshness/jira.jira") == "source-freshness--jira.jira"
     with pytest.raises(ProblemError):
         slug("no-subject")

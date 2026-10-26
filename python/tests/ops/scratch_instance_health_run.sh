@@ -9,8 +9,11 @@
 # database on an AKMON Postgres (ghcr.io/mitdbg/akmon-postgres), okg 0.2.0 and archi installed (editable, from this
 # checkout) in the Python environment whose bin/ holds `python` (set V to that bin/). Starts one `okg runtime worker`
 # in the background; its PID goes to <work dir>/pids and it is the only process this script kills.
-# The first run is a real scanner tick (archi.ops.schedule); the next ones are signals standing in for later cron
-# times. No model call and no network: the proposer is algorithmic and the tracker is local.
+# Every run is started by the worker's own scanner from the pack's schedule trigger (archi.ops.schedule): nothing
+# here adds a signal. To get several ticks in minutes, the lab's COPY of the pack (not the shipped one) fires every
+# minute (cron "* * * * *", runs_per_hour 60); the shipped hourly cron is covered by the unit tests. So runs keep
+# coming once the worker is up, and the script counts them instead of choosing them. No model call and no network:
+# the proposer is algorithmic and the tracker is local.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -53,8 +56,19 @@ start_worker() {
 }
 trigger() { "$V/okg" runtime trigger-schedule --deployment $D archi_ops_scan > "$RUN/trigger.out" 2>&1 || tail -3 "$RUN/trigger.out" >&2; }
 publish() { "$V/okg" run --once --deployment $D --apply --json > "$RUN/publish-$1.json" 2>&1 || tail -3 "$RUN/publish-$1.json"; }
-new_run() {  # new_run <signal id>: add the signal, let the scanner start it, print the run id
-  local wid; wid="$($T signal "$1")"; trigger; echo "$wid"
+runs_where() {  # runs_where <python predicate over a run dict r>: how many runs match
+  $T runs | "$V/python" -c "
+import json, sys
+runs = json.load(sys.stdin)
+print(sum(1 for r in runs if $1))"
+}
+wait_runs() {  # wait_runs <min count> <predicate> <timeout s>: wait until that many runs match
+  local deadline=$((SECONDS + $3)) n=0
+  while [ $SECONDS -lt $deadline ]; do
+    n=$(runs_where "$2"); [ "$n" -ge "$1" ] && { echo "$n runs match"; return 0; }
+    sleep 5
+  done
+  echo "only $n runs match after $3 s"; return 1
 }
 issues() { $T issues > "$RUN/issues-$1.json"; cat "$RUN/issues-$1.json"; }
 
@@ -71,6 +85,8 @@ from pathlib import Path
 from bundles.bundle_support import build_cern_team_catalog
 build_cern_team_catalog(Path('$RUN/catalog'))
 "
+sed -i 's/cron: "7 \* \* \* \*"/cron: "* * * * *"/; s/runs_per_hour: 2/runs_per_hour: 60/' "$RUN/catalog/packs/instance-health/pack.yaml"
+grep -n "cron:\|runs_per_hour" "$RUN/catalog/packs/instance-health/pack.yaml"
 mkdir -p data/jira
 cp "$REPO/python/tests/packs/fixtures/ops_record/jira_records_open.json" data/jira/records.json
 echo '{"record_count": 2}' > data/jira/meta.json
@@ -104,20 +120,18 @@ $V/archi doctor --instance "$INST" --json > "$RUN/doctor-1.json" 2>/dev/null || 
 check "archi doctor reports the sources as fresh before anything is made stale" \
   "[c for c in d['checks'] if c['id'] == 'source-freshness'][0]['status'] == 'pass'" < "$RUN/doctor-1.json"
 
-echo "== 5. SHADOW: the first scheduled run is a real scanner tick; it records a proposal and writes no issue"
-W0=$($T tick); echo "expected run id $W0"
-trigger
-$T wait "$W0" | tee "$RUN/shadow.out"
-check "the scanner made the tick and the run finished observed (shadow)" \
-  "d['status'] == 'SUCCESS' and 'observed' in str(d['output']) and \"'mode': 'shadow'\" in str(d['output'])" < "$RUN/shadow.out"
-$T signals | tee "$RUN/signals-0.json"
-check "the signal was made by the scanner from the schedule trigger" \
-  "[s['source'] for s in d] == ['schedule'] and d[0]['signal_id'].startswith('tick-')" < "$RUN/signals-0.json"
-trigger; sleep 8
-$T signals | check "a second scan in the same cron time adds no signal and starts no run" "len(d) == 1"
+echo "== 5. SHADOW: the scanner makes the first tick by itself; the run records a proposal and writes no issue"
+trigger   # the schedule would fire within a minute; this only saves the wait
+wait_runs 1 "r['mode'] == 'shadow' and r['state'] == 'SUCCESS'" 240
+$T runs > "$RUN/runs-shadow.json"
+check "the first run finished observed in shadow" "d[0]['status'] == 'observed' and d[0]['mode'] == 'shadow'" < "$RUN/runs-shadow.json"
+W0=$("$V/python" -c "import json; print(json.load(open('$RUN/runs-shadow.json'))[0]['id'])")
+$T signals > "$RUN/signals-0.json"
+check "every signal was made by the scanner from the schedule trigger" \
+  "all(s['source'] == 'schedule' and s['signal_id'].startswith('tick-') for s in d) and len(d) >= 1" < "$RUN/signals-0.json"
 issues shadow | check "shadow wrote no issue file" "d['files'] == []"
 
-echo "== 6. promote it as an operator would (a PACT change a person approves), so the next runs are live"
+echo "== 6. promote it as an operator would (a PACT change a person approves); the source is already stale when it goes live"
 publish shadow
 $T human-action "$W0"; publish human0
 $V/archi ops --instance "$INST" --dsn "$DSN" --deployment $D promote instance-health --as operator-x --min-proposals 1 \
@@ -125,10 +139,7 @@ $V/archi ops --instance "$INST" --dsn "$DSN" --deployment $D promote instance-he
 cat "$RUN/promote.json"; cat "$RUN/promote.err"
 CHANGE=$("$V/python" -c "import json; print(json.load(open('$RUN/promote.json'))['change'])")
 check "promote opened a PACT change awaiting review" "d['state'] == 'awaiting_review'" < "$RUN/promote.json"
-$T approve-promotion "$CHANGE"
-$T pact "$CHANGE" | check "the operator approval is in the ledger" "len(d) == 1 and d[0]['verdict'] == 'approve'"
-
-echo "== 7. a source goes stale (the jira watermark is aged 30 days); run 1 and run 2 (acc.issue)"
+echo "-- a source goes stale: the jira watermark is aged 30 days"
 $T source stale
 $V/archi doctor --instance "$INST" --json > "$RUN/doctor-2.json" 2>/dev/null || true
 "$V/python" -c "
@@ -136,24 +147,28 @@ import json
 r = json.load(open('$RUN/doctor-2.json'))
 f = [c for c in r['checks'] if c['id'] == 'source-freshness'][0]
 print(f['status'], f['message'])"
-POS1=$(wc -c < "$RUN/worker.log" | tr -d ' ')
-WA=$(new_run lab-tick-2); $T wait "$WA" | tee "$RUN/run-a.out"
-check "run 1 finished drafted and mediated" "d['status'] == 'SUCCESS' and 'drafted' in str(d['output']) and \"'mediated': True\" in str(d['output'])" < "$RUN/run-a.out"
-issues a
-check "run 1: exactly one issue for the stale source, open" \
-  "[f['key'] for f in d['files'] if f['key'].startswith('source-freshness/')] == ['source-freshness/jira.jira'] and [f['state'] for f in d['files'] if f['key'] == 'source-freshness/jira.jira'] == ['open'] and d['dirty'] == False" < "$RUN/issues-a.json"
-WB=$(new_run lab-tick-3); $T wait "$WB" | tee "$RUN/run-b.out"
-check "run 2 finished drafted" "d['status'] == 'SUCCESS' and 'drafted' in str(d['output'])" < "$RUN/run-b.out"
-issues b
-check "run 2: still exactly one issue for the stale source, and no file changed or was added" \
-  "len([f for f in d['files'] if f['key'].startswith('source-freshness/')]) == 1" < "$RUN/issues-b.json"
-"$V/python" -c "
-import json
-a = json.load(open('$RUN/issues-a.json')); b = json.load(open('$RUN/issues-b.json'))
-print(json.dumps({'same_files': a['files'] == b['files'], 'same_commits': a['commits'] == b['commits']}))" \
-  | check "the second run changed nothing and made no commit" "d == {'same_files': True, 'same_commits': True}"
+$T approve-promotion "$CHANGE"
+$T pact "$CHANGE" | check "the operator approval is in the ledger" "len(d) == 1 and d[0]['verdict'] == 'approve'"
 
-echo "== 8. the source is refreshed (a re-ingest; if okg leaves the watermark alone for an unchanged cache, the watermark is set directly, as scratch_ops_runtime_run.sh does); the next run resolves the issue"
+echo "== 7. two live runs see the stale source (acc.issue); more may come, each one minute apart"
+wait_runs 2 "r['mode'] == 'live' and r['status'] == 'drafted' and r['mediated']" 600
+issues a
+check "after the live runs: exactly one issue for the stale source, open" \
+  "[f['key'] for f in d['files'] if f['key'].startswith('source-freshness/')] == ['source-freshness/jira.jira'] and [f['state'] for f in d['files'] if f['key'] == 'source-freshness/jira.jira'] == ['open'] and d['dirty'] == False" < "$RUN/issues-a.json"
+sleep 70   # at least one more run
+issues b
+"$V/python" -c "
+import json, subprocess
+a = json.load(open('$RUN/issues-a.json')); b = json.load(open('$RUN/issues-b.json'))
+mine = [c for c in b['commits'] if 'source-freshness/jira.jira' in c]
+print(json.dumps({'one_file': len([f for f in b['files'] if f['key'].startswith('source-freshness/')]) == 1,
+                  'one_commit_for_it': len(mine) == 1,
+                  'same_file': [f for f in a['files'] if f['key'] == 'source-freshness/jira.jira'] == [f for f in b['files'] if f['key'] == 'source-freshness/jira.jira']}))" \
+  | check "later runs changed nothing for it: one file, one commit that opened it, same content" "d == {'one_file': True, 'one_commit_for_it': True, 'same_file': True}"
+N=$(runs_where "r['mode'] == 'live' and r['status'] == 'drafted' and r['mediated']"); echo "live drafted runs so far: $N"
+check "at least two live runs saw the stale source" "d >= 2" <<< "$N"
+
+echo "== 8. the source is refreshed (a re-ingest; if okg leaves the watermark alone for an unchanged cache, the watermark is set directly, as scratch_ops_runtime_run.sh does); a later run resolves the issue"
 publish refresh
 $V/archi doctor --instance "$INST" --json > "$RUN/doctor-3.json" 2>/dev/null || true
 if "$V/python" -c "
@@ -164,12 +179,13 @@ sys.exit(0 if [c for c in r['checks'] if c['id'] == 'source-freshness'][0]['stat
 else
   echo "the re-ingest left the watermark alone; setting it directly"; $T source fresh
 fi
-WC=$(new_run lab-tick-4); $T wait "$WC" | tee "$RUN/run-c.out"
-check "run 3 finished drafted" "d['status'] == 'SUCCESS' and 'drafted' in str(d['output'])" < "$RUN/run-c.out"
+wait_runs $((N + 2)) "r['mode'] == 'live' and r['status'] == 'drafted' and r['mediated']" 400
 issues c
-check "run 3: the issue is marked resolved, not deleted, and there is still one file for it" \
+check "the issue is marked resolved, not deleted, and there is still one file for it" \
   "[(f['key'], f['state']) for f in d['files'] if f['key'].startswith('source-freshness/')] == [('source-freshness/jira.jira', 'resolved')] and 'resolved' in [f for f in d['files'] if f['key'] == 'source-freshness/jira.jira'][0]['events']" < "$RUN/issues-c.json"
 cat "$INST/.archi/issues/source-freshness--jira.jira.md"
+$T runs > "$RUN/runs-final.json"
+check "no run ended in an error" "all(r['status'] != 'error' for r in d)" < "$RUN/runs-final.json"
 
 echo "== 9. the records the runs left"
 publish records

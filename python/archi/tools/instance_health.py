@@ -1,10 +1,11 @@
 """Live tool: sync the instance-health problems to a GitLab or GitHub project.
 
 This is the only place the health automation reaches a forge (ADR 0002 section 7.2: an external system is
-reached only through a live tool). It is the mediator of the action class `sync_forge_issues`, which can
-run at L2 only, after a person approves the escalation. The pack's own maximum is L1, so with the pack as
-shipped this tool does not run from the runtime; an operator who wants forge issues raises the pack bound
-to L2 (and the instance level to L2), and every sync is then approved.
+reached only through a live tool). It is the mediator of the action class `sync_forge_issues`, which runs at
+L2 only, after a person approves the escalation. Opening an issue on a forge is an external post, and at L1
+the ADR has the automation draft for a person to send, so each run that would post waits for an approval. The
+pack allows L2 (default L1): an instance that wants forge issues sets its level to L2 in `archi.yaml`, and at
+L1 the run only drafts (and its proposal says that the forge tracker was not used).
 
     sync_forge_issues(payload=..., context=...) -> {"status", "result"}
 
