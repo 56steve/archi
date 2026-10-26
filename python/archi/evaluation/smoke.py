@@ -155,6 +155,11 @@ def smoke_path(bundle_dir: Path) -> Path:
 #: `[3] chunk:ab12 (document_chunk) · source docsite ...`, the row shape of the read tools
 ROW = re.compile(r"^\s*\[(\d+)\]\s+(\S+:\S+)\s+\(([^)]+)\)(?:.*? · source (\S+))?.*$", re.M)
 HEADER_SOURCE = re.compile(r"^\w+ ok · .*? · source (\S+)", re.M)
+#: `inspect ok · an:X (analysis_note) · complete`, the header of one record read with inspect;
+#: its source is on a line of its own below (`source px.cmssw-releases`, or
+#: `trust=untrusted · source px.analysis-notes`), before the first `--- field` block
+INSPECT_HEAD = re.compile(r"^inspect ok · (\S+:\S+) \(([^)]+)\)", re.M)
+SOURCE_LINE = re.compile(r"^(?:\S+ · )*source (\S+)\s*$", re.M)
 #: any `<kind>:<rest>` that looks like a node id (no URL schemes, no times)
 BARE_ID = re.compile(r"(?<![\w/:.-])([A-Za-z][A-Za-z0-9_]*:[A-Za-z0-9_.+/=-]*[A-Za-z0-9_=-])")
 NOT_KINDS = {"http", "https", "ftp", "mailto", "file", "ssh", "git", "ok", "error", "trust", "source", "type"}
@@ -167,6 +172,11 @@ def nodes_in(text: str) -> dict[str, NodeInfo]:
     default_source = header.group(1) if header else None
     for _, nid, subtype, source in ROW.findall(text):
         found[nid] = NodeInfo(nid, subtype, source or default_source)
+    head = INSPECT_HEAD.search(text)
+    if head and head.group(1) not in found:
+        end = text.find("\n---", head.end())
+        line = SOURCE_LINE.search(text, head.end(), end if end >= 0 else len(text))
+        found[head.group(1)] = NodeInfo(head.group(1), head.group(2), line.group(1) if line else None)
     for nid in BARE_ID.findall(text):
         if nid.split(":", 1)[0].lower() in NOT_KINDS or nid in found:
             continue
