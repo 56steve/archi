@@ -20,7 +20,7 @@ before". Where each stands when 3.0.0 is prepared:
 
 | Condition | State | What closes it |
 |---|---|---|
-| 1. Every live v2 deployment has a named owner (R1). | **Not answered.** No inventory exists in the repository. | Step 1. |
+| 1. Every live v2 deployment has a named owner (R1). | **Answered** 2026-10-27 (board d384): two deployments, both moving to 3.0. See step 1. | Step 1 (done). |
 | 2. Each of those deployments is migrated or stays on a tagged `v2.x`. | Not started. | Step 4. |
 | 3. Parity for comp-ops and the chat migration hold, or the losses are accepted in writing. | **Not met.** The `cms-comp-ops` bundle, `ticket-triage` and its four-week shadow report are not in 3.0.0. See [what has no equivalent yet](../migration-from-v2.md#what-has-no-equivalent-yet). | Step 2 (the written acceptance), `JASON`. |
 | 4. The last v2 release is tagged and documented. | The newest tag is `v2.5.0`. `main` has had 52 commits since (check: step 0). | Step 3. |
@@ -78,6 +78,23 @@ SubMIT. A deployment nobody claims is a deployment nobody can move.
 
 **Check:** every row has a named owner and a decision.
 **Rollback:** nothing to undo.
+
+**Recorded inventory** (2026-10-27, confirmed by Jason on board d384; also on
+issue #758). This list was found read-only, from process and port listings on
+two SubMIT hosts, the repository's forks and GitHub environments, and the
+v2 configs on `main`. Jason confirmed that FASRC, a CMS comp-ops bot at CERN,
+WisDQM, CRAB and MIT course deployments do not run 2.x, and that no other hosts
+do.
+
+| Deployment | Host | Services | v2 version | Owner | Decision |
+|---|---|---|---|---|---|
+| SubMIT A2rchi | a SubMIT host; linked from SubMIT's public A2rchi page | chatbot, data manager, Redmine bot, mailbox bot (a SubMIT service account) | not read (run `archi list-deployments` as the service account) | SubMIT team | move to 3.0 |
+| Second chat on SubMIT | a second SubMIT host | chatbot, data manager (her own account) | not read | Maria D'Alfonso (per her fork) | move to 3.0 |
+
+Jason named no person for the SubMIT row. The v2 version of each is still to
+be read, in its owner's environment, when the switch-over plan for it is made.
+Neither owner has been contacted yet: that waits for the plan and a separate
+go from Jason.
 
 ## Step 2. Accept the losses in writing
 
