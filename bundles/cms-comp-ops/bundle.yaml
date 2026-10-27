@@ -4,12 +4,12 @@ description: A CMS computing operations knowledge instance - sites, storage, dat
 # ADR 0002 section 5. Extends cern-team for its documentation, meetings and
 # generic playbooks; the comp-ops catalogs go on top. The Rucio, site and
 # incident playbooks ride with the packs that own their data (cms-catalogs,
-# monit-live). The ticket-triage automation pack is not shipped
-# yet, so it is not listed.
+# monit-live). The ticket-triage automation pack triages the JIRA
+# queue, so it needs jira selected with it.
 extends: [cern-team]
 packs:
   default: [cms-catalogs, cmssst, cmssw-releases, ops-record]
-  optional: [monit-live, dqm, hypernews, jira]
+  optional: [monit-live, dqm, hypernews, jira, ticket-triage]
 chat:
   site_name: CMS computing operations chat
   description: >-

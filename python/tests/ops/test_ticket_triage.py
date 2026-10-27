@@ -1,0 +1,378 @@
+"""req.r3-auto-ticket-triage.automation, the parts that need no worker: the shipped pack and how it renders
+in both bundles, the ticket shape, the scanner's new-or-updated rule, the run's read, and the proposer."""
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+import yaml
+
+from archi.bundles import discovery
+from archi.bundles.automation import automation_problems
+from archi.bundles.render import render
+from archi.bundles.resolve import CompositionError, resolve
+from archi.ops.proposers import PROPOSER_KINDS, ProposeRequest, ProposerError, build_proposer
+from archi.triage.context import ContextError, read_ticket_context
+from archi.triage.proposer import TriageProposer
+from archi.triage.signals import add_ticket_signals, new_or_updated, scan_queue
+from archi.triage.tickets import Ticket, TicketError, parse_entity, parse_time, signal_id
+from ticket_fakes import Graph, arrival, load_cache, queue_rows, to_row
+
+REPO = Path(__file__).resolve().parents[3]
+PACK = REPO / "bundles" / "packs" / "ticket-triage"
+NAME = "ticket-triage"
+NOW = "2026-10-26T09:00:00Z"
+
+
+@pytest.fixture(scope="module")
+def catalog():
+    found = discovery.from_roots([REPO / "bundles" / "packs"], [REPO / "bundles"])
+    assert found.problems == [], [str(p) for p in found.problems]
+    return found
+
+
+def block(catalog, tmp_path, bundle, with_packs):
+    rendered = render(resolve(catalog, [bundle], with_packs=with_packs), tmp_path / "instance")
+    return yaml.safe_load((tmp_path / "instance" / "automations" / f"{NAME}.yaml").read_text()), rendered
+
+
+# --- the pack ----------------------------------------------------------------------------
+
+
+def test_the_pack_is_an_automation_that_starts_at_l1_and_allows_at_most_l2(catalog):
+    pack = catalog.packs[NAME]
+    auto = pack.manifest["automation"]
+    assert pack.kind == "automation" and auto["default_level"] == "L1" and auto["max_level"] == "L2"
+    assert auto["trigger"] == {"type": "ticket_queue", "system": ["redmine", "jira", "servicenow"], "queue": "*"}
+    assert auto["context_gate"]["sources"] == ["tickets.tickets", "jira.jira", "servicenow.servicenow"]
+    assert (PACK / "skills" / auto["playbook"]).is_file()
+
+
+def test_the_action_classes_are_one_draft_at_l1_and_two_live_tools_at_l2(catalog):
+    classes = yaml.safe_load((PACK / "action_classes.yaml").read_text())["action_classes"]
+    assert {n: (c["mediator"], c["max_level"]) for n, c in classes.items()} == {
+        "draft_reply": ("draft_reply", "L1"),
+        "set_ticket_status": ("archi.tools.tickets:set_ticket_status", "L2"),
+        "assign_ticket": ("archi.tools.tickets:assign_ticket", "L2"),
+    }
+
+
+def test_the_tool_payload_schemas_are_the_action_class_schemas():
+    from archi.tools import tickets
+
+    classes = yaml.safe_load((PACK / "action_classes.yaml").read_text())["action_classes"]
+    for name, schema in tickets.PAYLOAD_SCHEMAS.items():
+        assert classes[name]["payload_schema"] == schema, name
+    manifest = yaml.safe_load((PACK / "pack.yaml").read_text())
+    tools = {f"archi.tools.tickets:{n}" for n in tickets.TOOLS}
+    assert set(manifest["live_tools"]) == tools and set(manifest["idempotent_tools"]) == tools
+
+
+def test_the_pack_is_generic():
+    """cluster-manager is for any cluster operator: nothing in the pack names a lab or an experiment."""
+    for path in PACK.rglob("*"):
+        if path.is_file():
+            assert not re.search(r"\b(cern|cms|submit|mit)\b", path.read_text(), re.I), path
+
+
+def test_the_proposer_kind_is_registered():
+    assert PROPOSER_KINDS[NAME] == "archi.triage.proposer:build"
+    assert isinstance(build_proposer({"kind": NAME}, None), TriageProposer)
+
+
+@pytest.mark.parametrize("trigger, fragment", [
+    ({"type": "ticket_queue", "system": ["redmine", "gitlab"], "queue": "*"}, "'gitlab' is not one of"),
+    ({"type": "ticket_queue", "system": ["jira", "jira"], "queue": "*"}, "listed more than once"),
+    ({"type": "ticket_queue", "system": "trac", "queue": "q"}, "'trac' is not one of"),
+])
+def test_validate_refuses_a_bad_ticket_queue_trigger(trigger, fragment):
+    data = yaml.safe_load((PACK / "pack.yaml").read_text())
+    data["automation"]["trigger"] = trigger
+    messages = [p.message for p in automation_problems(PACK, data, check_requires=False)]
+    assert any(fragment in m for m in messages), messages
+
+
+def test_validate_accepts_the_shipped_pack_and_refuses_narrowing_a_gate_with_no_source():
+    data = yaml.safe_load((PACK / "pack.yaml").read_text())
+    assert automation_problems(PACK, data, check_requires=False) == []
+    data["automation"]["context_gate"] = {"invariants": ["tickets_coverage"]}
+    messages = [p.message for p in automation_problems(PACK, data, check_requires=False)]
+    assert any("narrow_to_selected: the context gate names no source" in m for m in messages)
+
+
+# --- rendered in the two bundles ----------------------------------------------------------
+
+
+def test_cluster_manager_triages_the_tickets_pack_redmine_and_jira_and_gates_on_it_alone(catalog, tmp_path):
+    """The tickets pack reads Redmine and any JIRA, so both systems stay; ServiceNow needs its own pack."""
+    auto, _ = block(catalog, tmp_path, "cluster-manager", [NAME])
+    assert auto["trigger"]["system"] == ["redmine", "jira"] and auto["context_gate"]["sources"] == ["tickets.tickets"]
+    assert auto["not_selected"] == {"sources": ["jira.jira", "servicenow.servicenow"], "systems": ["servicenow"]}
+    assert "narrow_to_selected" not in auto and auto["pack_max_level"] == "L2"
+
+
+def test_cluster_manager_with_servicenow_triages_both(catalog, tmp_path):
+    auto, rendered = block(catalog, tmp_path, "cluster-manager", ["servicenow", NAME])
+    assert auto["trigger"]["system"] == ["redmine", "jira", "servicenow"]
+    assert auto["context_gate"]["sources"] == ["tickets.tickets", "servicenow.servicenow"]
+    assert (rendered.profile_dir / "skills" / "triage.md").is_file()
+
+
+def test_cms_comp_ops_triages_the_jira_queue(catalog, tmp_path):
+    auto, _ = block(catalog, tmp_path, "cms-comp-ops", ["jira", NAME])
+    assert auto["trigger"]["system"] == ["jira"] and auto["context_gate"]["sources"] == ["jira.jira"]
+
+
+def test_an_instance_with_no_ticket_pack_is_refused_at_render(catalog, tmp_path):
+    with pytest.raises(CompositionError) as err:
+        render(resolve(catalog, ["cms-comp-ops"], with_packs=[NAME]), tmp_path / "instance")
+    assert err.value.code == "automation_inputs_not_selected" and "jira" in str(err.value)
+
+
+# --- tickets -----------------------------------------------------------------------------
+
+
+def test_a_generic_jira_ticket_from_the_tickets_pack_is_a_jira_ticket():
+    rows = {r["node_id"]: r for r in queue_rows()}
+    t = Ticket.from_row(rows["tracker_ticket:jira:SUP-1"])
+    assert (t.system, t.entity, t.key, t.closed, t.assigned_to, t.queue) == (
+        "jira", "jira:SUP-1", "SUP-1", True, "Grace Hopper", "SUP")
+    other = {"node_id": "tracker_ticket:trac:9", "subtype": "tracker_ticket", "attrs": {"ticket_id": "9", "system": "trac"}}
+    with pytest.raises(TicketError, match="'trac' ticket"):
+        Ticket.from_row(other)
+    unnamed = {"node_id": "tracker_ticket:x:9", "subtype": "tracker_ticket", "attrs": {"ticket_id": "9"}}
+    assert Ticket.from_row(unnamed).system == "redmine"
+
+
+def test_each_system_reads_into_one_shape():
+    rows = {r["node_id"]: r for r in queue_rows()}
+    rm = Ticket.from_row(rows["tracker_ticket:redmine:4799"])
+    assert (rm.entity, rm.closed, rm.assigned_to, rm.category, rm.components) == (
+        "redmine:4799", True, "Grace Hopper", "Support", ("Cluster Ops",))
+    jr = Ticket.from_row(rows["jira:OPS-14"])
+    assert (jr.entity, jr.closed, jr.queue, jr.components, jr.category) == ("jira:OPS-14", False, "OPS", ("monitoring",), "Task")
+    sn = Ticket.from_row(rows["servicenow_incident:INC0010001"])
+    assert (sn.entity, sn.closed, sn.assigned_to, sn.table, sn.queue) == (
+        "servicenow:INC0010001", True, "Cluster Operations", "incident", "Cluster Operations")
+    with pytest.raises(TicketError):
+        Ticket.from_row({"node_id": "x", "subtype": "documentation_page", "attrs": {}})
+
+
+@pytest.mark.parametrize("text", ["2026-09-14T08:15:00.000+0000", "2026-09-14T08:15:00Z", "2026-09-14 08:15:00",
+                                  "2026-09-14T10:15:00+02:00"])
+def test_ticket_times_read_in_every_system_format(text):
+    assert parse_time(text) == datetime(2026, 9, 14, 8, 15, tzinfo=timezone.utc)
+
+
+def test_a_signal_id_is_one_per_ticket_version_and_a_legal_run_id_part():
+    t = Ticket.from_row(to_row("jira", arrival("jira", "OPS-15", "x", "y", "2026-10-26T09:00:00.000+0000")))
+    assert signal_id(t) == "jira-OPS-15-20261026T090000Z" and "~" not in signal_id(t)
+    assert parse_entity("servicenow:INC0010003") == ("servicenow", "INC0010003")
+    with pytest.raises(TicketError):
+        parse_entity("gitlab:12")
+
+
+# --- signals -----------------------------------------------------------------------------
+
+
+def cache_item(system, key):
+    return next(i for i in load_cache(system) if i.get("key", i.get("number")) == key)
+
+
+def _new(system, key, subject, updated, **kw):
+    return to_row(system, arrival(system, key, subject, "jobs fail with ENOSPC on /scratch", updated, **kw))
+
+
+def test_the_first_read_sets_the_cursor_and_triages_nothing():
+    g = Graph(queue_rows())
+    assert scan_queue(g, NAME, ["redmine", "jira", "servicenow"]) == []
+    assert g.signals == {}
+    assert g.cursors[(NAME, "redmine")]["updated"] == parse_time("2026-10-10T14:00:00Z")
+    assert g.cursors[(NAME, "jira")]["generation"] == "gen-1"
+
+
+def test_a_new_or_updated_open_ticket_in_a_newer_generation_becomes_one_signal():
+    g = Graph(queue_rows())
+    scan_queue(g, NAME, ["redmine", "jira", "servicenow"])
+    reopened = to_row("redmine", {**cache_item("redmine", "4811"), "updated": NOW})
+    closed = to_row("redmine", {**arrival("redmine", "4830", "Closed already", "x", NOW), "status": "Closed"})
+    g.publish([_new("redmine", "4820", "Scratch filesystem full on node051", NOW), reopened,
+               _new("jira", "OPS-15", "SRM_TIMEOUT after the upgrade", "2026-10-26T09:01:00.000+0000"),
+               _new("servicenow", "INC0010003", "scratch filesystem full on node051", NOW), closed])
+    added = scan_queue(g, NAME, ["redmine", "jira", "servicenow"])
+    assert sorted(added) == sorted(f"{NAME}/{s}" for s in (
+        "redmine-4811-20261026T090000Z", "redmine-4820-20261026T090000Z", "jira-OPS-15-20261026T090100Z",
+        "servicenow-INC0010003-20261026T090000Z"))
+    sig = g.signals[(NAME, "redmine-4820-20261026T090000Z")]
+    assert sig["entity"] == "redmine:4820" and sig["source"] == "ticket" and "node051" in sig["title"]
+    assert scan_queue(g, NAME, ["redmine", "jira", "servicenow"]) == []  # same generation: not read again
+    g.publish([])
+    assert scan_queue(g, NAME, ["redmine", "jira", "servicenow"]) == []  # nothing newer than the cursor
+
+
+def test_jira_tickets_come_from_either_pack_and_one_issue_makes_one_signal():
+    g = Graph(queue_rows())
+    scan_queue(g, NAME, ["redmine", "jira"])
+    generic = to_row("redmine", arrival("redmine", "SUP-3", "Jobs held: home quota exceeded", "quota", NOW, tracker="jira"))
+    both = [_new("jira", "OPS-20", "Same issue in both packs", NOW),
+            to_row("redmine", arrival("redmine", "OPS-20", "Same issue in both packs", "x", NOW, tracker="jira"))]
+    g.publish([generic, *both])
+    added = scan_queue(g, NAME, ["redmine", "jira"])
+    assert sorted(added) == [f"{NAME}/jira-OPS-20-20261026T090000Z", f"{NAME}/jira-SUP-3-20261026T090000Z"]
+    assert g.signals[(NAME, "jira-SUP-3-20261026T090000Z")]["entity"] == "jira:SUP-3"
+
+
+def test_only_the_selected_packs_subtypes_are_read():
+    g = Graph(queue_rows())
+    g.missing_subtypes = {"jira_issue"}  # the instance has no jira pack: okg would refuse the subtype
+    scan_queue(g, NAME, ["redmine", "jira"], packs={"tickets"})
+    assert g.cursors[(NAME, "jira")]["updated"] == parse_time("2026-09-11T08:00:00Z")  # SUP-2, the newest generic JIRA
+
+
+def test_the_instance_queues_narrow_the_signals():
+    tickets = [Ticket.from_row(_new("servicenow", "INC0010003", "a", NOW, group="")),
+               Ticket.from_row(_new("redmine", "4820", "b", NOW))]
+    fresh, _ = new_or_updated(tickets, parse_time("2026-10-01T00:00:00Z"), queues=["Cluster Ops"])
+    assert [t.key for t in fresh] == ["4820"]
+
+
+def test_the_scanner_reads_only_ticket_queue_automations_and_a_failure_stays_with_its_automation():
+    from types import SimpleNamespace
+
+    class Auto:
+        def __init__(self, trigger):
+            self.trigger = trigger
+
+    g = Graph(queue_rows())
+    g.missing_subtypes = {"jira_issue"}
+    autos = {"tt": Auto({"type": "ticket_queue", "system": ["jira"], "queue": "*"}),
+             "ok": Auto({"type": "ticket_queue", "system": ["redmine"], "queue": "*"}),
+             "health": Auto({"type": "schedule", "cron": "7 * * * *"})}
+    settings = {n: SimpleNamespace(proposer={}, queues=()) for n in autos}
+    said = []
+    rt = SimpleNamespace(settings=settings, automation=lambda n: autos[n])
+    assert add_ticket_signals(rt, g, said.append) == []
+    assert ("ok", "redmine") in g.cursors and ("tt", "jira") not in g.cursors and ("health", "redmine") not in g.cursors
+    assert any("tt: cannot read its ticket queue" in s for s in said)
+
+
+# --- the run's read ----------------------------------------------------------------------
+
+
+def precedent(entity, rid="inc-old"):
+    return {"node_id": f"ops_incident:{rid}", "subtype": "ops_incident",
+            "attrs": {"record_id": rid, "entity": entity, "title": "triage of an earlier scratch ticket",
+                      "status": "resolved", "detected_at": "2026-10-03T10:00:00Z", "automation": NAME}}
+
+
+def graph_with_arrivals():
+    g = Graph(queue_rows() + [precedent("redmine:4799")])
+    g.publish([_new("redmine", "4820", "Scratch filesystem full on node051", NOW),
+               _new("jira", "OPS-15", "Transfers failing with SRM_TIMEOUT after the upgrade", NOW),
+               _new("servicenow", "INC0010003", "scratch filesystem full on node051", NOW)])
+    return g
+
+
+def test_the_read_returns_the_ticket_related_tickets_docs_and_precedents():
+    g = graph_with_arrivals()
+    g.missing_subtypes = {"documentation_page"}
+    d = read_ticket_context(g, "redmine:4820", g.generation)
+    ctx = d["context"]
+    assert ctx["ticket"]["key"] == "4820" and ctx["ticket"]["entity"] == "redmine:4820"
+    related = [r["key"] for r in ctx["related"]]
+    assert related[:2] in (["4790", "4799"], ["4799", "4790"]) and "4820" not in related
+    assert [p["node_id"] for p in ctx["precedents"]] == ["ops_incident:inc-old"]
+    assert [r["node_id"] for r in d["rows"]] == ["ops_incident:inc-old"]  # carried with a proposal that cites it
+    assert [doc["node_id"] for doc in ctx["docs"]] == ["servicenow_kb_article:KB0000010"]
+    assert [s["what"] for s in ctx["skipped"]] == ["docs:documentation_page"]  # this instance has no such subtype
+    assert set(d["node_ids"]) >= {"tracker_ticket:redmine:4820", "tracker_ticket:redmine:4799", "ops_incident:inc-old"}
+
+
+def test_a_generic_jira_ticket_reads_its_related_jira_tickets_only():
+    g = Graph(queue_rows())
+    g.publish([to_row("redmine", arrival("redmine", "SUP-3", "Jobs held: home quota exceeded",
+                                         "Jobs stay held, home quota exceeded.", NOW, tracker="jira"))])
+    g.missing_subtypes = {"jira_issue"}
+    d = read_ticket_context(g, "jira:SUP-3", g.generation, {"doc_subtypes": []}, packs={"tickets"})
+    assert d["context"]["ticket"]["node_id"] == "tracker_ticket:jira:SUP-3"
+    assert [r["key"] for r in d["context"]["related"]] == ["SUP-2", "SUP-1"] or \
+        [r["key"] for r in d["context"]["related"]] == ["SUP-1", "SUP-2"]  # no Redmine ticket, though both are tracker_tickets
+
+
+def test_docs_come_from_the_named_subtypes():
+    g = graph_with_arrivals()
+    d = read_ticket_context(g, "servicenow:INC0010003", g.generation, {"doc_subtypes": ["servicenow_kb_article"]})
+    assert [doc["node_id"] for doc in d["context"]["docs"]] == ["servicenow_kb_article:KB0000010"]
+    assert "servicenow_kb_article:KB0000010" in d["node_ids"]
+
+
+def test_a_ticket_missing_from_the_generation_is_an_error():
+    g = Graph(queue_rows())
+    with pytest.raises(ContextError, match="redmine:9999 is not in generation"):
+        read_ticket_context(g, "redmine:9999", g.generation)
+
+
+# --- the proposer ------------------------------------------------------------------------
+
+
+def propose(entity, level, config=None, graph=None):
+    g = graph or graph_with_arrivals()
+    d = read_ticket_context(g, entity, g.generation, {"doc_subtypes": ["servicenow_kb_article"]})
+    out = TriageProposer(config).propose(ProposeRequest(NAME, {"id": "s", "entity": entity}, d["context"], g.generation, level))
+    return out, set(d["node_ids"])
+
+
+def test_l1_drafts_a_cited_triage_note_and_reply():
+    out, known = propose("redmine:4820", 1)
+    p = out.proposal
+    assert out.cost == 0.0 and p["action_class"] == "draft_reply"
+    assert set(p["evidence_ids"]) <= known and "tracker_ticket:redmine:4820" in p["evidence_ids"]
+    body = p["payload"]["body"]
+    assert "Category: Support (from the ticket [1])" in body
+    assert "Usually handled by: Grace Hopper (2 of 3 related tickets" in body
+    assert "Precedents in the operational record:" in body and "ops_incident:inc-old" in body
+    assert "Suggested reply:" in body and "Nothing was sent." in body
+    # every [n] in the text resolves to a source line
+    cited = {int(n) for n in re.findall(r"\[(\d+)\]", body.split("Sources:")[0])}
+    sources = dict(re.findall(r"^\[(\d+)\] (\S+)$", body.split("Sources:")[1], re.M))
+    assert cited and cited <= {int(k) for k in sources} and set(sources.values()) == set(p["evidence_ids"])
+    assert 0 <= p["confidence"] <= 1
+
+
+def test_l2_proposes_assigning_an_unassigned_ticket_to_whom_the_related_tickets_went():
+    config = {"systems": {"redmine": {"url": "https://redmine.example.org", "token_env": "REDMINE_API_KEY"}}}
+    p = propose("redmine:4820", 2, config)[0].proposal
+    assert p["action_class"] == "assign_ticket"
+    assert p["payload"] == {"system": "redmine", "ticket": "4820", "field": "assignee", "value": "Grace Hopper",
+                            "expected": "", "note": p["payload"]["note"],
+                            "endpoint": {"url": "https://redmine.example.org", "token_env": "REDMINE_API_KEY"}}
+    assert "set assignee of redmine 4820 to Grace Hopper" in p["summary"] and "unassigned" in p["rollback"]
+
+
+def test_l2_routes_a_servicenow_ticket_to_a_group():
+    config = {"systems": {"servicenow": {"url": "https://example.service-now.com", "user_env": "SN_USER",
+                                         "password_env": "SN_PASSWORD"}}}
+    p = propose("servicenow:INC0010003", 2, config)[0].proposal
+    assert p["action_class"] == "assign_ticket"
+    assert {k: p["payload"][k] for k in ("field", "value", "table")} == {
+        "field": "assignment_group", "value": "Cluster Operations", "table": "incident"}
+
+
+def test_l2_moves_an_assigned_new_ticket_to_the_triaged_status():
+    g = graph_with_arrivals()
+    g.publish([to_row("redmine", {**cache_item("redmine", "4811"), "updated": NOW})])
+    config = {"systems": {"redmine": {"url": "https://redmine.example.org", "token_env": "REDMINE_API_KEY",
+                                      "triaged_status": "In Progress", "triage_from": ["New"]}}}
+    p = propose("redmine:4811", 2, config, g)[0].proposal
+    assert p["action_class"] == "set_ticket_status"
+    assert {k: p["payload"][k] for k in ("status", "expected_status")} == {"status": "In Progress", "expected_status": "New"}
+
+
+def test_l2_without_an_api_drafts_and_says_why():
+    p = propose("redmine:4820", 2)[0].proposal
+    assert p["action_class"] == "draft_reply" and "proposer.systems.redmine.url is not set" in p["summary"]
+
+
+def test_a_context_without_a_ticket_is_a_proposer_error():
+    with pytest.raises(ProposerError):
+        TriageProposer().propose(ProposeRequest(NAME, {"id": "s"}, {"precedents": []}, "gen-1", 1))

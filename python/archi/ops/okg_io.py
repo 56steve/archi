@@ -27,7 +27,7 @@ with the upstream ask (docs/ops-runtime-akmon-asks.md) that removes it:
 | `okg doctor --check sources` JSON (`sources[].coverage.watermark`) | `doctor_sources` | none: documented CLI output, but its shape is not versioned |
 
 The tables archi creates itself are in the `archi_ops` schema of the deployment
-database: `signals`, `halts`, `mediations`, `demotions`.
+database: `signals`, `halts`, `mediations`, `demotions`, `ticket_cursors`.
 """
 from __future__ import annotations
 
@@ -77,6 +77,16 @@ CREATE TABLE IF NOT EXISTS archi_ops.demotions (
     reason     text NOT NULL,
     PRIMARY KEY (automation, run_id)
 );
+-- how far a ticket_queue automation has read each ticket system: the newest `updated` time seen and the
+-- generation it was read from (archi.triage.signals)
+CREATE TABLE IF NOT EXISTS archi_ops.ticket_cursors (
+    automation text NOT NULL,
+    system     text NOT NULL,
+    updated    timestamptz,
+    generation text NOT NULL,
+    read_at    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (automation, system)
+);
 -- schedules `archi ops halt` paused, so `resume` leaves alone any an operator paused earlier
 CREATE TABLE IF NOT EXISTS archi_ops.halts (
     schedule  text PRIMARY KEY,
@@ -113,9 +123,9 @@ class OpsIO:
 
         return DBOSClient(database_url=self.dsn, system_database_url=self.dsn, application_database_url=self.dsn)
 
-    def _okg(self, *args: str) -> subprocess.CompletedProcess:
+    def _okg(self, *args: str, stdin: Optional[str] = None) -> subprocess.CompletedProcess:
         cmd = [self.okg or _okg(), *args, "--dsn", self.dsn]
-        return subprocess.run(cmd, capture_output=True, text=True)
+        return subprocess.run(cmd, capture_output=True, text=True, input=stdin)
 
     # --- the graph -----------------------------------------------------------
 
@@ -139,6 +149,40 @@ class OpsIO:
         if result.returncode != 0:
             raise RecordError(f"okg filter --type {subtype} failed: {(result.stderr or result.stdout)[-2000:]}")
         return [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+
+    def read_by_attr(self, subtype: str, generation: str, attr: str, value: str) -> list[dict]:
+        """Nodes of `subtype` at `generation` whose attribute equals `value`, compared as text (a JSON
+        condition, so a key such as `4812` is not read as a number)."""
+        where = json.dumps({"type": subtype, f"attrs.{attr}": str(value)})
+        result = self._okg("filter", "--deployment", self.deployment, "--type", subtype, "--generation-id",
+                           str(generation), "--where", where, "--all", "--jsonl")
+        if result.returncode != 0:
+            raise RecordError(f"okg filter --type {subtype} {attr}={value!r} failed: "
+                              f"{(result.stderr or result.stdout)[-2000:]}")
+        return [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+
+    def read_ids(self, node_ids: Sequence[str], generation: str) -> list[dict]:
+        """The nodes with these ids at `generation`, in no particular order."""
+        if not node_ids:
+            return []
+        result = self._okg("filter", "--deployment", self.deployment, "--stdin", "--generation-id", str(generation),
+                           "--all", "--jsonl", stdin="\n".join(node_ids) + "\n")
+        if result.returncode != 0:
+            raise RecordError(f"okg filter --stdin failed: {(result.stderr or result.stdout)[-2000:]}")
+        return [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+
+    def search_ids(self, query: str, generation: str, subtype: str, limit: int) -> list[str]:
+        """Node ids of `subtype` ranked by okg's lexical search for `query` at `generation`, best first."""
+        result = self._okg("search", "--deployment", self.deployment, "--query", query, "--generation-id",
+                           str(generation), "--subtype", subtype, "--limit", str(limit), "--json")
+        try:
+            reply = json.loads(result.stdout)
+        except ValueError:
+            reply = None
+        if result.returncode != 0 or not isinstance(reply, Mapping):
+            raise RecordError(f"okg search --subtype {subtype} failed: {(result.stderr or result.stdout)[-2000:]}")
+        return [str(row["node_id"]) for row in reply.get("results") or () if isinstance(row, Mapping)
+                and row.get("node_id")]
 
     def doctor_sources(self) -> list[dict]:
         """okg's per-source rows (`okg doctor --check sources`), with watermarks."""
@@ -422,6 +466,20 @@ class OpsIO:
         if row is None:
             return {"approved": False, "at": None, "reason": f"PACT change {change} has no approve verdict in the ledger"}
         return {"approved": True, "at": row[0].isoformat(), "reason": ""}
+
+    def ticket_cursor(self, automation: str, system: str) -> Optional[dict]:
+        """`{updated, generation}` for a ticket_queue automation's reading of one system, or None (never read)."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT updated, generation FROM archi_ops.ticket_cursors WHERE automation = %s "
+                               "AND system = %s", (automation, system)).fetchone()
+        return {"updated": row[0], "generation": row[1]} if row else None
+
+    def set_ticket_cursor(self, automation: str, system: str, updated: Optional[datetime], generation: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO archi_ops.ticket_cursors (automation, system, updated, generation) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (automation, system) DO UPDATE SET updated = EXCLUDED.updated, "
+                "generation = EXCLUDED.generation, read_at = now()", (automation, system, updated, generation))
 
     def mark_signal(self, automation: str, signal_id: str, status: str) -> None:
         with self.connect() as conn:

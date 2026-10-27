@@ -14,9 +14,7 @@ and the generic playbooks, and adds the CMS computing catalogs on top.
 | `dqm` | optional | DQM data-quality certifications and the runs they cover |
 | `hypernews` | optional | HyperNews forum threads |
 | `jira` | optional | JIRA issues and their participants |
-
-The ticket-triage automation pack is not in this release, so the bundle does
-not list it yet.
+| `ticket-triage` | optional | The ticket-triage automation over the JIRA queue: a cited triage draft per new or updated issue (L1), or a status or assignment change after a person approves it (L2). Needs `jira`. |
 
 ## Install
 

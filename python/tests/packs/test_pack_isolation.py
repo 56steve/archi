@@ -214,7 +214,14 @@ def _install_and_publish(tmp_path: Path, resolution, name: str, overrides: dict 
         git(["add", "-A"], deployments)
         git(["commit", "-q", "-m", "px deployment config"], deployments)
 
-        ingest = run_okg(["ingest", "--deployment", "px", "--json"], cwd=instance, env=env)
+        ingest_args = ["ingest", "--deployment", "px", "--json"]
+        if rendered.composition.automations:
+            # An automation pack enables okg's runtime, and an ingest then enqueues on DBOS, whose schema
+            # does not exist until the runtime is bootstrapped (upstream ask O12): what `archi init` does.
+            boot = run_okg(["runtime", "bootstrap", "--deployment", "px"], cwd=instance, env=env)
+            assert boot.returncode == 0, _report(boot)
+            ingest_args.append("--inline")
+        ingest = run_okg(ingest_args, cwd=instance, env=env)
         (tmp_path / "ingest.json").write_text(ingest.stdout)
         assert ingest.returncode == 0, _report(ingest)
         publish = run_okg(["run", "--once", "--deployment", "px", "--apply", "--json"],

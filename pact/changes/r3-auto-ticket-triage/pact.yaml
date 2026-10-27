@@ -9,7 +9,18 @@ why: 'Ticket triage is the automation 3.0 focuses on. Ticket queues are the olde
   goal. ADR 0002 §7.4, D10, D13.'
 affected_code:
 - bundles/packs/ticket-triage/
+- bundles/cluster-manager/
+- bundles/cms-comp-ops/
+- python/archi/triage/
+- python/archi/tools/tickets.py
+- python/archi/ops/
+- python/archi/bundles/
 - python/archi/sources/
+- python/tests/ops/
+- python/tests/packs/test_pack_isolation.py
+- python/tests/test_bundle_cluster_manager.py
+- python/tests/test_bundle_cms_comp_ops.py
+- docs/docs/
 requirements:
 - id: req.r3-auto-ticket-triage.automation
   statement: 'The ticket-triage pack triggers on new or updated tickets (Redmine, JIRA, ServiceNow),
