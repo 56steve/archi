@@ -143,18 +143,35 @@ evidence:
   requirement: req.r3-bundle-cluster-manager.bundle
   status: pass
   command: 'python -m pytest python/tests/downloaders python/tests/sources/test_tickets.py python/tests/test_bundle_cluster_manager.py
-    python/tests/packs python/tests/test_docs_generated.py -q; python -m pytest python/tests -q -p no:cacheprovider
-    (submit75, a clean clone, okg 0.2.0 wheel)'
-  head: 5cad61ff990c46d9f1235bd103d2db0103864fe4
-  at: '2026-10-27T02:28:03+00:00'
+    python/tests/packs python/tests/test_docs_generated.py -q -p no:cacheprovider; python -m pytest python/tests -q
+    -p no:cacheprovider (submit75, a clean clone, okg 0.2.0 wheel, through heavy.sh)'
+  head: fefc89acf4506bb554897e9575d38870d4d32eaa
+  at: '2026-10-27T03:20:09+00:00'
   note: 'task.r3-bundle-cluster-manager.tickets (#735): the tickets pack reads JIRA as well as Redmine, with nothing
     CERN-specific. archi.downloaders.tickets reads Redmine, any JIRA Server/Data Center over the REST v2 search API
-    (paged by startAt until total; base URL and project or JQL configurable; JIRA_API_TOKEN as a bearer header; a
-    missing token refused before any request; https only), or both into one cache. JIRA records carry system: jira,
-    ids tracker_ticket:jira:<KEY>, display names only, and the same email redaction the Redmine path gets. Redmine
-    stays the default. Targeted run 386 passed, 25 skipped; full suite 3478 passed, 27 skipped, 0 failed. The
-    pack-isolation install tests were skipped (no ARCHI_PACK_ISOLATION_DSN). A live JIRA server was NOT exercised:
-    only recorded fixtures (jira.example.org, invented people) over a fake session.'
+    (paged by startAt in key order, to total or, without a usable total, to an empty page; base URL and project or JQL
+    configurable; JIRA_API_TOKEN as a bearer header; a missing token refused before any request; https only), or both
+    into one cache, one record per key. JIRA records carry system: jira and ids tracker_ticket:jira:<KEY>; people are
+    display names, [~login] mentions become [~user], restricted comments are skipped by default, and email addresses
+    in text are removed at read time as on the Redmine path. Redmine stays the default. Targeted run 403 passed,
+    25 skipped. Full suite 3494 passed, 27 skipped, 1 failed: test_anonymizer.py::test_redact_email_addresses_quoted_local_part_is_linear,
+    a 1.0 s timing bound, at load average 30; it and its git_scan sibling fail the same way on unmodified archi_v3
+    a7575a81 on the same host at the same load, so it is load, not this change. at is the host clock right after
+    these runs. A live JIRA server was NOT exercised: only recorded fixtures (jira.example.org, invented people) over
+    a fake session.'
+- kind: executed_test
+  requirement: req.r3-bundle-cluster-manager.bundle
+  status: pass
+  command: ARCHI_PACK_ISOLATION_DSN=postgresql://postgres:...@127.0.0.1:5893/packtest python -m pytest python/tests/packs/test_pack_isolation.py
+    -q -p no:cacheprovider -rA (submit75, through heavy.sh; a fresh ghcr.io/mitdbg/akmon-postgres:v0.2.0 container
+    of this run's own)
+  head: fefc89acf4506bb554897e9575d38870d4d32eaa
+  at: '2026-10-27T03:43:48+00:00'
+  note: 'acc.r3-bundle-cluster-manager.install, the install-and-publish half: 26 passed in 23 min, none skipped. Every
+    context pack, tickets included, installs alone and publishes; the cluster-manager bundle installs and publishes
+    with its defaults and with every optional pack; cern-team and cms-comp-ops do too. The tickets pack is fed its
+    Redmine fixture here; its JIRA path is covered by the unit run above, not by this install. The lab smoke run is
+    evidenced in r3-bundle-evals, not here.'
 decisions:
 - digest: sha256:dbb8ebfb2193d286b28caed1fcc4210146382dfe069b186cd3204e080a2468e1
   reviewer: Jason Mohoney
