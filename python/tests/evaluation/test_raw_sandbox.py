@@ -1,0 +1,207 @@
+"""acc.r3-context-quality.raw-arm-safety: the agent-bash arm's sandbox, with real bubblewrap.
+
+Each test runs real commands under `bwrap` and is skipped, with the reason, on a host that
+has none (macOS, most CI images). The refusal without bwrap runs everywhere.
+"""
+import os
+import re
+import shutil
+import socket
+import threading
+import time
+
+import pytest
+
+from archi.evaluation import raw_arm
+from archi.evaluation.raw_arm import BashSandbox, SandboxError
+
+needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None,
+                                 reason="bubblewrap (bwrap) is not installed on this host")
+SECRET = "sk-sandbox-test-0000"
+
+
+@pytest.fixture
+def corpus(tmp_path):
+    root = tmp_path / "records"
+    (root / "jira").mkdir(parents=True)
+    (root / "jira" / "DEMO-1.json").write_text('{"key": "DEMO-1"}\n')
+    return root
+
+
+def sandbox(corpus, **kwargs):
+    try:
+        return BashSandbox(corpus, **kwargs)
+    except SandboxError as exc:  # pragma: no cover - a host where bwrap exists but cannot start
+        pytest.skip(str(exc))
+
+
+def test_without_bwrap_the_bash_arm_refuses_to_run(corpus, monkeypatch):
+    monkeypatch.setattr(raw_arm.shutil, "which", lambda name: None)
+    with pytest.raises(SandboxError, match="bubblewrap \\(bwrap\\) is not installed"):
+        BashSandbox(corpus)
+
+
+@needs_bwrap
+def test_the_corpus_is_read_at_slash_corpus(corpus):
+    result = sandbox(corpus).run("pwd; cat /corpus/jira/DEMO-1.json")
+    assert result.ok, result.text
+    assert result.text.splitlines()[0] == "/corpus" and '"DEMO-1"' in result.text
+
+
+@needs_bwrap
+def test_there_is_no_network(corpus):
+    # A server on the host's loopback: reachable from outside the sandbox, not from inside.
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    threading.Thread(target=lambda: server.accept(), daemon=True).start()
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            pass  # the host itself can connect
+        result = sandbox(corpus).run(
+            f"exec 3<>/dev/tcp/127.0.0.1/{port} && echo LOOPBACK-OPEN; "
+            "exec 4<>/dev/tcp/1.1.1.1/53 && echo INTERNET-OPEN; "
+            "cat /proc/net/dev")
+    finally:
+        server.close()
+    assert "LOOPBACK-OPEN" not in result.text and "INTERNET-OPEN" not in result.text
+    interfaces = re.findall(r"^\s*([\w.-]+):\s+\d", result.text, re.M)  # /proc/net/dev's rows
+    assert interfaces == ["lo"], result.text
+
+
+@needs_bwrap
+def test_the_corpus_cannot_be_written(corpus):
+    before = (corpus / "jira" / "DEMO-1.json").read_text()
+    box = sandbox(corpus)
+    for command in ("echo x > /corpus/new.txt", "echo x >> /corpus/jira/DEMO-1.json", "rm /corpus/jira/DEMO-1.json",
+                    "mkdir /corpus/d", "touch /corpus/jira/DEMO-1.json"):
+        result = box.run(command)
+        assert not result.ok, command
+        assert "Read-only file system" in result.text or "Permission denied" in result.text, result.text
+    assert (corpus / "jira" / "DEMO-1.json").read_text() == before
+    assert sorted(p.name for p in corpus.rglob("*")) == ["DEMO-1.json", "jira"]
+
+
+@needs_bwrap
+def test_home_is_a_tmpfs_that_is_gone_after_the_command(corpus):
+    box = sandbox(corpus)
+    result = box.run('echo "$HOME"; stat -f -c %T "$HOME"; echo note > "$HOME/n.txt" && cat "$HOME/n.txt"')
+    assert result.ok, result.text
+    home, fstype, note = result.text.splitlines()[:3]
+    assert home == raw_arm.SANDBOX_HOME and fstype == "tmpfs" and note == "note"
+    again = box.run('ls -A "$HOME"')
+    assert again.ok and again.text.strip() == ""  # each command gets a fresh HOME
+
+
+@needs_bwrap
+def test_no_key_or_its_file_is_visible_inside(corpus, tmp_path, monkeypatch):
+    key_file = tmp_path / "model.key"
+    key_file.write_text(SECRET + "\n")
+    monkeypatch.setenv("ARCHI_EVAL_MODEL_KEY_FILE", str(key_file))
+    monkeypatch.setenv("ARCHI_EVAL_JUDGE_KEY_FILE", str(key_file))
+    monkeypatch.setenv("OPENAI_API_KEY", SECRET)
+    monkeypatch.setenv("OKG_CHAT_MCP_TOKEN", SECRET)
+    box = sandbox(corpus)
+    result = box.run(f"env; cat {key_file}; ls {tmp_path}")
+    env_lines = [line for line in result.text.splitlines() if "=" in line]
+    names = {line.split("=", 1)[0] for line in env_lines}
+    assert SECRET not in result.text and not any(str(key_file) in line for line in env_lines)
+    assert names <= {"PATH", "HOME", "TMPDIR", "LANG", "PWD", "SHLVL", "_", "OLDPWD"}, names
+    assert "No such file or directory" in result.text
+    assert not any(SECRET in arg for arg in box.argv("true"))
+
+
+@needs_bwrap
+def test_a_command_is_stopped_at_its_time_limit(corpus):
+    box = sandbox(corpus, command_seconds=1)
+    started = time.monotonic()
+    result = box.run("sleep 30; echo late")
+    assert time.monotonic() - started < 10
+    assert result.timed_out and not result.ok and "late" not in result.text
+    assert "stopped after 1 seconds" in result.text
+
+
+@needs_bwrap
+def test_output_past_the_limit_is_cut_and_the_command_stopped(corpus):
+    box = sandbox(corpus, output_bytes=1024)
+    started = time.monotonic()
+    result = box.run("yes corpus-line")  # never ends by itself
+    assert time.monotonic() - started < 10
+    assert result.cut and not result.ok
+    body, note = result.text.rsplit("\n", 1)
+    assert len(body.encode()) <= 1024 and note == "[output cut at 1024 bytes; the command was stopped]"
+
+
+@needs_bwrap
+def test_a_failing_command_is_not_a_successful_response(corpus):
+    result = sandbox(corpus).run("grep -r NOTHING-MATCHES /corpus")
+    assert result.exit_code == 1 and not result.ok and "[exit code 1]" in result.text
+
+
+@needs_bwrap
+def test_the_bash_tool_reports_failure_to_the_loop(corpus):
+    import asyncio
+
+    tools = raw_arm.BashTools(sandbox(corpus))
+    text, is_error = asyncio.run(tools.call("bash", {"command": "ls /corpus"}))
+    assert not is_error and text.strip() == "jira"
+    text, is_error = asyncio.run(tools.call("bash", {}))
+    assert is_error and "command" in text
+
+
+@needs_bwrap
+def test_the_host_environment_is_not_inherited_even_without_clearenv(corpus, monkeypatch):
+    """Belt and braces: the subprocess itself starts with an empty environment."""
+    seen = {}
+    real = raw_arm.subprocess.Popen
+
+    def spy(argv, **kwargs):
+        seen.update(kwargs)
+        return real(argv, **kwargs)
+
+    monkeypatch.setattr(raw_arm.subprocess, "Popen", spy)
+    sandbox(corpus).run("true")
+    assert seen["env"] == {} and seen["start_new_session"] is True
+    assert os.environ  # the test process still has its own
+
+
+@needs_bwrap
+def test_both_agent_arms_run_on_one_scorer_with_the_bash_arm_in_the_sandbox(tmp_path):
+    """agent-bash greps the corpus, agent-graph searches the fake MCP; one scripted model."""
+    import asyncio
+
+    from archi.evaluation.agent import ChatReply, ToolCall
+    from archi.evaluation.context import parse_context
+    from archi.evaluation.raw_arm import (AGENT_BASH, AGENT_GRAPH, AgentPlan, Caps, Ledger, Metered, Price,
+                                         resolve_gold, run_agent_arms)
+    from archi.evaluation.raw_corpus import verify_corpus
+    from evaluation.raw_support import FakeMcp, ScriptedModel, search_rows, write_corpus
+
+    corpus = verify_corpus(write_corpus(tmp_path))
+    manifest = corpus.manifest_paths()
+    cset = parse_context({"bundle": "demo", "questions": [
+        {"id": "q1", "question": "Why do transfers fail?", "gold": ["jira:DEMO-1"]}]})
+    tools = FakeMcp({"Why do transfers fail?": search_rows("jira:DEMO-1")})
+
+    class Model(ScriptedModel):
+        def complete(self, messages, tool_schema):
+            self.calls += 1
+            if messages[-1]["role"] != "user":
+                return ChatReply("Stuck transfers.", (), 10, 5)
+            if any(t["function"]["name"] == "bash" for t in tool_schema):
+                return ChatReply("", (ToolCall("b1", "bash", {"command": "grep -rl 'Transfer failures' /corpus"}),),
+                                 10, 5)
+            return ChatReply("", (ToolCall("s1", "search", {"query": "Why do transfers fail?"}),), 10, 5)
+
+    ledger = Ledger(tmp_path / "ledger.jsonl", 1.0)
+    model = Metered(Model(None), Price(1.0, 10.0), ledger, 100)
+    plan = AgentPlan((AGENT_BASH, AGENT_GRAPH), model, Caps(), 1, corpus, sandbox=BashSandbox(corpus.records))
+    gold = asyncio.run(resolve_gold(tools, cset.scored, corpus.keys(), manifest))
+    data = asyncio.run(run_agent_arms(cset.scored, plan, tools, gold, manifest=manifest)).to_dict()
+    tries = {arm: ts[0] for arm, ts in data["questions"][0]["arms"].items()}
+    assert tries[AGENT_BASH]["calls"][0]["ok"] and tries[AGENT_BASH]["evidence"]["found"] == ["jira:DEMO-1"]
+    assert tries[AGENT_GRAPH]["evidence"]["found"] == ["jira:DEMO-1"]
+    assert data["arms"][AGENT_BASH]["evidence_recall"] == data["arms"][AGENT_GRAPH]["evidence_recall"] == 1.0
+    assert data["sandbox"]["bwrap"] and set(data["sandbox"]["tools"]) | set(data["sandbox"]["missing_tools"]) == {
+        "rg", "jq", "python3"}

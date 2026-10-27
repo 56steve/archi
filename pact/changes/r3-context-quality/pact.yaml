@@ -13,6 +13,9 @@ affected_code:
 - python/archi/bundles/
 - python/archi/ops/
 - python/archi/evaluation/
+- python/archi/snapshot/groups.py
+- python/tests/snapshot/test_snapshot_builder.py
+- docs/cache-snapshot.md
 - python/archi/enrichment/
 - python/archi/cli/evaluate.py
 - python/archi/health/signals.py
@@ -53,7 +56,15 @@ requirements:
     Acceptance:
 
     - acc.r3-context-quality.run: context eval on the comp-ops instance produces a report
-    with the baseline arm. [evidence: executed_test]'
+    with the baseline arm. [evidence: executed_test]
+
+    - acc.r3-context-quality.raw-arm: a bash agent over the files the graph was built from,
+    scored on gold-evidence recall next to a graph-tool agent on the same model, caps and scorer,
+    with a spend ledger and a cap. [evidence: executed_test]
+
+    - acc.r3-context-quality.raw-arm-safety: fixture tests show the sandbox has no network, cannot
+    write to the corpus and holds no credential; the arm refuses to start without a cap, a corpus
+    digest and a resolved gold map. [evidence: pytest]'
 - id: req.r3-context-quality.gate
   statement: 'A context gate (sources, max staleness, minimum context-eval score, required
     invariants) can be evaluated against the current generation and returns pass, or fail
@@ -101,7 +112,60 @@ tasks:
     both arms executed, the generation read, the question file''s hash and count; runs kept under
     <data root>/eval/context/<bundle>/<UTC stamp>/ and written atomically. The baseline is the server''s
     lexical index over chunks and attributes, not the raw documents; whether the requirement''s
-    "raw-document baseline" wording stands is a decision for Jason (board d398).'
+    "raw-document baseline" wording stands is a decision for Jason (board d398).
+
+
+    Jason, board d398 (2026-10-27): keep the wording and build the raw-document arm before 3.0, as
+    an agent with bash over the files the graph was built from. Tasks raw-corpus, raw-arm-harness
+    and raw-arm-scoring build it.'
+- id: task.r3-context-quality.raw-corpus
+  requirement: req.r3-context-quality.context-eval
+  verification: 'archi eval --raw-corpus: the instance''s enabled sources whose connector cache an
+    archi.snapshot group reads are packed with archi.snapshot (each checked with its reader, email
+    addresses removed) and unpacked one file per record to <data root>/eval/raw-corpus/<bundle>/<lock
+    sha>/ with README.md, MANIFEST.txt (path, sha256), keys.json (source and natural key -> path) and
+    corpus.json; every other source is left out with its reason. ops-record has no cache and an MCP
+    export could not be shown complete, so it is left out of both agent arms. The corpus digest is the
+    sha256 of MANIFEST.txt and goes in the report.
+
+
+    Test plan:
+
+    - python/tests/evaluation/test_raw_corpus.py [evidence: pytest]
+
+    - python/tests/snapshot/test_snapshot_builder.py (the five cluster-manager groups) [evidence: pytest]'
+- id: task.r3-context-quality.raw-arm-harness
+  requirement: req.r3-context-quality.context-eval
+  verification: 'archi eval --context --agents: agent-bash (one bash tool in bubblewrap: no network,
+    corpus read-only at /corpus, tmpfs HOME, empty environment, 120 s and 64 KiB per command) and
+    agent-graph (the instance''s MCP tools), one OpenAI-compatible model, one prompt but for the
+    paragraph on where knowledge lives, caps of 30 turns, 200 tool calls and 900 s per try, k tries.
+    Every model call is written to <data root>/eval/context/<bundle>/<stamp>/ledger.jsonl; the run
+    refuses to start without a cap, a price, bwrap (for agent-bash) or a corpus that matches its
+    digest, and stops before a call that could cross the cap.
+
+
+    Test plan:
+
+    - python/tests/evaluation/test_raw_sandbox.py [evidence: pytest]
+
+    - python/tests/evaluation/test_raw_arm.py [evidence: pytest]
+
+    - comp-ops run [evidence: executed_test]'
+- id: task.r3-context-quality.raw-arm-scoring
+  requirement: req.r3-context-quality.context-eval
+  verification: 'Gold ids resolved to corpus files through MCP inspect (source and node id against
+    keys.json) or a question''s gold_sources; an id that does not resolve refuses the run by name and
+    is never a 0; a gold record from a source left out of the corpus is unavailable in both arms.
+    Evidence recall per try from successful tool responses only (never tool inputs or the answer),
+    MRR from the first gold record among the records read, the same scorer for both arms; an answer
+    judge behind --judge (off by default) that runs only where answer keys exist, else the report says
+    "no answer keys". python -m archi.evaluation.gold_check samples 20 gold ids at two generations.
+
+
+    Test plan:
+
+    - python/tests/evaluation/test_raw_arm.py [evidence: pytest]'
 - id: task.r3-context-quality.gate
   requirement: req.r3-context-quality.gate
   verification: 'Context gate evaluator.

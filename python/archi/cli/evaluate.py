@@ -16,6 +16,14 @@ to `<data root>/eval/context/<bundle>/<UTC stamp>/`, where the context gate
 reads the newest. Exit codes as above; 1 means the graph arm fell below the
 file's `min_recall`; 2 also when any graph-arm search call failed.
 
+`archi eval --context --agents` adds the raw-document baseline (`archi.evaluation.raw_arm`):
+a bash agent over the raw corpus in a bubblewrap sandbox, and an agent with the MCP tools,
+on one model with one set of caps, scored on gold-evidence recall and MRR, with an optional
+answer judge (`--judge`). Every model call goes to `ledger.jsonl` in the run's directory;
+the run refuses to start without `--cap` and a price, and stops at the cap (exit 3).
+`archi eval --raw-corpus` builds the corpus from the instance's caches
+(`archi.evaluation.raw_corpus`).
+
 This module only builds the parser. The harness (`archi.evaluation`, and the
 MCP client it loads) is imported when the command runs, so every other
 `archi` command stays as fast as before.
@@ -32,6 +40,12 @@ TOKEN_VAR = "OKG_CHAT_MCP_TOKEN"
 #: The context question set's path. An instance's operator questions are private and never
 #: committed here, so the set is named at run time.
 QUESTIONS_VAR = "ARCHI_CONTEXT_EVAL_QUESTIONS"
+MODEL_KEY_VAR = "ARCHI_EVAL_MODEL_KEY_FILE"
+JUDGE_KEY_VAR = "ARCHI_EVAL_JUDGE_KEY_FILE"
+DEFAULT_JUDGE_URL = "https://api.openai.com/v1"
+AGENT_ARM_NAMES = ("agent-bash", "agent-graph")
+#: exit code of a run whose agent arms stopped at the spend cap
+EXIT_SPEND_CAP = 3
 EVAL_HELP = ("ask a bundle's smoke questions through the instance MCP with a local model, "
              "or score retrieval alone with --context")
 
@@ -74,6 +88,43 @@ def add_parser(sub, roots) -> None:
                    help=f"with --context: the question file, kept outside this repository (default: "
                         f"${QUESTIONS_VAR}, else the bundle's eval/context.yaml)")
     p.add_argument("--k", type=int, help="with --context: the recall cut-off (default: the file's k, else 10)")
+    a = p.add_argument_group(
+        "agent arms (with --context)",
+        "The raw-document baseline: agent-bash (bash over the raw corpus, in a bubblewrap sandbox with no "
+        "network) and agent-graph (the instance's MCP tools), one model, one set of caps, one scorer. These "
+        "calls may cost money: every one is written to the run's ledger.jsonl and the run stops at --cap.")
+    a.add_argument("--agents", nargs="?", const=",".join(AGENT_ARM_NAMES), metavar="ARMS",
+                   help=f"also run the agent arms (default both: {','.join(AGENT_ARM_NAMES)})")
+    a.add_argument("--tries", type=int, default=1, help="tries per question and arm (default 1)")
+    a.add_argument("--corpus", type=Path,
+                   help="the raw corpus (default: the newest under <data root>/eval/raw-corpus/<bundle>/)")
+    a.add_argument("--reasoning-effort", help="reasoning_effort sent with each agent call (for example medium)")
+    a.add_argument("--model-key-env", default=MODEL_KEY_VAR,
+                   help=f"environment variable holding the PATH of a file with the model API key "
+                        f"(default {MODEL_KEY_VAR}); the key is never logged and never enters the sandbox")
+    a.add_argument("--model-price", metavar="IN/OUT[/CACHED]",
+                   help="the model's price in dollars per million input/output[/cached input] tokens (required)")
+    a.add_argument("--max-output-tokens", type=int, default=16000,
+                   help="max_completion_tokens per agent call, also the spend guard's output bound (default 16000)")
+    a.add_argument("--max-turns", type=int, default=30, help="model turns per try (default 30)")
+    a.add_argument("--max-tool-calls", type=int, default=200, help="tool calls per try (default 200)")
+    a.add_argument("--try-seconds", type=float, default=900.0, help="wall time per try (default 900)")
+    a.add_argument("--cap", type=float, default=10.0,
+                   help="spend cap in dollars for the run, judge included (default 10); the run stops before a "
+                        "call that could cross it")
+    a.add_argument("--judge", action="store_true",
+                   help="grade answers against the question file's answer keys with a judge model (off by default)")
+    a.add_argument("--judge-model", help="the judge model")
+    a.add_argument("--judge-url", default=DEFAULT_JUDGE_URL,
+                   help=f"the judge's OpenAI-compatible base URL (default {DEFAULT_JUDGE_URL})")
+    a.add_argument("--judge-reasoning-effort", default="xhigh", help="reasoning_effort for the judge (default xhigh)")
+    a.add_argument("--judge-key-env", default=JUDGE_KEY_VAR,
+                   help=f"environment variable holding the PATH of a file with the judge API key (default {JUDGE_KEY_VAR})")
+    a.add_argument("--judge-price", metavar="IN/OUT[/CACHED]", help="the judge's price, as --model-price")
+    a.add_argument("--judge-passes", type=int, choices=(1, 2), default=1, help="judge passes per answer (default 1)")
+    p.add_argument("--raw-corpus", action="store_true",
+                   help="build the raw-document corpus from the instance's connector caches, under "
+                        "<data root>/eval/raw-corpus/<bundle>/<lock sha>/, and exit")
     roots(p)
     p.set_defaults(func=cmd_eval)
 
@@ -116,8 +167,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
         except InstanceError as exc:
             if not token:
                 return _fail(str(exc))
+    if args.raw_corpus:
+        return _raw_corpus(args, instance, bundles)
     if args.context:
         return _context(args, instance, bundles, mcp_url, token, report_root)
+    if args.agents is not None:
+        return _fail("--agents runs with --context")
     if not bundles:
         return _fail("name a bundle with --bundle")
     if not token:
@@ -272,6 +327,10 @@ def _context(args: argparse.Namespace, instance, bundles: list, mcp_url: str, to
     for cset in sets:
         if args.k is not None:
             cset = dataclasses.replace(cset, k=args.k)
+        if args.agents is not None:
+            code = _context_with_agents(args, instance, cset, mcp_url, token, report_root)
+            worst = max(worst, code)
+            continue
 
         def progress(result, i: int, total: int) -> None:
             cells = " ".join(f"{name}={'error' if r.error else f'{len(r.found)}/{len(result.gold)}'}"
@@ -304,3 +363,195 @@ def _context(args: argparse.Namespace, instance, bundles: list, mcp_url: str, to
                   "reads it", file=sys.stderr)
         worst = max(worst, report.exit_code)
     return worst
+
+
+def _raw_corpus(args: argparse.Namespace, instance, bundles: list) -> int:
+    """`archi eval --raw-corpus`: pack the instance's caches into the agent-bash arm's corpus."""
+    from archi.bundles.lock import deployment_answers
+    from archi.evaluation.raw_corpus import CorpusError, build_corpus, corpus_root, plan_sources, read_registry
+
+    if instance is None:
+        return _fail("--raw-corpus reads an instance's caches; run it with --instance, not --mcp-url")
+    names = list(args.bundle) or list(instance.bundles)
+    if len(names) != 1:
+        return _fail(f"name the bundle the corpus is for with --bundle (the instance has {', '.join(names) or 'none'})")
+    bundle = names[0]
+    if bundle not in instance.bundles:
+        return _fail(f"bundle {bundle!r} is not a bundle of this instance ({', '.join(instance.bundles)})")
+    try:
+        registry = read_registry(instance.deployment_dir)
+        try:
+            answers = deployment_answers(instance.deployment_dir)
+        except Exception:  # noqa: BLE001 - no recorded answers: only ${archi_data_root} is filled in
+            answers = {}
+        plan = plan_sources(registry, data_root=instance.data_root, answers=answers,
+                            deployment_dir=instance.deployment_dir)
+        print(f"archi eval --raw-corpus: {bundle}: packing {', '.join(p.source for p in plan.included) or 'nothing'}")
+        corpus = build_corpus(plan, bundle=bundle, out_root=corpus_root(instance.data_root, bundle))
+    except CorpusError as exc:
+        return _fail(str(exc))
+    print(f"corpus {corpus.path}")
+    print(f"digest {corpus.digest}; {sum(s['files'] for s in corpus.sources.values())} record files from "
+          f"{', '.join(corpus.sources)}")
+    for name, reason in corpus.left_out.items():
+        print(f"left out: {name}: {reason}")
+    return 0
+
+
+def _context_with_agents(args: argparse.Namespace, instance, cset, mcp_url: str, token: str, report_root: Path) -> int:
+    """One context run with the agent arms beside the no-model ones (PACT r3-context-quality)."""
+    import asyncio
+    import shutil
+    import time
+
+    from archi.evaluation import agent as agent_mod
+    from archi.evaluation import raw_arm
+    from archi.evaluation.context import publish_run, run_context, write_report
+    from archi.evaluation.raw_corpus import CorpusError, newest_corpus, verify_corpus
+    from archi.ops.context_gate import context_eval_dir
+
+    arms = tuple(dict.fromkeys(a.strip() for a in args.agents.split(",") if a.strip()))
+    unknown = sorted(set(arms) - set(AGENT_ARM_NAMES))
+    if not arms or unknown:
+        return _fail(f"--agents takes {', '.join(AGENT_ARM_NAMES)} (got {args.agents!r})")
+    if not args.model:
+        return _fail("the agent arms need --model (and --model-url for an endpoint other than a local Ollama)")
+    if args.tries < 1 or args.max_turns < 1 or args.max_tool_calls < 1 or args.try_seconds <= 0 \
+            or args.max_output_tokens < 1:
+        return _fail("--tries, --max-turns, --max-tool-calls, --try-seconds and --max-output-tokens must be positive")
+    try:
+        if not args.model_price:
+            raise raw_arm.SpendError("the agent arms need --model-price IN/OUT[/CACHED] to keep the spend ledger")
+        price = raw_arm.Price.parse(args.model_price)
+        if not args.cap or args.cap <= 0:
+            raise raw_arm.SpendError(f"the agent arms refuse to start without a spend cap (--cap {args.cap!r})")
+        urls = [args.model_url] + ([args.judge_url] if args.judge else [])
+        if not args.allow_remote_model:
+            for url in urls:
+                agent_mod.require_local(url)
+        key = raw_arm.read_key_file(args.model_key_env)
+        if key is None and not _is_local(agent_mod, args.model_url):
+            raise raw_arm.SpendError(f"no API key for {args.model_url}: set ${args.model_key_env} to the path of a "
+                                     "file holding it")
+        corpus_dir = args.corpus
+        if corpus_dir is None:
+            if instance is None:
+                raise CorpusError("name the raw corpus with --corpus (there is no instance data root to look in)")
+            corpus_dir = newest_corpus(instance.data_root, cset.bundle)
+        corpus = verify_corpus(corpus_dir, bundle=cset.bundle)
+        caps = raw_arm.Caps(max_turns=args.max_turns, max_tool_calls=args.max_tool_calls, try_seconds=args.try_seconds)
+        sandbox = (raw_arm.BashSandbox(corpus.records, command_seconds=caps.command_seconds,
+                                       output_bytes=caps.output_bytes)
+                   if raw_arm.AGENT_BASH in arms else None)
+    except (raw_arm.SpendError, raw_arm.SandboxError, CorpusError, agent_mod.ModelError) as exc:
+        return _fail(str(exc))
+
+    keyed = [q for q in cset.scored if q.answer]
+    judge_model = None
+    if args.judge and keyed:
+        try:
+            if not args.judge_model or not args.judge_price:
+                raise raw_arm.SpendError("--judge needs --judge-model and --judge-price")
+            judge_price = raw_arm.Price.parse(args.judge_price)
+            judge_key = raw_arm.read_key_file(args.judge_key_env)
+            if judge_key is None and not _is_local(agent_mod, args.judge_url):
+                raise raw_arm.SpendError(f"no API key for the judge: set ${args.judge_key_env} to the path of a "
+                                         "file holding it")
+        except raw_arm.SpendError as exc:
+            return _fail(str(exc))
+        judge_model = (agent_mod.OpenAIChat(args.judge_url, args.judge_model, api_key=judge_key or "none",
+                                            temperature=None, reasoning_effort=args.judge_reasoning_effort),
+                       judge_price)
+    elif args.judge:
+        print("note: --judge: the question file has no answer keys, so nothing is judged (the report says "
+              f"\"{raw_arm.NO_ANSWER_KEYS}\")", file=sys.stderr)
+
+    # The ledger is written while the run goes, in a hidden directory beside the runs, and moved into the
+    # run's own directory with the reports (with --out, straight into it).
+    if args.out:
+        out_dir = args.out
+        work = None
+        ledger_path = out_dir / raw_arm.LEDGER
+    else:
+        base = (context_eval_dir(instance.data_root, cset.bundle) if instance is not None
+                else report_root / "context" / cset.bundle)
+        work = base / f".agents-{os.getpid()}-{int(time.time())}"
+        ledger_path = work / raw_arm.LEDGER
+    try:
+        ledger = raw_arm.Ledger(ledger_path, args.cap)
+    except raw_arm.SpendError as exc:
+        return _fail(str(exc))
+    model = agent_mod.OpenAIChat(args.model_url, args.model, api_key=key or "ollama",
+                                 temperature=None if args.reasoning_effort else 0.0,
+                                 reasoning_effort=args.reasoning_effort,
+                                 max_completion_tokens=args.max_output_tokens)
+    metered = raw_arm.Metered(model, price, ledger, args.max_output_tokens)
+    judge = None
+    if judge_model is not None:
+        judge = raw_arm.Judge(raw_arm.Metered(judge_model[0], judge_model[1], ledger, args.max_output_tokens),
+                              passes=args.judge_passes)
+    plan = raw_arm.AgentPlan(arms, metered, caps, args.tries, corpus, sandbox, judge, judge_requested=args.judge,
+                             reasoning_effort=args.reasoning_effort, model_url=args.model_url)
+    manifest = corpus.manifest_paths()
+
+    def progress(result, i: int, total: int) -> None:
+        ev = result.evidence
+        recall = "unscored" if ev is None or ev.recall is None else f"{len(ev.found)}/{ev.available}"
+        print(f"[{i}/{total}] {result.arm} {result.question} try {result.attempt}: {result.status} {recall} "
+              f"{result.tool_calls} calls ${result.cost:.4f}", flush=True)
+
+    def context_progress(result, i: int, total: int) -> None:
+        print(f"[{i}/{total}] {result.id}: " + " ".join(
+            f"{n}={'error' if r.error else f'{len(r.found)}/{len(result.gold)}'}" for n, r in result.arms.items()),
+              flush=True)
+
+    async def go():
+        async with agent_mod.McpToolBox(mcp_url, token) as tools:
+            gold = await raw_arm.resolve_gold(tools, cset.scored, corpus.keys(), manifest)
+        report = await run_context(cset, lambda: agent_mod.McpToolBox(mcp_url, token), mcp_url=mcp_url,
+                                   progress=context_progress)
+        async with agent_mod.McpToolBox(mcp_url, token) as tools:
+            agents = await raw_arm.run_agent_arms(cset.scored, plan, tools, gold, manifest=manifest, progress=progress)
+        report.agents = agents.to_dict()
+        return report, agents
+
+    print(f"archi eval --context --agents: {cset.bundle}, {len(cset.scored)} scored questions, arms "
+          f"{', '.join(arms)}, model {args.model}, {args.tries} tries, cap ${args.cap:.2f}, corpus {corpus.digest}")
+    try:
+        report, agents = asyncio.run(go())
+    except (raw_arm.GoldError, agent_mod.ToolError) as exc:
+        # Refused before any model call: leave nothing behind (a ledger with rows is kept).
+        if work is not None and not ledger.calls:
+            shutil.rmtree(work, ignore_errors=True)
+        elif not ledger.calls:
+            ledger_path.unlink(missing_ok=True)
+        if isinstance(exc, agent_mod.ToolError):
+            return _fail(f"MCP endpoint not usable: {exc}")
+        return _fail(str(exc))
+    if work is None:
+        md, js = write_report(report, out_dir)
+    else:
+        md, js = publish_run(report, base, carry={raw_arm.LEDGER: ledger_path})
+        shutil.rmtree(work, ignore_errors=True)
+    data = report.to_dict()
+    print(f"{report.status}: recall@{cset.k} " + ", ".join(f"{n} {s['recall_at_k']:.3f}" for n, s in data["arms"].items()))
+    for name, s in data["agent_arms"]["arms"].items():
+        print(f"{name}: evidence recall {s['evidence_recall']}, MRR {s['mrr']}, answer {s['answer_score']}, "
+              f"${s['cost_usd']:.4f} over {s['tries']} tries, {s['failures']} errors, {s['capped']} capped")
+    print(f"spent ${ledger.spent:.4f} of ${ledger.cap:.2f}; {md} and {js}")
+    if report.error:
+        print(f"error: {report.error}", file=sys.stderr)
+    code = report.exit_code
+    if agents.stopped:
+        print(f"error: the agent arms stopped at the spend cap: {agents.stopped}; the report holds what completed",
+              file=sys.stderr)
+        code = max(code, EXIT_SPEND_CAP)
+    return code
+
+
+def _is_local(agent_mod, url: str) -> bool:
+    try:
+        agent_mod.require_local(url)
+    except agent_mod.ModelError:
+        return False
+    return True

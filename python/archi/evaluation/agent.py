@@ -64,6 +64,10 @@ class ChatReply:
     tool_calls: tuple[ToolCall, ...] = ()
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    #: input tokens the endpoint served from its prompt cache (OpenAI `prompt_tokens_details`)
+    cached_tokens: int = 0
+    #: completion tokens spent on reasoning (OpenAI `completion_tokens_details`); part of completion_tokens
+    reasoning_tokens: int = 0
 
 
 class ChatModel(Protocol):
@@ -144,14 +148,22 @@ def require_local(url: str) -> None:
 class OpenAIChat:
     """`POST {base_url}/chat/completions`, as Ollama and vLLM serve it."""
 
-    def __init__(self, base_url: str, model: str, *, api_key: str = "ollama", temperature: float = 0.0,
-                 timeout: float = 600.0, no_think: bool = False) -> None:
+    def __init__(self, base_url: str, model: str, *, api_key: str = "ollama", temperature: Optional[float] = 0.0,
+                 timeout: float = 600.0, no_think: bool = False, reasoning_effort: Optional[str] = None,
+                 max_completion_tokens: Optional[int] = None) -> None:
+        """`temperature=None` sends neither a temperature nor a seed (reasoning models refuse both);
+        `reasoning_effort` and `max_completion_tokens` are sent only when set."""
         self.base_url = base_url.rstrip("/")
         self.name = model
         self.api_key = api_key
         self.temperature = temperature
         self.timeout = timeout
         self.no_think = no_think
+        self.reasoning_effort = reasoning_effort
+        self.max_completion_tokens = max_completion_tokens
+
+    def __repr__(self) -> str:  # never show the key
+        return f"OpenAIChat({self.base_url!r}, {self.name!r})"
 
     def complete(self, messages: list[dict], tools: list[dict]) -> ChatReply:
         import requests
@@ -159,14 +171,19 @@ class OpenAIChat:
         body: dict[str, Any] = {
             "model": self.name,
             "messages": messages,
-            "temperature": self.temperature,
-            "seed": 0,
             "stream": False,
         }
+        if self.temperature is not None:
+            body["temperature"] = self.temperature
+            body["seed"] = 0
         if tools:
             body["tools"] = tools
         if self.no_think:
             body["reasoning_effort"] = "none"
+        elif self.reasoning_effort:
+            body["reasoning_effort"] = self.reasoning_effort
+        if self.max_completion_tokens:
+            body["max_completion_tokens"] = self.max_completion_tokens
         try:
             response = requests.post(
                 f"{self.base_url}/chat/completions",
@@ -196,11 +213,16 @@ class OpenAIChat:
                     args = {"_unparsed": args}
             calls.append(ToolCall(str(raw.get("id") or f"call_{i}"), str(fn.get("name") or ""), args))
         usage = payload.get("usage") or {}
+        prompt_details = usage.get("prompt_tokens_details") or {}
+        completion_details = usage.get("completion_tokens_details") or {}
         return ChatReply(
             content=message.get("content") or "",
             tool_calls=tuple(calls),
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
             completion_tokens=int(usage.get("completion_tokens") or 0),
+            cached_tokens=int(prompt_details.get("cached_tokens") or 0) if isinstance(prompt_details, dict) else 0,
+            reasoning_tokens=(int(completion_details.get("reasoning_tokens") or 0)
+                              if isinstance(completion_details, dict) else 0),
         )
 
 

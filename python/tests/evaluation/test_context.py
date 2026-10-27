@@ -153,7 +153,7 @@ def base(**over):
     (base(min_recall=1.5), "`min_recall` must be"),
     (base(extra=1), "unknown keys"),
     (base(questions=[{"id": "a", "question": "q?", "gold": "x:1"}]), "gold must be a list"),
-    (base(questions=[{"id": "a", "question": "q?", "gold": ["x:1"], "answer": "y"}]), "unknown keys"),
+    (base(questions=[{"id": "a", "question": "q?", "gold": ["x:1"], "expected": "y"}]), "unknown keys"),
     (base(arms={"baseline": {"tool": "search", "arguments": {"query": "fixed"}}}), "may not set ['query']"),
     (base(arms={"baseline": {"tool": "search", "args": {}}}), "takes only `tool` and `arguments`"),
     (base(bundle="../etc"), "cannot be used in a path"),
