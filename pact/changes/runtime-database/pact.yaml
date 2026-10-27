@@ -33,5 +33,18 @@ tasks:
     python/tests/cli/test_runtime_bootstrap.py (unit) and
     python/tests/test_bundle_cluster_manager.py (okg's lint on a
     cluster-manager profile with instance-health, before and after) pass.
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.runtime-database.declared
+  status: pass
+  command: cd python && PYTHONPATH=. python -m pytest tests/cli/test_runtime_bootstrap.py
+    tests/test_bundle_cluster_manager.py tests/cli/test_init.py; python -m pytest tests (own git worktree on
+    a dev host, okg 0.2.0)
+  head: 0ba99a07d79e9e3344a722cf6fa17fc35bce30e7
+  at: '2026-10-27T16:22:40+00:00'
+  note: 'Run at aa218259, which adds only this manifest to 0ba99a07. 65 targeted passed, among them the okg
+    lint test: a cluster-manager profile with instance-health has the deployment.runtime.database_undeclared
+    blocker before declare_runtime_database and none after. Full suite 3615 passed, 28 skipped, 1 failed:
+    the anonymizer 1.0 s timing test, which fails the same way on archi_v3 on a loaded host. Not covered:
+    archi add of an automation pack, which does not turn the runtime on at all (separate gap).'
 decisions: []
