@@ -123,6 +123,25 @@ evidence:
     match-cache tests are ported with synthetic fixtures. The note floor is an init question enforced at
     preflight (default 1; cms-physics sets 2500 through the new bundle answers key). The mirror fetch
     needs CERN credentials and is documented in the pack README.'
+- kind: executed_test
+  requirement: req.r3-bundle-cms-physics.bundle
+  status: pass
+  command: python -m pytest tests/packs/test_pack_isolation.py -q -k "cms_physics or cern_team or
+    every_pack_with_sources" (from python/, submit76, okg 0.2.0 wheel, AKMON akmon-postgres:v0.2.0
+    via ARCHI_PACK_ISOLATION_DSN); smoke runs cited from r3-bundle-evals
+  head: 79c60bbbde118748c795b7cc636b339fbdcdb81d
+  at: '2026-10-27T02:46:37+00:00'
+  note: 'acc.r3-bundle-cms-physics.install, as reworded by board d380 Q7 (an install-and-publish test
+    plus a lab smoke run). 3 passed, 24 deselected. test_cms_physics_installs_from_packs_and_publishes
+    renders the cms-physics bundle (its five default packs over cern-team''s), installs it with okg into
+    a fresh database, ingests fixture inputs and publishes a generation; lint has no blockers and every
+    selected pack''s invariants are installed. The physics filter stays on (the bundle answer); two
+    inputs differ from a real instance: the TWiki root is the physics fixture dump, and the note floor
+    is lowered from 2500 to 1 for the fixture mirror, so the 2500 floor itself is not exercised here.
+    Lab smoke run: r3-bundle-evals, acc.r3-bundle-evals.sets row (head 5105bfdd), cms-physics 10/10
+    twice with GPT-6 Luna, accepted by Jason on board d366. Not proven: a bundle CI job, which does not
+    exist (d332 deferred the gate to #619); d380 Q7 replaced that wording, and whether this pair is
+    enough was board d379. Not proven either: a real-data install (that is req.instance).'
 decisions:
 - digest: sha256:aeb27fbe2530fdf747f9e5900cf0c676c7689a5538ff382f68d95fa948faa77e
   reviewer: Jason Mohoney

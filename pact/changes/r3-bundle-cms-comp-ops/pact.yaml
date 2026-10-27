@@ -60,7 +60,20 @@ tasks:
     Test plan:
 
     - parity run on the instance [evidence: executed_test]'
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.r3-bundle-cms-comp-ops.bundle
+  status: pass
+  command: python -m pytest tests/test_bundle_cern_team.py tests/test_bundle_cms_comp_ops.py -q (from
+    python/, submit76)
+  head: 79c60bbbde118748c795b7cc636b339fbdcdb81d
+  at: '2026-10-27T03:49:42+00:00'
+  note: 'task.r3-bundle-cms-comp-ops.playbooks only: 22 passed, 9 of them in test_bundle_cms_comp_ops.py.
+    The comp-ops playbooks render with their packs (rucio_command, rucio_dataset_hosting, site_profile
+    and incident_root_cause from cms-catalogs; monitoring_condor_snapshot from monit-live), each with its
+    library trigger; a playbook is absent when its pack is not selected; incident_root_cause is not in the
+    generic ops-record pack. The pack entries are symlinks to the files in top-level skills/, which stay
+    the single source. Not proven by this row: acc.r3-bundle-cms-comp-ops.install, .smoke or .parity.'
 decisions:
 - digest: sha256:0338685c79c09175409b872e92ae25f972abb6c926e523a74a3d30e3700ec88b
   reviewer: Jason Mohoney
