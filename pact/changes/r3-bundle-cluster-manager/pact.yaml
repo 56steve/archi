@@ -139,4 +139,20 @@ evidence:
     (squeue, sinfo, condor_q, condor_status) have timeouts and capped output. Node and job ids are validated by
     full match. requeue records its idempotency mark only after a confirmed requeue; resume touches only nodes
     archi drained unless force is set; a timed-out act reports unknown. No real Slurm or HTCondor command was run.'
+- kind: executed_test
+  requirement: req.r3-bundle-cluster-manager.bundle
+  status: pass
+  command: 'python -m pytest python/tests/downloaders python/tests/sources/test_tickets.py python/tests/test_bundle_cluster_manager.py
+    python/tests/packs python/tests/test_docs_generated.py -q; python -m pytest python/tests -q -p no:cacheprovider
+    (submit75, a clean clone, okg 0.2.0 wheel)'
+  head: 5cad61ff990c46d9f1235bd103d2db0103864fe4
+  at: '2026-10-27T02:28:03+00:00'
+  note: 'task.r3-bundle-cluster-manager.tickets (#735): the tickets pack reads JIRA as well as Redmine, with nothing
+    CERN-specific. archi.downloaders.tickets reads Redmine, any JIRA Server/Data Center over the REST v2 search API
+    (paged by startAt until total; base URL and project or JQL configurable; JIRA_API_TOKEN as a bearer header; a
+    missing token refused before any request; https only), or both into one cache. JIRA records carry system: jira,
+    ids tracker_ticket:jira:<KEY>, display names only, and the same email redaction the Redmine path gets. Redmine
+    stays the default. Targeted run 386 passed, 25 skipped; full suite 3478 passed, 27 skipped, 0 failed. The
+    pack-isolation install tests were skipped (no ARCHI_PACK_ISOLATION_DSN). A live JIRA server was NOT exercised:
+    only recorded fixtures (jira.example.org, invented people) over a fake session.'
 decisions: []
