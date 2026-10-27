@@ -63,4 +63,22 @@ evidence:
     explicit pack opt-in (evidence: own_signals). Full suite 2828 passed, 29 skipped, network off. Two
     independent reviews; findings fixed. Turning it on for cms-compops and SubMIT (task rollout) is not
     done and needs a go.'
+- kind: executed_test
+  requirement: req.r3-ops-self-monitoring.health
+  status: pass
+  command: python -m pytest python/tests/ops/test_health_signals.py python/tests/ops/test_health_runtime.py
+    python/tests/ops/test_health_forge.py python/tests/ops/test_health_tracker.py python/tests/test_docs_generated.py
+    -q; python -m pytest python/tests -q (submit76, clean clone of the head, okg 0.2.0 wheel, Python 3.12)
+  head: e13fd264dae3da35f24920a1c488b5ff3aebcbc2
+  at: '2026-10-27T01:39:34+00:00'
+  note: 'Eval trends are now read. The instance-health eval signal reads every report.json that archi eval wrote
+    under <data root>/eval/ (or eval.reports_dir) and raises one issue per bundle (eval/<bundle>) when the
+    latest run ended execution_failed (reported as a failed health signal, not a low score), passed fewer
+    questions than the bundle threshold, or scored more than eval.min_drop (default 0.1) below the mean of up
+    to three earlier runs of the same model. No report: the signal is still skipped and said so. Proven with
+    fixture report.json files built from archi.evaluation.runner.Report.to_dict (no eval runs): threshold,
+    drop, margin setting, execution_failed, baseline window, model and bundle separation, duplicate reports,
+    foreign and malformed reports, the data-root default, and a proposal from a real archi.yaml that validates
+    against the pack schema. Health tests 133 passed; full suite 3473 passed, 27 skipped. The context-eval
+    report (archi eval --context) is not read yet.'
 decisions: []
