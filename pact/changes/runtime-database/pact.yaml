@@ -1,0 +1,37 @@
+pact_version: 5
+id: runtime-database
+title: archi init declares the instance's database when the ops runtime is enabled
+tier: 1
+why: >-
+  An automation pack turns okg's runtime on. okg 0.2.0's lint then blocks the
+  deployment with deployment.runtime.database_undeclared until
+  postgres.database is declared, so the worker runs against a named database
+  rather than whatever OKG_DSN resolves to. okg install writes its own
+  postgres block, replacing any a profile carries, so no bundle can declare
+  it. Every instance that selects an automation pack (instance-health today,
+  ticket-triage later) was therefore lint-blocked. Found by the independent
+  review of the ticket-triage pack (#746), whose branch had made a test
+  expect the blocker instead of fixing it. Jason, 2026-10-27: fix the lint
+  blocker on its own and park ticket-triage.
+affected_code:
+- python/archi/cli/init.py
+- python/tests/cli/test_runtime_bootstrap.py
+- python/tests/test_bundle_cluster_manager.py
+requirements:
+- id: req.runtime-database.declared
+  statement: >-
+    When the rendered instance enables okg's runtime, archi init declares
+    postgres.database in deployment.yaml right after okg install, naming the
+    instance's own database (the one OKG_DSN names). It changes nothing when
+    the runtime is off, refuses rather than overwrites a different declared
+    database, and is idempotent. A profile with an automation pack then passes
+    okg's own lint with no blocker.
+tasks:
+- id: task.runtime-database.declare
+  requirement: req.runtime-database.declared
+  verification: >-
+    python/tests/cli/test_runtime_bootstrap.py (unit) and
+    python/tests/test_bundle_cluster_manager.py (okg's lint on a
+    cluster-manager profile with instance-health, before and after) pass.
+evidence: []
+decisions: []
