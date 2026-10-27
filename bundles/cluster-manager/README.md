@@ -7,7 +7,7 @@ on CERN.
 | Pack | Default | What it brings | Credential |
 |---|---|---|---|
 | `docsite` | yes | Documentation sites. The bundle points it at the Slurm and HTCondor manuals; replace `--docsite-urls` with your own site's pages. | none |
-| `tickets` | yes | Tracker tickets, Redmine first, from a cache. | optional `REDMINE_API_KEY` |
+| `tickets` | yes | Tracker tickets from Redmine, any JIRA, or both, from a cache. | optional `REDMINE_API_KEY`; `JIRA_API_TOKEN` for a JIRA, read only by the downloader |
 | `ops-record` | yes | Operational memory: incidents, proposals, decisions, actions, outcomes. | none |
 | `servicenow` | no | ServiceNow incidents, requests and KB articles, from a cache. | OAuth pair or basic-auth pair, read only by the downloader |
 | `slurm` | no | Slurm partitions, nodes, reservations and job summaries from an exported snapshot, plus live `squeue`/`sinfo` tools and the gated actions below. | none in archi |
@@ -26,12 +26,15 @@ okg install --profile cluster-manager --deployment-name <slug> \
 
 Each context pack reads a cache under `archi-data/data/<name>/` and the cache must exist
 before the first ingest: a missing cache blocks the publish rather than publishing less. `tickets`
-is a default but reads a Redmine you must point it at, so its URL (`--tickets-base-url`) is a required
-question with no placeholder default; with no tracker, leave it out with `--without tickets`. `docsite`
+is a default but reads a tracker you must point it at, so its URL (`--tickets-base-url`) is a required
+question with no placeholder default; for a JIRA, also answer `--tickets-system jira`. With no tracker,
+leave it out with `--without tickets`. `docsite`
 is the credential-free default that downloads public pages at init, so the bundle always has something to publish. The commands that write the caches, each run as the account the site gives it:
 
 ```bash
-python -m archi.downloaders.redmine --base-url https://redmine.example.org          # tickets
+python -m archi.downloaders.tickets --redmine-url https://redmine.example.org       # tickets, Redmine
+JIRA_API_TOKEN=... python -m archi.downloaders.tickets \
+  --jira-url https://jira.example.org --jira-project OPS                            # tickets, JIRA (or --jql)
 python -m archi.downloaders.servicenow --instance-url https://example.service-now.com --auth oauth
 python -m archi.downloaders.slurm --cluster <name>                                  # on a login node
 python -m archi.downloaders.htcondor --pool <name>                                  # on a submit node

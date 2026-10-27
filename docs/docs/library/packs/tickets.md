@@ -2,7 +2,7 @@
 
 # Pack: tickets
 
-Generic tracker tickets (Redmine first), read from the records cache the tickets downloader writes.
+Generic tracker tickets from Redmine, any JIRA, or both, read from the records cache the tickets downloader writes.
 
 | Field | Value |
 |---|---|
@@ -37,6 +37,7 @@ Add it to an instance with `archi add tickets`.
 The pack reads these environment variables. Only the names are listed; values stay in the instance's `.env`.
 
 - `REDMINE_API_KEY`
+- `JIRA_API_TOKEN`
 
 ## Freshness limits
 

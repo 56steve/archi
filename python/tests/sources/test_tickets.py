@@ -1,4 +1,4 @@
-"""task.r3-bundle-cluster-manager.tickets: the generic ticket reader over recorded Redmine issues, offline."""
+"""task.r3-bundle-cluster-manager.tickets: the generic ticket reader over recorded Redmine and JIRA issues, offline."""
 import json
 from collections import Counter
 
@@ -6,7 +6,7 @@ import pytest
 from okg.deployment import EdgeFact, NodeFact
 
 from archi.sources.tickets import TicketAdapter, TicketSource
-from packs.cluster_fixtures import write_tickets_cache
+from packs.cluster_fixtures import write_jira_tickets_cache, write_tickets_cache
 
 
 def _run(tmp_path, mode="scope_complete", **params):
@@ -120,3 +120,44 @@ def test_the_key_is_named_not_read_and_the_system_is_validated(tmp_path, monkeyp
     with pytest.raises(ValueError, match="system"):
         TicketSource(base=str(tmp_path), system="Red Mine")
     assert TicketAdapter.profile == "mutable_api"
+
+
+# --- JIRA (the tickets downloader's JIRA reader, over recorded search pages) -------
+
+def test_jira_issues_become_tickets_keyed_apart_from_redmine(tmp_path):
+    write_jira_tickets_cache(tmp_path)
+    run, facts = _run(tmp_path, system="jira", base_url="https://jira.example.org")
+    assert run.completed_scope is True and run.health.record_count == 3
+    tickets = _tickets(facts)
+    assert set(tickets) == {"tracker_ticket:jira:OPS-12", "tracker_ticket:jira:OPS-9", "tracker_ticket:jira:OPS-3"}
+    one = tickets["tracker_ticket:jira:OPS-12"].attrs
+    assert (one["ticket_id"], one["system"], one["label"]) == ("OPS-12", "jira", "jira#OPS-12")
+    assert (one["project"], one["tracker"], one["status"], one["priority"]) == (
+        "Cluster Operations", "Incident", "In Progress", "High")
+    assert one["url"] == "https://jira.example.org/browse/OPS-12"
+    assert one["note_count"] == 1 and "Dorothy Vaughan: Reseated the GPU" in one["text"]
+    assert tickets["tracker_ticket:jira:OPS-9"].attrs["closed"] == "2026-10-06T16:45:00.000+0000"
+
+
+def test_jira_reporter_and_assignee_edges_and_no_address_reaches_a_node(tmp_path):
+    write_jira_tickets_cache(tmp_path)
+    _, facts = _run(tmp_path)
+    people = {f.node_id: f.attrs["display_name"] for f in facts if isinstance(f, NodeFact) and f.subtype == "person"}
+    assert sorted(people.values()) == ["Dorothy Vaughan", "Katherine Johnson", "Margaret Hamilton"]
+    edges = {(e.src, e.edge_type): people[e.dst] for e in facts if isinstance(e, EdgeFact)}
+    assert edges[("tracker_ticket:jira:OPS-12", "reported_by")] == "Katherine Johnson"
+    assert edges[("tracker_ticket:jira:OPS-12", "assigned_to")] == "Dorothy Vaughan"
+    assert ("tracker_ticket:jira:OPS-9", "assigned_to") not in edges
+    # The recorded description carries an address; the reader removes it as it does for Redmine.
+    assert "@" not in json.dumps([f.attrs for f in facts if isinstance(f, NodeFact)])
+
+
+def test_a_jira_ticket_without_a_usable_link_of_its_own_links_under_browse(tmp_path):
+    (tmp_path / "tickets").mkdir()
+    rows = [{"system": "jira", "key": "OPS-1", "subject": "a"},
+            {"system": "jira", "key": "OPS-2", "subject": "b", "url": "javascript:alert(1)"}]
+    (tmp_path / "tickets" / "records.json").write_text(json.dumps(rows))
+    _, facts = _run(tmp_path, base_url="https://jira.example.org/")
+    tickets = _tickets(facts)
+    assert tickets["tracker_ticket:jira:OPS-1"].attrs["url"] == "https://jira.example.org/browse/OPS-1"
+    assert tickets["tracker_ticket:jira:OPS-2"].attrs["url"] == "https://jira.example.org/browse/OPS-2"

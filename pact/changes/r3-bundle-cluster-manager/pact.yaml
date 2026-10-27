@@ -12,6 +12,14 @@ affected_code:
 - bundles/packs/
 - python/archi/sources/
 - python/archi/tools/
+- python/archi/downloaders/tickets.py
+- python/tests/downloaders/
+- python/tests/sources/test_tickets.py
+- python/tests/packs/cluster_fixtures.py
+- python/tests/fixtures/cluster/
+- docs/docs/reference/connector-caches.md
+- docs/docs/library/packs/tickets.md
+- docs/docs/library/index.md
 requirements:
 - id: req.r3-bundle-cluster-manager.connectors
   statement: 'New connectors: ServiceNow (incidents, requests, KB articles; OAuth or basic

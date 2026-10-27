@@ -1,8 +1,9 @@
-"""Cache-backed generic ticket source (Redmine and any tracker that exports the same shape).
+"""Cache-backed generic ticket source (Redmine, any JIRA, and any tracker that exports the same shape).
 
-JIRA has its own reader (``archi.sources.jira``). This one is for the other
-trackers a cluster operator may run, first of all Redmine. It reads the cache
-that ``python -m archi.downloaders.redmine`` writes under
+The CERN JIRA pack has its own reader (``archi.sources.jira``). This one is
+for the trackers any cluster operator may run. It reads the cache that
+``python -m archi.downloaders.tickets`` (Redmine, JIRA or both) or
+``python -m archi.downloaders.redmine`` writes under
 ``${archi_data_root}/tickets/``; any other tracker can fill the same cache
 with the flat shape below and use the same pack.
 
@@ -12,14 +13,19 @@ Cache shape: a JSON list. Each item is either the flat shape
      "project": "ops", "tracker": "Support", "status": "New", "priority": "High",
      "author": "Grace Hopper", "assignee": "Ada Lovelace",
      "created": "2026-01-05T10:00:00Z", "updated": "...", "closed": "",
-     "notes": [{"author": "...", "created": "...", "body": "..."}]}
+     "notes": [{"author": "...", "created": "...", "body": "..."}],
+     "url": "https://..."}
 
 or a Redmine REST issue (``id``, ``subject``, ``project: {name}``,
 ``author: {name}``, ``assigned_to: {name}``, ``created_on``, ``journals``).
-Both read the same. ``system`` defaults to the ``system`` parameter.
+Both read the same. ``system`` defaults to the ``system`` parameter; the node
+id is ``tracker_ticket:<system>:<key>``, so a JIRA ``OPS-7`` and a Redmine
+``7`` never meet. ``url``, when present, is the ticket's link; otherwise the
+link is built from ``base_url`` (``/issues/<id>`` for Redmine,
+``/browse/<key>`` for JIRA).
 
-The credential, when the tracker needs one, is named by environment variable
-(``REDMINE_API_KEY``) and used only by the downloader.
+The credentials, when a tracker needs one, are named by environment variable
+(``REDMINE_API_KEY``, ``JIRA_API_TOKEN``) and used only by the downloader.
 
 Registry entry: ``bundles/packs/tickets/sources/tickets.yaml``.
 """
@@ -50,6 +56,7 @@ class TicketRecord:
     updated: str = ""
     closed: str = ""
     notes: tuple[tuple[str, str, str], ...] = field(default_factory=tuple)
+    url: str = ""
 
     @property
     def node_id(self) -> str:
@@ -88,10 +95,14 @@ class TicketSource(CacheSource):
         )
 
     def ticket_url(self, record: TicketRecord) -> str:
+        if record.url:
+            return record.url
         if not self.base_url:
             return ""
         if record.system == "redmine":
             return f"{self.base_url}/issues/{record.key}"
+        if record.system == "jira":
+            return f"{self.base_url}/browse/{record.key}"
         return f"{self.base_url}/{record.key}"
 
     def parse(self, payload: Any) -> tuple[list[TicketRecord], int]:
@@ -177,6 +188,12 @@ def _notes(item: dict[str, Any]) -> tuple[tuple[str, str, str], ...]:
     return tuple(out)
 
 
+def _url(value: Any) -> str:
+    # A link the downloader wrote (it knows each tracker's root); http(s) only.
+    url = clean(value)
+    return url if url.lower().startswith(("https://", "http://")) else ""
+
+
 def _record(item: dict[str, Any], default_system: str) -> TicketRecord | None:
     key = clean(item.get("key") if item.get("key") not in (None, "") else item.get("id"))
     if not key:
@@ -196,6 +213,7 @@ def _record(item: dict[str, Any], default_system: str) -> TicketRecord | None:
         updated=clean(item.get("updated") or item.get("updated_on")),
         closed=clean(item.get("closed") or item.get("closed_on")),
         notes=_notes(item),
+        url=_url(item.get("url")),
     )
 
 
