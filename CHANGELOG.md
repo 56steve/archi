@@ -101,9 +101,9 @@ name is `archi`.
   and MRR for the default search against a lexical baseline. The question set
   is named at run time, so private question sets stay out of the repository.
   The automation context gate reads the newest clean run of its bundle. (#858)
-- `archi eval --context --agents` adds a raw-document baseline: one model,
-  run twice per question, once with bash over the raw files the graph was
-  built from (in a bubblewrap sandbox with no network) and once with the
+- `archi eval --context --agents` adds a raw-document baseline: the same
+  model answers each question in two arms, one with bash over the raw files
+  the graph was built from (in a bubblewrap sandbox with no network), the other with the
   instance's MCP tools. Both are scored on the gold records they read and,
   with `--judge`, on their answers. `archi eval --raw-corpus` builds the file
   corpus. Every model call goes to a spend ledger, and `--cap` is required.
