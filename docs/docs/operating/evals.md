@@ -100,7 +100,7 @@ and out, wall time and the answer text. `report.md` is the same for reading.
 The [`instance-health`](../library/packs/instance-health.md) automation reads
 every `report.json` under `<data root>/eval/` and raises an issue per bundle
 when the latest run is `execution_failed`, below the threshold, or more than
-`min_drop` below the earlier runs of the same model. Each run overwrites the
+`min_drop` below the earlier runs of the same model and question set. Each run overwrites the
 report in the default `--out` directory, so to give it a trend, keep runs
 apart: `archi eval --bundle cern-team --out <data root>/eval/cern-team/$(date +%F)`.
 

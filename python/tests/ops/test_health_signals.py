@@ -198,6 +198,56 @@ def test_an_execution_failed_run_is_left_out_of_the_baseline(tmp_path):
     assert "0.20 below the mean score 0.90 of the 1 earlier run(s)" in problem.detail
 
 
+def test_a_grown_question_set_is_not_compared_with_the_old_one(tmp_path):
+    runs(tmp_path, 9, 9)  # 0.90 on ten questions
+    write_report(tmp_path, started_at="2026-10-26T03:00:00Z", statuses=scored(9, total=12))  # 0.75, same smoke file
+    problems, notes = signals.eval_problems(tmp_path)
+    assert problems == [] and [n["signal"] for n in notes] == ["eval-trend"] and "same question set" in notes[0]["reason"]
+
+
+def test_a_changed_prompt_hash_is_another_measurement(tmp_path):
+    runs(tmp_path, 9, 9)
+    write_report(tmp_path, started_at="2026-10-26T03:00:00Z", statuses=scored(7), prompt_hash="sha256:p2")
+    problems, notes = signals.eval_problems(tmp_path)
+    assert problems == [] and [n["signal"] for n in notes] == ["eval-trend"]
+
+
+def test_questions_that_could_not_be_asked_are_named_and_not_read_as_wrong_answers(tmp_path):
+    runs(tmp_path, 9, 9)
+    write_report(tmp_path, started_at="2026-10-26T03:00:00Z",
+                 statuses=["pass"] * 6 + ["execution_failed"] * 3 + ["fail"])  # a fail run, not execution_failed
+    (problem,), _ = signals.eval_problems(tmp_path)
+    assert problem.title == "Eval of cern-team is below its threshold" and "passed 6 of 10" in problem.detail
+    assert "3 of the 10 questions could not be asked (`execution_failed`: q6, q7, q8)" in problem.detail
+    assert "not wrong answers" in problem.detail
+
+
+def test_a_run_with_questions_that_could_not_be_asked_is_never_a_baseline(tmp_path):
+    runs(tmp_path, 9)
+    write_report(tmp_path, started_at="2026-10-02T03:00:00Z", statuses=["pass"] * 7 + ["execution_failed"] * 3,
+                 sub="2026-10-02")
+    write_report(tmp_path, started_at="2026-10-03T03:00:00Z", statuses=scored(8), sub="2026-10-03")
+    # with the partial run the mean would be 0.80 and 0.80 no drop; without it, 0.90 -> 0.80
+    (problem,), _ = signals.eval_problems(tmp_path, min_drop=0.05)
+    assert "0.10 below the mean score 0.90 of the 1 earlier run(s)" in problem.detail
+
+
+def test_only_the_bundles_the_instance_lists_are_judged(tmp_path):
+    runs(tmp_path, 4, bundle="cern-team")
+    runs(tmp_path, 4, bundle="retired-bundle")
+    (problem,), notes = signals.eval_problems(tmp_path, bundles=lambda: ["cern-team"])
+    assert problem.key == "eval/cern-team"
+    assert "eval-unlisted" in [n["signal"] for n in notes]
+    assert "retired-bundle" in next(n["reason"] for n in notes if n["signal"] == "eval-unlisted")
+
+
+def test_an_old_newest_run_is_a_note_not_an_issue(tmp_path):
+    runs(tmp_path, 9, 9)  # newest started 2026-10-02, 23 days before NOW
+    problems, notes = signals.eval_problems(tmp_path, now=NOW)
+    assert problems == [] and [n["signal"] for n in notes] == ["eval-stale"] and "14 days" in notes[0]["reason"]
+    assert signals.eval_problems(tmp_path, now=NOW, max_age_days=30) == ([], [])
+
+
 def test_runs_of_another_model_are_not_compared(tmp_path):
     runs(tmp_path, 10, model="big-model")
     write_report(tmp_path, model="qwen3:8b", started_at="2026-10-26T03:00:00Z", statuses=scored(7))
@@ -279,6 +329,7 @@ def collect(tmp_path, *, doctor_report=None, frontier=None, rows=(), **kw):
         read_doctor=kw.get("read_doctor") or (lambda: doctor_report or doctor()),
         read_frontier=kw.get("read_frontier") or (lambda: frontier or {"rows": []}),
         read_ops_records=reader(list(rows)),
+        read_bundles=kw.get("read_bundles", lambda: ["cern-team", "cms-physics"]),
     )
 
 
@@ -324,4 +375,23 @@ def test_an_eval_finding_is_judged_and_a_missing_trend_does_not_take_eval_out_of
 def test_a_healthy_eval_run_lets_its_old_issue_close(tmp_path):
     runs(tmp_path / "eval", 5, 9)
     obs = collect(tmp_path)
-    assert obs.problems == [] and "eval" in obs.scope and obs.skipped == []
+    assert obs.problems == [] and "eval" in obs.scope
+    assert [s["signal"] for s in obs.skipped] == ["eval-stale"]  # 2026-10-02 is 23 days before NOW: a note only
+
+
+def test_a_removed_bundle_cannot_hold_its_issue_open(tmp_path):
+    runs(tmp_path / "eval", 4, bundle="retired-bundle")
+    obs = collect(tmp_path, read_bundles=lambda: ["cern-team"])
+    assert obs.problems == [] and "eval" in obs.scope  # judged, nothing found: eval/retired-bundle closes
+    assert [s["signal"] for s in obs.skipped] == ["eval-unlisted"]
+
+
+def test_the_bundle_list_comes_from_archi_yaml_by_default(tmp_path):
+    from archi.stack.instance import Instance, Ports
+
+    Instance(dir=tmp_path, name="demo", bundles=["cms-physics"], data_root=tmp_path / "data", runtime="docker",
+             ports=Ports(graph_db=15432, mcp=18080, webui=13000)).save()
+    runs(tmp_path / "eval", 4, bundle="cern-team")
+    runs(tmp_path / "eval", 4, bundle="cms-physics")
+    obs = collect(tmp_path, read_bundles=None)
+    assert [p.key for p in obs.problems] == ["eval/cms-physics"]

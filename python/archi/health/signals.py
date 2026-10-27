@@ -188,16 +188,34 @@ class EvalRun:
     bundle: str
     model: str
     started_at: str
+    started: datetime
     status: str
     passed: int
     total: int
     threshold: int
     error: Optional[str]
     path: str  # relative to the reports directory
+    #: the question ids asked, in order: with the threshold, what makes two runs the same measurement
+    question_ids: tuple[str, ...] = ()
+    #: questions that ended `execution_failed` inside a run that otherwise executed (model or endpoint errors)
+    failed_questions: tuple[str, ...] = ()
+    smoke_file: Optional[str] = None
+    prompt_hash: Optional[str] = None
 
     @property
     def score(self) -> float:
         return self.passed / self.total
+
+    def same_set_as(self, other: "EvalRun") -> bool:
+        """Whether `other` asked the same questions against the same threshold, so their scores compare.
+
+        The question ids and the threshold must match always (a grown set keeps its file name). The smoke file
+        and the prompt hash (tool schemas and system message) must match too when both runs record them.
+        """
+        if (self.question_ids, self.threshold) != (other.question_ids, other.threshold):
+            return False
+        return all(a == b for a, b in ((self.smoke_file, other.smoke_file), (self.prompt_hash, other.prompt_hash))
+                   if a and b)
 
 
 def read_eval_runs(directory: Path) -> list[EvalRun]:
@@ -221,10 +239,23 @@ def read_eval_runs(directory: Path) -> list[EvalRun]:
             raise ValueError(f"{rel} under {directory}: eval report schema {schema!r} is not one this reader "
                              f"knows ({sorted(EVAL_SCHEMAS)})")
         try:
+            from archi.ops.shadow import parse_time
+
+            started = parse_time(_text(data, "started_at"))
+            if started is None:
+                raise ValueError(f"started_at {data['started_at']!r} is not an ISO 8601 time")
+            questions = data["questions"]
+            if not isinstance(questions, list) or not all(isinstance(q, dict) for q in questions):
+                raise ValueError("questions must be a list of objects")
+            ids = tuple(_text(q, "id") for q in questions)
+            status = _text(data, "status")
             run = EvalRun(
-                bundle=_text(data, "bundle"), model=_text(data, "model"), started_at=_text(data, "started_at"),
-                status=_text(data, "status"), passed=_count(data, "passed"), total=_count(data, "total"),
+                bundle=_text(data, "bundle"), model=_text(data, "model"), started_at=data["started_at"],
+                started=started, status=status, passed=_count(data, "passed"), total=_count(data, "total"),
                 threshold=_count(data, "pass_threshold"), error=data.get("error") or None, path=rel,
+                question_ids=ids,
+                failed_questions=tuple(q["id"] for q in questions if _text(q, "status") == "execution_failed"),
+                smoke_file=data.get("smoke_file") or None, prompt_hash=data.get("prompt_hash") or None,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"{rel} under {directory}: not a usable eval report ({exc})") from exc
@@ -233,7 +264,7 @@ def read_eval_runs(directory: Path) -> list[EvalRun]:
         if run.status != "execution_failed" and run.total == 0:
             raise ValueError(f"{rel} under {directory}: status {run.status} with no questions")
         runs.setdefault((run.bundle, run.started_at, run.model), run)  # the same run copied twice counts once
-    return sorted(runs.values(), key=lambda r: (r.started_at, r.path))
+    return sorted(runs.values(), key=lambda r: (r.started, r.path))
 
 
 def _text(data: Mapping[str, Any], name: str) -> str:
@@ -250,21 +281,28 @@ def _count(data: Mapping[str, Any], name: str) -> int:
     return value
 
 
-def eval_problems(directory: Path | str, *, min_drop: float = 0.1, history: int = 3
-                  ) -> tuple[list[Problem], list[dict[str, str]]]:
+def eval_problems(directory: Path | str, *, bundles: Optional[Callable[[], Iterable[str]]] = None,
+                  min_drop: float = 0.1, history: int = 3, now: Optional[datetime] = None,
+                  max_age_days: float = 14.0) -> tuple[list[Problem], list[dict[str, str]]]:
     """(problems, skip notes) from the `archi eval` reports under `directory`, one problem per bundle at most.
 
-    For each bundle, the latest run is a problem (`eval/<bundle>`) when:
+    Only the bundles `bundles()` returns (the instance's `archi.yaml` list) are judged, so the last report of
+    a bundle the instance no longer has cannot hold an issue open. For each, the latest run is a problem
+    (`eval/<bundle>`) when:
 
     - it ended `execution_failed`: the run could not ask the instance, so this is a failed health signal and
       no score is judged (an error);
     - it passed fewer questions than the bundle's threshold (an error);
     - its score (passed / total) is more than `min_drop` below the mean score of up to `history` earlier
-      runs of the same bundle and the same model that did execute (a warning while it still meets the
-      threshold). A different model is a different measurement, so it is not compared.
+      comparable runs (a warning while it still meets the threshold). Comparable: same model, same question
+      set (`EvalRun.same_set_as`), and every question executed. A run in which any question ended
+      `execution_failed` is never a baseline, and the issue names such questions in the latest run, so a
+      model or endpoint failure does not read as wrong answers.
 
-    Skip notes are `{"signal", "reason"}`. `eval`: there is no report at all, so the signal is not judged.
-    `eval-trend`: a bundle has no earlier run to compare with; its threshold is still judged.
+    Skip notes are `{"signal", "reason"}`, informational. `eval`: there is no report at all, so the signal
+    is not judged. `eval-trend`: a bundle has no comparable earlier run; its threshold is still judged.
+    `eval-stale`: a bundle's newest run is older than `max_age_days` (a note, not an issue). `eval-unlisted`:
+    reports of bundles the instance does not list, which were left out.
     """
     directory = Path(directory)
     runs = read_eval_runs(directory)
@@ -276,8 +314,18 @@ def eval_problems(directory: Path | str, *, min_drop: float = 0.1, history: int 
         by_bundle.setdefault(run.bundle, []).append(run)
     problems: list[Problem] = []
     notes: list[dict[str, str]] = []
-    for bundle in sorted(by_bundle):
+    listed = set(bundles()) if bundles is not None else set(by_bundle)
+    unlisted = sorted(set(by_bundle) - listed)
+    if unlisted:
+        notes.append({"signal": "eval-unlisted", "reason": (
+            f"reports of {', '.join(unlisted)} under {directory} were left out: the instance does not list "
+            "that bundle in archi.yaml")})
+    for bundle in sorted(set(by_bundle) & listed):
         *before, latest = by_bundle[bundle]
+        if now is not None and now - latest.started > timedelta(days=max_age_days):
+            notes.append({"signal": "eval-stale", "reason": (
+                f"bundle {bundle}: the newest eval run started {latest.started_at}, more than {max_age_days:g} "
+                "days ago (`eval.max_age_days`); its result may no longer describe the instance")})
         head = (f"The latest `archi eval` run of bundle `{bundle}` (model `{latest.model}`, started "
                 f"{latest.started_at})")
         look = (f"Look: `{latest.path}` under `{directory}` (and `report.md` beside it); re-run with "
@@ -293,7 +341,8 @@ def eval_problems(directory: Path | str, *, min_drop: float = 0.1, history: int 
                         f"{look} Check `archi doctor`, the MCP endpoint and the model server first."),
             ))
             continue
-        earlier = [r for r in before if r.status != "execution_failed" and r.model == latest.model][-history:]
+        earlier = [r for r in before if r.status != "execution_failed" and not r.failed_questions
+                   and r.model == latest.model and latest.same_set_as(r)][-history:]
         below = latest.passed < latest.threshold
         drop = None
         if earlier:
@@ -302,8 +351,9 @@ def eval_problems(directory: Path | str, *, min_drop: float = 0.1, history: int 
             drop = (baseline, round(baseline - latest.score, 9))
         else:
             notes.append({"signal": "eval-trend", "reason": (
-                f"bundle {bundle}: no earlier run of model {latest.model} to compare with (archi eval overwrites "
-                f"its report; keep runs apart with `--out <dir>/{bundle}/<date>` under {directory})")})
+                f"bundle {bundle}: no earlier run of model {latest.model} on the same question set, with every "
+                "question executed, to compare with; only the threshold was judged (archi eval overwrites its "
+                f"report; keep runs apart with `--out <dir>/{bundle}/<date>` under {directory})")})
         dropped = drop is not None and drop[1] > min_drop
         if not (below or dropped):
             continue
@@ -312,13 +362,25 @@ def eval_problems(directory: Path | str, *, min_drop: float = 0.1, history: int 
             lines.append(f"- That is below the bundle's threshold of {latest.threshold}.")
         if dropped:
             lines.append(f"- That is {drop[1]:.2f} below the mean score {drop[0]:.2f} of the {len(earlier)} earlier "
-                         f"run(s) of the same model; the allowed drop is {min_drop:g} (`eval.min_drop`).")
+                         f"run(s) of the same model and question set; the allowed drop is {min_drop:g} "
+                         "(`eval.min_drop`).")
+        if latest.failed_questions:
+            lines.append(f"- {len(latest.failed_questions)} of the {latest.total} questions could not be asked "
+                         f"(`execution_failed`: {', '.join(latest.failed_questions)}). They count as not passed, "
+                         "but they are a model or MCP endpoint failure, not wrong answers: check the model server "
+                         "and the MCP endpoint before reading this as a drop in quality.")
         lines += ["", look]
         title = f"Eval of {bundle} is below its threshold" if below else f"Eval score of {bundle} dropped"
         problems.append(Problem(key=make_key("eval", bundle), family="eval", severity="error" if below else "warning",
                                 title=title, detail="\n".join(lines)))
     return problems, notes
 
+
+
+def _instance_bundles(instance_dir: Path | str) -> list[str]:
+    from archi.stack.instance import Instance
+
+    return list(Instance.load(Path(instance_dir)).bundles)
 
 # --- readers (the real ones) -------------------------------------------------------
 
@@ -364,8 +426,8 @@ class Observation:
     problems: list[Problem] = field(default_factory=list)
     #: the families read successfully in this run: only their issues may be closed
     scope: list[str] = field(default_factory=list)
-    #: `{"signal", "reason"}` for each signal not applicable: `eval` (no eval report; not judged) or
-    #: `eval-trend` (a bundle with no earlier run to compare; its threshold was still judged)
+    #: `{"signal", "reason"}` for each signal not applicable: `eval` (no eval report; not judged), or a note
+    #: that does not take eval out of scope: `eval-trend`, `eval-stale`, `eval-unlisted` (see `eval_problems`)
     skipped: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -377,8 +439,13 @@ def collect(
     read_doctor: Callable[[], Mapping[str, Any]],
     read_frontier: Callable[[], Mapping[str, Any]],
     read_ops_records: Callable[[str], list],
+    read_bundles: Optional[Callable[[], Iterable[str]]] = None,
 ) -> Observation:
-    """Run the readers and gather the problems. A reader that raises becomes `monitor/<signal>`."""
+    """Run the readers and gather the problems. A reader that raises becomes `monitor/<signal>`.
+
+    `read_bundles` gives the bundles the instance lists; by default `archi.yaml` is read, and only when an eval
+    report exists.
+    """
     obs = Observation()
     failed: dict[str, str] = {}
 
@@ -398,7 +465,8 @@ def collect(
 
     def eval_signal() -> list[Problem]:
         found, notes = eval_problems(eval_reports_dir(instance_dir, config.eval_reports_dir),
-                                     min_drop=config.eval_min_drop)
+                                     bundles=read_bundles or (lambda: _instance_bundles(instance_dir)),
+                                     min_drop=config.eval_min_drop, now=now, max_age_days=config.eval_max_age_days)
         # `eval` skipped: nothing to judge, and its issues (if any) are not closed on that account.
         # `eval-trend` only says a bundle has no earlier run; its threshold was judged.
         obs.skipped.extend(notes)
