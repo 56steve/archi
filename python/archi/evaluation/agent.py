@@ -37,7 +37,18 @@ LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 class ModelError(RuntimeError):
-    """The chat endpoint could not answer."""
+    """The chat endpoint could not answer.
+
+    `status` is the HTTP status when the endpoint answered with one; `sent` says whether the
+    request reached the endpoint (so it may be billed); `retry_after` is the server's
+    Retry-After in seconds, when it gave one."""
+
+    def __init__(self, message: str, *, status: Optional[int] = None, sent: bool = False,
+                 retry_after: Optional[float] = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.sent = sent
+        self.retry_after = retry_after
 
 
 class ToolError(RuntimeError):
@@ -64,6 +75,14 @@ class ChatReply:
     tool_calls: tuple[ToolCall, ...] = ()
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    #: input tokens the endpoint served from its prompt cache (OpenAI `prompt_tokens_details`)
+    cached_tokens: int = 0
+    #: completion tokens spent on reasoning (OpenAI `completion_tokens_details`); part of completion_tokens
+    reasoning_tokens: int = 0
+    #: the choice's finish_reason ("stop", "tool_calls", "length", ...), when the endpoint gave one
+    finish_reason: str = ""
+    #: whether the reply carried token usage; a paid run charges a reply without it at its bound
+    usage_reported: bool = True
 
 
 class ChatModel(Protocol):
@@ -123,18 +142,21 @@ def openai_tools(tools: list[ToolSpec]) -> list[dict]:
     ]
 
 
-def require_local(url: str) -> None:
-    """A smoke run costs nothing: refuse a model endpoint off this host or private network."""
+def is_local_url(url: str) -> bool:
+    """Whether `url` is on this host or a private network."""
     host = (urlparse(url).hostname or "").lower()
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
         # A bare name ("ollama", a compose service) or a .local / .localhost name.
-        if host in LOCAL_HOSTS or "." not in host or host.endswith((".local", ".localhost")):
-            return
-    else:
-        if address.is_loopback or address.is_private:
-            return
+        return host in LOCAL_HOSTS or "." not in host or host.endswith((".local", ".localhost"))
+    return address.is_loopback or address.is_private
+
+
+def require_local(url: str) -> None:
+    """A smoke run costs nothing: refuse a model endpoint off this host or private network."""
+    if is_local_url(url):
+        return
     raise ModelError(
         f"model endpoint {url} is not on this host or a private network; the smoke harness "
         "uses local models only (no paid calls). Pass --allow-remote-model to override."
@@ -144,14 +166,23 @@ def require_local(url: str) -> None:
 class OpenAIChat:
     """`POST {base_url}/chat/completions`, as Ollama and vLLM serve it."""
 
-    def __init__(self, base_url: str, model: str, *, api_key: str = "ollama", temperature: float = 0.0,
-                 timeout: float = 600.0, no_think: bool = False) -> None:
+    def __init__(self, base_url: str, model: str, *, api_key: str = "ollama", temperature: Optional[float] = 0.0,
+                 timeout: float = 600.0, no_think: bool = False, reasoning_effort: Optional[str] = None,
+                 max_completion_tokens: Optional[int] = None) -> None:
+        """`temperature=None` sends neither a temperature nor a seed (reasoning models refuse both),
+        and neither is ever sent to an endpoint off this host or private network;
+        `reasoning_effort` and `max_completion_tokens` are sent only when set."""
         self.base_url = base_url.rstrip("/")
         self.name = model
         self.api_key = api_key
         self.temperature = temperature
         self.timeout = timeout
         self.no_think = no_think
+        self.reasoning_effort = reasoning_effort
+        self.max_completion_tokens = max_completion_tokens
+
+    def __repr__(self) -> str:  # never show the key
+        return f"OpenAIChat({self.base_url!r}, {self.name!r})"
 
     def complete(self, messages: list[dict], tools: list[dict]) -> ChatReply:
         import requests
@@ -159,14 +190,19 @@ class OpenAIChat:
         body: dict[str, Any] = {
             "model": self.name,
             "messages": messages,
-            "temperature": self.temperature,
-            "seed": 0,
             "stream": False,
         }
+        if self.temperature is not None and is_local_url(self.base_url):
+            body["temperature"] = self.temperature
+            body["seed"] = 0
         if tools:
             body["tools"] = tools
         if self.no_think:
             body["reasoning_effort"] = "none"
+        elif self.reasoning_effort:
+            body["reasoning_effort"] = self.reasoning_effort
+        if self.max_completion_tokens:
+            body["max_completion_tokens"] = self.max_completion_tokens
         try:
             response = requests.post(
                 f"{self.base_url}/chat/completions",
@@ -175,16 +211,28 @@ class OpenAIChat:
                 timeout=self.timeout,
             )
         except requests.RequestException as exc:
-            raise ModelError(f"{self.base_url}: {exc}") from exc
+            # A connection that was never made cannot be billed; anything later (a read that timed
+            # out, a connection reset mid-reply) may have been, so it counts as sent.
+            sent = not (isinstance(exc, requests.ConnectTimeout)
+                        or (isinstance(exc, requests.ConnectionError)
+                            and ("NewConnectionError" in str(exc) or "Failed to establish" in str(exc))))
+            raise ModelError(f"{self.base_url}: {exc}", sent=sent) from exc
         if response.status_code != 200:
-            raise ModelError(f"{self.base_url}: HTTP {response.status_code}: {response.text[:300]}")
+            retry_after = None
+            try:
+                retry_after = float(response.headers.get("Retry-After") or "")
+            except (TypeError, ValueError):
+                pass
+            raise ModelError(f"{self.base_url}: HTTP {response.status_code}: {response.text[:300]}",
+                             status=response.status_code, sent=True, retry_after=retry_after)
         try:
             payload = response.json()
-            message = payload["choices"][0]["message"]
+            choice = payload["choices"][0]
+            message = choice["message"]
         except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise ModelError(f"{self.base_url}: unreadable reply: {response.text[:300]}") from exc
+            raise ModelError(f"{self.base_url}: unreadable reply: {response.text[:300]}", sent=True) from exc
         if not isinstance(message, dict):
-            raise ModelError(f"{self.base_url}: unreadable reply: {response.text[:300]}")
+            raise ModelError(f"{self.base_url}: unreadable reply: {response.text[:300]}", sent=True)
         calls = []
         for i, raw in enumerate(message.get("tool_calls") or []):
             fn = raw.get("function") or {}
@@ -195,12 +243,20 @@ class OpenAIChat:
                 except ValueError:
                     args = {"_unparsed": args}
             calls.append(ToolCall(str(raw.get("id") or f"call_{i}"), str(fn.get("name") or ""), args))
-        usage = payload.get("usage") or {}
+        raw_usage = payload.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        prompt_details = usage.get("prompt_tokens_details") or {}
+        completion_details = usage.get("completion_tokens_details") or {}
         return ChatReply(
             content=message.get("content") or "",
             tool_calls=tuple(calls),
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
             completion_tokens=int(usage.get("completion_tokens") or 0),
+            cached_tokens=int(prompt_details.get("cached_tokens") or 0) if isinstance(prompt_details, dict) else 0,
+            reasoning_tokens=(int(completion_details.get("reasoning_tokens") or 0)
+                              if isinstance(completion_details, dict) else 0),
+            finish_reason=str((choice.get("finish_reason") if isinstance(choice, dict) else "") or ""),
+            usage_reported="prompt_tokens" in usage or "completion_tokens" in usage,
         )
 
 

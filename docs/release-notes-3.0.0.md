@@ -24,7 +24,8 @@ and its `v2.x` tags.
   Write your own pack in a separate pip package.
 - **Evals.** `archi eval --bundle <name>` checks that a bundle answers its
   smoke set with cited records; `archi eval --context` scores retrieval with no
-  model. `instance-health` raises an issue when a smoke-set run fails or
+  model, and with `--agents` compares a model agent with bash over the raw
+  files against the same model on the graph's MCP tools. `instance-health` raises an issue when a smoke-set run fails or
   drops. `cms-comp-ops` has no smoke set.
 - **A context layer that reports its own health.** Each pack declares how stale
   its sources may be, and which links and checks must hold. `archi doctor`

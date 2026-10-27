@@ -351,6 +351,25 @@ def write_sources(root: Path) -> dict[str, Path]:
             }
         ],
     )
+    # The cluster-manager caches, from the recorded shapes the pack tests use
+    # (each writer puts its cache under <root>/<group>/, as dirs expects).
+    # This directory has no __init__.py, so tests/ is not on the path by itself.
+    import sys
+
+    tests_dir = str(Path(__file__).resolve().parents[1])
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from packs.cluster_fixtures import (
+        write_condor_cache,
+        write_node_health_cache,
+        write_servicenow_cache,
+        write_slurm_cache,
+        write_tickets_cache,
+    )
+
+    for write in (write_tickets_cache, write_servicenow_cache, write_node_health_cache,
+                  write_slurm_cache, write_condor_cache):
+        write(root)
     return dirs
 
 
@@ -371,6 +390,11 @@ COLLECTED = {
     "wmstats": "2026-08-31",
     "dbs": "2026-08-31",
     "cmssst-site-status": "2026-10-07",
+    "tickets": "2026-10-20",
+    "servicenow": "2026-10-20",
+    "node-health": "2026-10-20",
+    "slurm": "2026-10-20",
+    "htcondor": "2026-10-20",
 }
 
 

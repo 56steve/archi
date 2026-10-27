@@ -40,6 +40,14 @@ The question file keeps the smoke format's shape and adds `gold`:
       - id: fts3-what-is
         question: What is FTS3?
         gold: [documentation_page:22, ...]   # the node ids that answer it
+        answer: FTS3 is the file transfer service ...   # optional: an answer key for the judge
+        gold_sources:          # optional, agent arms: where a gold id's record is in the raw
+          documentation_page:22: {source: docsite, key: "https://..."}   # corpus, instead of
+                                                                         # asking MCP inspect
+        atoms:                 # optional, agent arms: the facts an answer needs
+          - id: a1
+            answer_source: doc or ticket   # live_rucio, live_dbs or monitoring alone: unavailable
+            gold: [documentation_page:22]  # the gold ids that carry this fact
 
 A smoke file with `gold` added to its questions is accepted: `pass_threshold`,
 `must_cite`, `must_contain` and `must_contain_any` are read and ignored. A question
@@ -49,6 +57,11 @@ instance and are named at run time; none is kept in this repository.
 Each run is written to `<data root>/eval/context/<bundle>/<UTC stamp>/report.{json,md}`.
 The context gate (`archi.ops.context_gate.read_context_eval`) reads the newest one of a
 bundle; its score is the graph arm's recall@k.
+
+With `--agents`, two agent arms run beside these two (`archi.evaluation.raw_arm`): a bash
+agent over the raw files the graph was built from, and an agent with the instance's MCP
+tools, on the same model, caps and scorer. Their results go under `agent_arms` in the
+report, never under `arms`, so the gate and the run's status read the graph arm alone.
 """
 from __future__ import annotations
 
@@ -117,6 +130,36 @@ class ContextQuestion:
     id: str
     question: str
     gold: tuple[str, ...] = ()
+    #: an answer key for the agent arms' judge, or None
+    answer: Optional[str] = None
+    #: gold id -> where its record is in the raw corpus ({source, key} or {path}), overriding
+    #: resolution through the MCP inspect tool
+    gold_sources: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    #: the facts an answer needs, each with where its answer comes from (`Atom`)
+    atoms: tuple["Atom", ...] = ()
+
+
+#: `answer_source` kinds only a live system answers: no file holds them, in either arm.
+LIVE_SOURCES = frozenset({"live_rucio", "live_dbs", "monitoring"})
+_SOURCE_SPLIT = re.compile(r"\s*(?:\+|,|/|;|\bor\b|\band\b)\s*")
+
+
+@dataclass(frozen=True)
+class Atom:
+    id: str
+    answer_source: str = ""
+    gold: tuple[str, ...] = ()
+    text: str = ""
+    required: bool = True
+
+    @property
+    def kinds(self) -> tuple[str, ...]:
+        return tuple(k for k in _SOURCE_SPLIT.split(self.answer_source.strip().lower()) if k)
+
+    @property
+    def live_only(self) -> bool:
+        """Answered only from live systems ("live_rucio", "monitoring", "ticket+live_rucio" is not)."""
+        return bool(self.kinds) and all(k in LIVE_SOURCES for k in self.kinds)
 
 
 @dataclass(frozen=True)
@@ -178,6 +221,51 @@ def _arms(where: str, raw: Any) -> tuple[Arm, ...]:
     return tuple(arms)
 
 
+def _atoms(label: str, raw: Any, gold: tuple[str, ...]) -> tuple[Atom, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ContextSetError(f"{label}: `atoms` must be a list of {{id, answer_source, gold}}")
+    out, seen = [], set()
+    for i, atom in enumerate(raw):
+        where = f"{label}: atoms[{i}]"
+        if not isinstance(atom, Mapping) or set(atom) - {"id", "answer_source", "gold", "text", "required"}:
+            raise ContextSetError(f"{where} takes id, answer_source, gold, text and required")
+        aid = atom.get("id")
+        if not isinstance(aid, str) or not aid or aid in seen:
+            raise ContextSetError(f"{where}: `id` must be a unique non-empty string")
+        seen.add(aid)
+        source = atom.get("answer_source", "")
+        if not isinstance(source, str):
+            raise ContextSetError(f"{where}: `answer_source` must be a string")
+        atom_gold = _strings(f"{where}: gold", atom.get("gold"))
+        stray = [g for g in atom_gold if g not in gold]
+        if stray:
+            raise ContextSetError(f"{where}: gold {stray} is not among the question's gold ids")
+        required = atom.get("required", True)
+        if not isinstance(required, bool):
+            raise ContextSetError(f"{where}: `required` must be true or false")
+        out.append(Atom(aid, source.strip(), atom_gold, str(atom.get("text") or ""), required))
+    return tuple(out)
+
+
+def _gold_sources(label: str, raw: Any, gold: tuple[str, ...]) -> dict[str, dict[str, str]]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ContextSetError(f"{label}: `gold_sources` must map gold ids to {{source, key}} or {{path}}")
+    out = {}
+    for gid, where in raw.items():
+        if gid not in gold:
+            raise ContextSetError(f"{label}: gold_sources names {gid!r}, which is not one of its gold ids")
+        ok = isinstance(where, Mapping) and set(where) in ({"source", "key"}, {"path"}) and all(
+            isinstance(v, str) and v.strip() for v in where.values())
+        if not ok:
+            raise ContextSetError(f"{label}: gold_sources.{gid} must be {{source, key}} or {{path}}, as strings")
+        out[str(gid)] = {k: str(v).strip() for k, v in where.items()}
+    return out
+
+
 def parse_context(raw: Any, path: Optional[Path] = None, *, sha256: str = "") -> ContextSet:
     where = str(path) if path else "context set"
     if not isinstance(raw, Mapping):
@@ -209,7 +297,7 @@ def parse_context(raw: Any, path: Optional[Path] = None, *, sha256: str = "") ->
         label = f"{where}: questions[{i}]"
         if not isinstance(row, Mapping):
             raise ContextSetError(f"{label} must be a mapping")
-        extra = set(row) - {"id", "question", "gold"} - SMOKE_QUESTION_KEYS
+        extra = set(row) - {"id", "question", "gold", "answer", "gold_sources", "atoms"} - SMOKE_QUESTION_KEYS
         if extra:
             raise ContextSetError(f"{label}: unknown keys {sorted(extra)}")
         qid, text = row.get("id"), row.get("question")
@@ -218,7 +306,13 @@ def parse_context(raw: Any, path: Optional[Path] = None, *, sha256: str = "") ->
         if qid in seen:
             raise ContextSetError(f"{label}: duplicate id {qid!r}")
         seen.add(qid)
-        questions.append(ContextQuestion(qid, text.strip(), _strings(f"{label}: gold", row.get("gold"))))
+        gold = _strings(f"{label}: gold", row.get("gold"))
+        answer = row.get("answer")
+        if answer is not None and (not isinstance(answer, str) or not answer.strip()):
+            raise ContextSetError(f"{label}: `answer` must be a non-empty string")
+        questions.append(ContextQuestion(qid, text.strip(), gold, answer.strip() if answer else None,
+                                         _gold_sources(label, row.get("gold_sources"), gold),
+                                         _atoms(label, row.get("atoms"), gold)))
     if not any(q.gold for q in questions):
         raise ContextSetError(f"{where}: no question has `gold` ids, so nothing can be scored")
     if not sha256:
@@ -395,6 +489,8 @@ class ContextReport:
     finished_at: str = ""
     seconds: float = 0.0
     error: Optional[str] = None
+    #: the agent arms' section (`archi.evaluation.raw_arm.AgentReport.to_dict()`), when they ran
+    agents: Optional[dict[str, Any]] = None
 
     def summary(self, arm: Arm) -> ArmSummary:
         rows = [q.arms[arm.name] for q in self.questions if arm.name in q.arms]
@@ -480,6 +576,7 @@ class ContextReport:
             "seconds": round(self.seconds, 1),
             "error": self.error,
             "unscored": self.unscored,
+            **({"agent_arms": self.agents} if self.agents is not None else {}),
             "questions": [
                 {
                     "id": q.id,
@@ -600,6 +697,10 @@ def render_markdown(report: ContextReport) -> str:
                      f"{s['recall_at_k']:.3f} | {s['mrr']:.3f} | {s['errors']} |")
     lines.append("")
     lines += [f"- **{arm.name}**: {arm.description}." for arm in report.arms]
+    if report.agents is not None:
+        from archi.evaluation.raw_arm import render_agent_markdown
+
+        lines += ["", *render_agent_markdown(report.agents, data)]
     names = [a.name for a in report.arms]
     lines += ["", "| question | gold | " + " | ".join(names) + " |", "|---|---|" + "---|" * len(names)]
     for q in report.questions:
@@ -631,12 +732,15 @@ def _write(directory: Path, report: ContextReport) -> tuple[Path, Path]:
     return md, js
 
 
-def publish_run(report: ContextReport, root: Path) -> tuple[Path, Path]:
+def publish_run(report: ContextReport, root: Path, *, carry: Optional[Mapping[str, Path]] = None
+                ) -> tuple[Path, Path]:
     """Write one run to `<root>/<YYYYMMDDTHHMMSSZ>` (`-2`, `-3`, ... on a collision), atomically.
 
     Both reports are written into a hidden `<root>/.<stamp>.tmp-<pid>` first and the directory is
     renamed into place only when they are complete, so a crash never leaves a half-written report
-    where the context gate or anything else reads. Readers skip names that start with a dot."""
+    where the context gate or anything else reads. Readers skip names that start with a dot.
+    `carry` maps a file name to a file written during the run (the agent arms' spend ledger),
+    moved into the run's directory with the reports."""
     stamp = report.finished_at.replace("-", "").replace(":", "")
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -645,6 +749,9 @@ def publish_run(report: ContextReport, root: Path) -> tuple[Path, Path]:
     tmp.mkdir()
     try:
         _write(tmp, report)
+        for name, source in (carry or {}).items():
+            if Path(source).exists():
+                shutil.move(str(source), str(tmp / name))
         n = 1
         while True:
             target = root / (stamp if n == 1 else f"{stamp}-{n}")

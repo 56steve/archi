@@ -69,6 +69,15 @@ Known groups and the files each one reads (from `archi/snapshot/groups.py`):
 | `wmstats` | `records.json` | `data/wmstats-workflows/` |
 | `dbs` | `records.json` | `data/dbs-datasets/` |
 | `cmssst-site-status` | `records.json` | `data/cmssst-site-status/` |
+| `tickets`, `servicenow` | `records.json`, optional `meta.json` | `data/tickets/`, `data/servicenow/` |
+| `node-health` | `records.json` | `data/node-health/` |
+| `slurm`, `htcondor` | `records.json` (one object), optional `meta.json` | `data/slurm/`, `data/htcondor/` |
+
+The five cluster-manager groups (the last three rows) keep their records whole:
+there is no field schema, because their downloaders write only what the readers
+read and the readers remove email addresses themselves. The reader check still
+runs, and an item a reader would skip refuses the group. They were added so
+`archi eval --raw-corpus` can pack a cluster-manager instance's caches.
 
 For every group the build:
 
