@@ -254,7 +254,8 @@ def test_the_bash_tool_reports_failure_to_the_loop(corpus):
 
 @needs_bwrap
 def test_the_host_environment_is_not_inherited_even_without_clearenv(corpus, monkeypatch):
-    """Belt and braces: the subprocess itself starts with an empty environment."""
+    """Belt and braces: the subprocess itself starts with an empty environment, but for the two
+    variables systemd-run needs to find the user's manager when a command scope is in use."""
     seen = {}
     real = raw_arm.subprocess.Popen
 
@@ -264,7 +265,7 @@ def test_the_host_environment_is_not_inherited_even_without_clearenv(corpus, mon
 
     monkeypatch.setattr(raw_arm.subprocess, "Popen", spy)
     sandbox(corpus).run("true")
-    assert seen["env"] == {} and seen["start_new_session"] is True
+    assert set(seen["env"]) <= set(raw_arm._SCOPE_ENV) and seen["start_new_session"] is True
     assert os.environ  # the test process still has its own
 
 

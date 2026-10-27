@@ -920,7 +920,7 @@ def test_on_an_instance_the_ledger_lands_in_the_run_directory_and_the_gate_still
     inst = instance_at(tmp_path, ["demo"])
     monkeypatch.setattr(Instance, "load", classmethod(lambda cls, d: inst))
     code = main(["eval", "--context", "--questions", str(questions), "--agents", "agent-graph", "--corpus",
-                 str(corpus), "--model", "m", "--model-price", "1/10"])
+                 str(corpus), "--model", "m", "--model-price", "1/10", "--cap", "10"])
     assert code == 0
     base = tmp_path / "data" / "eval" / "context" / "demo"
     runs = run_dirs(base)

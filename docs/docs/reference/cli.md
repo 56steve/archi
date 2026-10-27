@@ -186,7 +186,7 @@ Ask a bundle's smoke questions through the instance MCP with a local model, or s
 | `--max-turns MAX_TURNS` | model turns per try (default 30) | `30` |
 | `--max-tool-calls MAX_TOOL_CALLS` | tool calls per try (default 200) | `200` |
 | `--try-seconds TRY_SECONDS` | wall time per try (default 900) | `900.0` |
-| `--cap CAP` | spend cap in dollars for the run, judge included (default 10); the run stops before a call that could cross it | `10.0` |
+| `--cap DOLLARS` | spend cap in dollars for the run, judge included (required: there is no default); the run stops before a call that could cross it |  |
 | `--judge` | grade answers against the question file's answer keys with a judge model (off by default) |  |
 | `--judge-model JUDGE_MODEL` | the judge model |  |
 | `--judge-url JUDGE_URL` | the judge's OpenAI-compatible base URL (default https://api.openai.com/v1) | `https://api.openai.com/v1` |
