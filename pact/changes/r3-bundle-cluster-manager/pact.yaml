@@ -54,8 +54,8 @@ requirements:
 
     Acceptance:
 
-    - acc.r3-bundle-cluster-manager.install: bundle CI job green with smoke eval. [evidence:
-    executed_test]
+    - acc.r3-bundle-cluster-manager.install: the bundle installs and publishes in the install-and-publish
+    test (python/tests/packs/test_pack_isolation.py), plus a lab smoke run. [evidence: executed_test]
 
     - acc.r3-bundle-cluster-manager.submit: SubMIT instance rebuilt from the bundle. [evidence:
     executed_test]'
@@ -155,4 +155,11 @@ evidence:
     stays the default. Targeted run 386 passed, 25 skipped; full suite 3478 passed, 27 skipped, 0 failed. The
     pack-isolation install tests were skipped (no ARCHI_PACK_ISOLATION_DSN). A live JIRA server was NOT exercised:
     only recorded fixtures (jira.example.org, invented people) over a fake session.'
-decisions: []
+decisions:
+- digest: sha256:dbb8ebfb2193d286b28caed1fcc4210146382dfe069b186cd3204e080a2468e1
+  reviewer: Jason Mohoney
+  at: '2026-10-27'
+  note: 'Board d380 Q7, Jason: "Yes". For #739, acc.r3-bundle-cluster-manager.install ("bundle CI job green
+    with smoke eval") is met by the install-and-publish test (python/tests/packs/test_pack_isolation.py) plus
+    a lab smoke run; the acceptance text is reworded to say so. This follows decision d332, which deferred
+    the CI gate across the bundles to #619. This row records that choice, not a review of the code.'
