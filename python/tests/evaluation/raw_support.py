@@ -25,7 +25,7 @@ RECORDS = {
     "docsite": {
         "https://docs.example.org/start.html": (
             "docsite/https%3A%2F%2Fdocs.example.org%2Fstart.html.json",
-            '{"url": "https://docs.example.org/start.html", "body": "Install the client."}\n',
+            '{"url": "https://docs.example.org/start.html", "body": "Install the client, then run the setup script now."}\n',
             "documentation_page:abc123"),
     },
     "slurm": {
@@ -45,7 +45,7 @@ NODES = {
 }
 
 
-def write_corpus(root: Path, bundle: str = "demo") -> Path:
+def write_corpus(root: Path, bundle: str = "demo", generation: Optional[str] = "g-1") -> Path:
     """A corpus laid out as `archi eval --raw-corpus` lays one out."""
     path = root / "corpus"
     records = path / RECORDS_DIR
@@ -68,14 +68,29 @@ def write_corpus(root: Path, bundle: str = "demo") -> Path:
     left_out = {OPS_RECORD: OPS_RECORD_REASON, "hypernews": "crawled live"}
     (path / KEYS).write_text(json.dumps({"schema": CORPUS_SCHEMA, "sources": keys, "left_out": left_out}))
     info = {"schema": CORPUS_SCHEMA, "bundle": bundle, "digest": "sha256:" + hashlib.sha256(text.encode()).hexdigest(),
-            "lock_sha256": "0" * 64, "built_at": "2026-10-27T00:00:00Z", "files": len(manifest),
+            "lock_sha256": "0" * 64, "built_at": "2026-10-27T00:00:00Z", "generation": generation,
+            "coverage": f"{bundle}: jira, docsite, slurm", "files": len(manifest),
             "sources": {s: {"group": s, "files": len(t)} for s, t in RECORDS.items()}, "left_out": left_out}
     (path / INFO).write_text(json.dumps(info))
     return path
 
 
-def search_rows(*ids: str) -> str:
-    lines = [f"[{i}] {nid} (thing) · source demo" for i, nid in enumerate(ids, 1)]
+#: What a search row's excerpt shows of each fixture record (its summary or body).
+EXCERPTS = {
+    "jira:DEMO-1": "Transfer failures at the test site",
+    "jira:DEMO-2": "Upgrade the storage servers",
+    "documentation_page:abc123": "Install the client, then run the setup script now.",
+}
+
+
+def search_rows(*ids: str, excerpts: bool = True) -> str:
+    """okg's text rows, each with its record's excerpt (so the record is read), or, with
+    `excerpts=False`, its id alone (so the record is only listed)."""
+    lines = []
+    for i, nid in enumerate(ids, 1):
+        lines.append(f"[{i}] {nid} (thing) · source demo")
+        if excerpts and nid in EXCERPTS:
+            lines.append(f"    {EXCERPTS[nid]}")
     return "search ok · rows · generation g-1\n\n" + "\n".join(lines) + "\n"
 
 
@@ -94,6 +109,8 @@ class FakeMcp:
 
     async def call(self, name, arguments, *, meta=None):
         self.calls.append((name, dict(arguments), meta))
+        if name == "inspect" and arguments["target"].get("kind") == "graph":
+            return json.dumps({"pinned_generation_id": "g-1", "counts": {}}), False
         if name == "inspect":
             nid = arguments["target"]["node_id"]
             if nid not in self.nodes:
@@ -133,4 +150,8 @@ def reply(content: str = "", *calls: tuple[str, dict], prompt: int = 1000, compl
 
 
 def failing(messages, turn):
-    raise ModelError("http://model: HTTP 500: boom")
+    raise ModelError("http://model: HTTP 500: boom", status=500, sent=True)
+
+
+def http_error(status: int, body: str = "boom") -> ModelError:
+    return ModelError(f"http://model: HTTP {status}: {body}", status=status, sent=True)

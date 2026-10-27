@@ -1,7 +1,9 @@
 """acc.r3-context-quality.raw-arm-safety: the agent-bash arm's sandbox, with real bubblewrap.
 
 Each test runs real commands under `bwrap` and is skipped, with the reason, on a host that
-has none (macOS, most CI images). The refusal without bwrap runs everywhere.
+has none (macOS, most CI images: CI skips them). Set ARCHI_REQUIRE_BWRAP=1 to make them fail
+instead of skip, on a host that must prove the sandbox. The refusals without a working bwrap
+run everywhere.
 """
 import os
 import re
@@ -9,14 +11,17 @@ import shutil
 import socket
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from archi.evaluation import raw_arm
 from archi.evaluation.raw_arm import BashSandbox, SandboxError
 
-needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None,
-                                 reason="bubblewrap (bwrap) is not installed on this host")
+REQUIRE_BWRAP = os.environ.get("ARCHI_REQUIRE_BWRAP") == "1"
+needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None and not REQUIRE_BWRAP,
+                                 reason="bubblewrap (bwrap) is not installed on this host "
+                                        "(set ARCHI_REQUIRE_BWRAP=1 to fail instead)")
 SECRET = "sk-sandbox-test-0000"
 
 
@@ -24,7 +29,7 @@ SECRET = "sk-sandbox-test-0000"
 def corpus(tmp_path):
     root = tmp_path / "records"
     (root / "jira").mkdir(parents=True)
-    (root / "jira" / "DEMO-1.json").write_text('{"key": "DEMO-1"}\n')
+    (root / "jira" / "DEMO-1.json").write_text('{"key": "DEMO-1", "summary": "Transfer failures at the test site"}\n')
     return root
 
 
@@ -32,6 +37,8 @@ def sandbox(corpus, **kwargs):
     try:
         return BashSandbox(corpus, **kwargs)
     except SandboxError as exc:  # pragma: no cover - a host where bwrap exists but cannot start
+        if REQUIRE_BWRAP:
+            raise
         pytest.skip(str(exc))
 
 
@@ -39,6 +46,76 @@ def test_without_bwrap_the_bash_arm_refuses_to_run(corpus, monkeypatch):
     monkeypatch.setattr(raw_arm.shutil, "which", lambda name: None)
     with pytest.raises(SandboxError, match="bubblewrap \\(bwrap\\) is not installed"):
         BashSandbox(corpus)
+
+
+def test_a_sandbox_that_cannot_run_true_refuses_to_start(corpus):
+    false = shutil.which("false")
+    if false is None or not any(Path(p).is_file() for p in ("/usr/bin/bash", "/bin/bash")):
+        pytest.skip("this host has no `false` or no bash")
+    with pytest.raises(SandboxError, match="the sandbox cannot start: `true` in it gave exit 1"):
+        BashSandbox(corpus, bwrap=false)
+
+
+@needs_bwrap
+def test_the_limits_are_set_inside(corpus):
+    box = sandbox(corpus, max_procs=50, memory_bytes=2 * 1024 ** 3, file_bytes=8 * 1024 ** 2, command_seconds=20)
+    result = box.run("ulimit -v; ulimit -f; ulimit -t; ulimit -u")
+    assert result.ok, result.text
+    memory, files, cpu, procs = result.text.split()
+    assert int(memory) <= 2 * 1024 ** 2 and int(files) <= 8 * 1024 and int(cpu) <= 20
+    if box.nproc_mode == "namespace":  # the kernel counts processes in bwrap's user namespace
+        assert int(procs) == 50
+    else:
+        assert int(procs) <= raw_arm._user_tasks() + 50 + 64
+
+
+@needs_bwrap
+def test_a_large_allocation_is_stopped(corpus):
+    box = sandbox(corpus, memory_bytes=1024 ** 3)
+    if "python3" not in box.tools:
+        pytest.skip("no python3 on this host to allocate with")
+    result = box.run("python3 -c 'b = bytearray(3 * 1024 ** 3); print(\"ALLOCATED\")'")
+    assert "ALLOCATED" not in result.text and "MemoryError" in result.text and not result.ok
+
+
+@needs_bwrap
+def test_a_fork_bomb_is_stopped(corpus):
+    box = sandbox(corpus, max_procs=64, command_seconds=30)
+    if "python3" not in box.tools:
+        pytest.skip("no python3 on this host to fork with")
+    # Forks until the limit says no (bounded at 2000 even if it never does), then reports how
+    # many it got; the children sleep, and die with the sandbox's PID namespace.
+    script = ("import os, time\n"
+              "n = 0\n"
+              "try:\n"
+              "    while n < 2000:\n"
+              "        if os.fork() == 0:\n"
+              "            time.sleep(60); os._exit(0)\n"
+              "        n += 1\n"
+              "except OSError as e:\n"
+              "    print(\"refused\", e.errno, \"forked\", n, flush=True)\n"
+              "else:\n"
+              "    print(\"forked\", n, flush=True)\n")
+    started = time.monotonic()
+    result = box.run(f"python3 -c '{script}'")
+    assert time.monotonic() - started < 25, result.text
+    assert "refused" in result.text, result.text
+    match = re.search(r"forked (\d+)", result.text)
+    assert match, result.text
+    forked = int(match.group(1))
+    if box.nproc_mode == "namespace":
+        assert forked < 64, result.text
+    else:  # the user's other jobs on the host come and go
+        assert forked < 64 + 200, result.text
+
+
+@needs_bwrap
+def test_a_file_past_the_size_limit_is_stopped(corpus):
+    box = sandbox(corpus, file_bytes=1024 ** 2)
+    result = box.run("head -c 5000000 /dev/zero > /tmp/big; ls -l /tmp/big | awk '{print $5}'")
+    assert "File size limit exceeded" in result.text or "File too large" in result.text, result.text
+    size = int(result.text.strip().splitlines()[-1])
+    assert size <= 1024 ** 2
 
 
 @needs_bwrap
@@ -129,14 +206,24 @@ def test_output_past_the_limit_is_cut_and_the_command_stopped(corpus):
     result = box.run("yes corpus-line")  # never ends by itself
     assert time.monotonic() - started < 10
     assert result.cut and not result.ok
+    assert result.responded  # the visible part is still a response the scorer reads
     body, note = result.text.rsplit("\n", 1)
     assert len(body.encode()) <= 1024 and note == "[output cut at 1024 bytes; the command was stopped]"
 
 
 @needs_bwrap
-def test_a_failing_command_is_not_a_successful_response(corpus):
+def test_a_command_that_printed_nothing_is_not_a_response(corpus):
     result = sandbox(corpus).run("grep -r NOTHING-MATCHES /corpus")
-    assert result.exit_code == 1 and not result.ok and "[exit code 1]" in result.text
+    assert result.exit_code == 1 and not result.ok and not result.responded and "[exit code 1]" in result.text
+
+
+@needs_bwrap
+def test_a_nonzero_exit_that_printed_something_is_a_response(corpus):
+    import asyncio
+
+    tools = raw_arm.BashTools(sandbox(corpus))
+    text, is_error = asyncio.run(tools.call("bash", {"command": "cat /corpus/jira/DEMO-1.json /corpus/nope"}))
+    assert not is_error and "Transfer failures" in text and "[exit code 1]" in text
 
 
 @needs_bwrap
@@ -146,6 +233,8 @@ def test_the_bash_tool_reports_failure_to_the_loop(corpus):
     tools = raw_arm.BashTools(sandbox(corpus))
     text, is_error = asyncio.run(tools.call("bash", {"command": "ls /corpus"}))
     assert not is_error and text.strip() == "jira"
+    text, is_error = asyncio.run(tools.call("bash", {"command": "true"}))
+    assert is_error  # printed nothing
     text, is_error = asyncio.run(tools.call("bash", {}))
     assert is_error and "command" in text
 
@@ -190,14 +279,14 @@ def test_both_agent_arms_run_on_one_scorer_with_the_bash_arm_in_the_sandbox(tmp_
             if messages[-1]["role"] != "user":
                 return ChatReply("Stuck transfers.", (), 10, 5)
             if any(t["function"]["name"] == "bash" for t in tool_schema):
-                return ChatReply("", (ToolCall("b1", "bash", {"command": "grep -rl 'Transfer failures' /corpus"}),),
+                return ChatReply("", (ToolCall("b1", "bash", {"command": "grep -r 'Transfer failures' /corpus"}),),
                                  10, 5)
             return ChatReply("", (ToolCall("s1", "search", {"query": "Why do transfers fail?"}),), 10, 5)
 
     ledger = Ledger(tmp_path / "ledger.jsonl", 1.0)
     model = Metered(Model(None), Price(1.0, 10.0), ledger, 100)
     plan = AgentPlan((AGENT_BASH, AGENT_GRAPH), model, Caps(), 1, corpus, sandbox=BashSandbox(corpus.records))
-    gold = asyncio.run(resolve_gold(tools, cset.scored, corpus.keys(), manifest))
+    gold = asyncio.run(resolve_gold(tools, cset.scored, corpus.keys(), manifest, corpus.records))
     data = asyncio.run(run_agent_arms(cset.scored, plan, tools, gold, manifest=manifest)).to_dict()
     tries = {arm: ts[0] for arm, ts in data["questions"][0]["arms"].items()}
     assert tries[AGENT_BASH]["calls"][0]["ok"] and tries[AGENT_BASH]["evidence"]["found"] == ["jira:DEMO-1"]

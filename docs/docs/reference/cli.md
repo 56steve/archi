@@ -190,7 +190,9 @@ Ask a bundle's smoke questions through the instance MCP with a local model, or s
 | `--judge` | grade answers against the question file's answer keys with a judge model (off by default) |  |
 | `--judge-model JUDGE_MODEL` | the judge model |  |
 | `--judge-url JUDGE_URL` | the judge's OpenAI-compatible base URL (default https://api.openai.com/v1) | `https://api.openai.com/v1` |
-| `--judge-reasoning-effort JUDGE_REASONING_EFFORT` | reasoning_effort for the judge (default xhigh) | `xhigh` |
+| `--judge-reasoning-effort JUDGE_REASONING_EFFORT` | reasoning_effort for the judge (default high) | `high` |
+| `--judge-max-output-tokens JUDGE_MAX_OUTPUT_TOKENS` | max_completion_tokens per judge call, also its spend bound (default 16000) | `16000` |
+| `--allow-low-price` | accept a price below $0.01 input or $0.04 output per million tokens (a local model); refused by default as a likely typo |  |
 | `--judge-key-env JUDGE_KEY_ENV` | environment variable holding the PATH of a file with the judge API key (default ARCHI_EVAL_JUDGE_KEY_FILE) | `ARCHI_EVAL_JUDGE_KEY_FILE` |
 | `--judge-price IN/OUT[/CACHED]` | the judge's price, as --model-price |  |
 | `--judge-passes JUDGE_PASSES` | judge passes per answer (default 1) | `1` |

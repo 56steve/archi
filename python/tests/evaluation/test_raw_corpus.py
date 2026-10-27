@@ -177,16 +177,133 @@ def test_the_command_builds_the_corpus_of_an_instance(tmp_path, monkeypatch, cap
     from archi.stack.instance import Instance
     from evaluation.test_context import instance_at
 
+    from archi.evaluation import agent as agent_mod
+    from evaluation.raw_support import FakeMcp
+
+    class Endpoint(FakeMcp):
+        def __init__(self, url, token):
+            super().__init__()
+
     inst = instance_at(tmp_path, ["demo"])
     registry = write_caches(inst.data_root)
     inst.deployment_dir.mkdir(parents=True)
     (inst.deployment_dir / "source_registry.yaml").write_text(yaml.safe_dump({"sources": registry}))
     monkeypatch.setattr(Instance, "load", classmethod(lambda cls, d: inst))
+    monkeypatch.setattr(agent_mod, "McpToolBox", Endpoint)
     assert main(["eval", "--raw-corpus"]) == 0
     out = capsys.readouterr().out
     corpus = newest_corpus(inst.data_root, "demo")
     assert f"corpus {corpus}" in out and "left out: ops-record" in out
-    assert verify_corpus(corpus).sources.keys() == {"docsite", "jira", "slurm", "tickets"}
+    assert "generation g-1" in out and "coverage: demo: docsite, jira, slurm, tickets; " in out
+    checked = verify_corpus(corpus)
+    assert checked.sources.keys() == {"docsite", "jira", "slurm", "tickets"} and checked.generation == "g-1"
+
+
+def test_without_a_reachable_endpoint_the_generation_is_unknown_and_said_so(tmp_path, monkeypatch, capsys):
+    from archi.bundles.cli import main
+    from archi.evaluation import agent as agent_mod
+    from archi.stack.instance import Instance
+    from evaluation.test_context import instance_at
+
+    class Down:
+        def __init__(self, url, token):
+            pass
+
+        async def __aenter__(self):
+            raise agent_mod.ToolError("connection refused")
+
+        async def __aexit__(self, *exc):
+            return None
+
+    inst = instance_at(tmp_path, ["demo"])
+    registry = write_caches(inst.data_root)
+    inst.deployment_dir.mkdir(parents=True)
+    (inst.deployment_dir / "source_registry.yaml").write_text(yaml.safe_dump({"sources": registry}))
+    monkeypatch.setattr(Instance, "load", classmethod(lambda cls, d: inst))
+    monkeypatch.setattr(agent_mod, "McpToolBox", Down)
+    assert main(["eval", "--raw-corpus"]) == 0
+    assert "the published generation is unknown" in capsys.readouterr().err
+    assert verify_corpus(newest_corpus(inst.data_root, "demo")).generation is None
+
+
+def _topic(parent: str = "") -> str:
+    line = f'%META:TOPICPARENT{{name="{parent}"}}%\n' if parent else ""
+    return f'%META:TOPICINFO{{author="someone" date="1700000000" version="3"}}%\n{line}---+ Heading\nBody text.\n'
+
+
+def test_the_twiki_pages_are_the_ones_the_instances_reader_keeps(tmp_path):
+    """physics_filter as the instance sets it (a rendered answer, the string "true"): the corpus holds
+    the physics pages the graph read, not the whole dump."""
+    from archi.sources.twiki import TwikiEOSSource
+
+    data = tmp_path / "data"
+    dump = data / "twiki-dump"
+    dump.mkdir(parents=True)
+    pages = {"HIG-19-001.txt": _topic(), "StatisticsCommittee.txt": _topic("HIG-19-001"),
+             "GrandChildPage.txt": _topic("StatisticsCommittee"), "CompOpsTransferTeam.txt": _topic(),
+             "HowToRunCrab.txt": _topic(), "RandomUnrelatedPage.txt": _topic()}
+    for name, text in pages.items():
+        (dump / name).write_text(text)
+    registry = {"twiki_eos": registry_entry("archi.sources.twiki", eos_root="${eos_root}", web_root="CMS",
+                                            physics_filter="${physics_filter}")}
+    plan = plan_sources(registry, data_root=data, answers={"eos_root": str(dump), "physics_filter": "true"})
+    corpus = build_corpus(plan, bundle="cms-physics", out_root=corpus_root(data, "cms-physics"))
+    kept = sorted(p.name for p in (corpus.records / "twiki-eos").iterdir())
+    reader = TwikiEOSSource(eos_root=str(dump), web_root="CMS", physics_filter=True)
+    expected = sorted(r.source_path for r in reader._physics_scoped(list(reader._records_from_root(dump).records)))
+    assert kept == expected and "CompOpsTransferTeam.txt" not in kept and len(kept) < len(pages)
+    assert corpus.sources["twiki_eos"]["scope"] == "physics filter"
+    assert corpus.coverage.startswith("cms-physics: twiki_eos (physics filter); ")
+    assert "ops-record not included" in corpus.coverage
+
+
+def test_git_code_checkouts_go_in_as_their_tracked_files(tmp_path):
+    """The comp-ops gold cites repository files: each enabled git-code checkout's tracked files
+    go in under git-repo/<repo>/, emails removed, binaries left out and counted."""
+    from packs.pack_support import _git_code, git
+
+    data = tmp_path / "data"
+    data.mkdir()
+    _git_code(data, None)
+    upstream = tmp_path / "upstream" / "demo"
+    (upstream / "OWNERS").write_text(f"Maintained by {PLANTED} for the transfer team of the test site.\n")
+    (upstream / "logo.png").write_bytes(b"\x89PNG\r\n\x00\x00binary")
+    (upstream / "untracked.txt").write_text("not committed")
+    git(["add", "OWNERS", "logo.png"], upstream)
+    git(["commit", "-q", "-m", "owners"], upstream)
+    registry = {
+        "repo": {"module": "okg.substrate.library.sources.git_graph_files", "class": "GitFilesSource",
+                 "params": {"repo": "${repo_name}", "repo_root": str(upstream)}},
+        "git_history": {"module": "okg.substrate.library.sources.git_graph_history", "params": {}},
+    }
+    plan = plan_sources(registry, data_root=data, answers={"repo_name": "demo"})
+    corpus = build_corpus(plan, bundle="cms-comp-ops", out_root=corpus_root(data, "cms-comp-ops"))
+    files = sorted(p.relative_to(corpus.records).as_posix() for p in corpus.records.rglob("*") if p.is_file())
+    assert files == ["git-repo/demo/OWNERS", "git-repo/demo/README.md", "git-repo/demo/pkg/transfer.py"]
+    assert PLANTED not in (corpus.records / "git-repo" / "demo" / "OWNERS").read_text()
+    row = corpus.sources["git_repo"]
+    assert row["repos"]["demo"]["left_out_files"]["binary"] == 1 and len(row["repos"]["demo"]["head"]) == 40
+    keys = corpus.keys()["sources"]["git_repo"]
+    assert keys["lookup"]["demo/pkg/transfer.py"] == "git-repo/demo/pkg/transfer.py"
+    assert keys["lookup"]["pkg/transfer.py"] == "git-repo/demo/pkg/transfer.py"
+    assert "commit history" in corpus.left_out["git_history"]
+    verify_corpus(corpus.path)
+
+
+def test_a_twiki_source_whose_filter_is_unknown_is_left_out(tmp_path):
+    registry = {"twiki_eos": registry_entry("archi.sources.twiki", eos_root=str(tmp_path),
+                                            physics_filter="${physics_filter}")}
+    plan = plan_sources(registry, data_root=tmp_path)
+    assert plan.included == [] and "physics_filter" in plan.left_out["twiki_eos"]
+
+
+def test_a_symbolic_link_under_records_is_refused(built, tmp_path):
+    _, _, corpus = built
+    outside = tmp_path / "secret.txt"
+    outside.write_text("host file")
+    (corpus.records / "jira" / "link.json").symlink_to(outside)
+    with pytest.raises(CorpusError, match="symbolic link"):
+        verify_corpus(corpus.path)
 
 
 def test_the_command_needs_an_instance(tmp_path, monkeypatch, capsys):

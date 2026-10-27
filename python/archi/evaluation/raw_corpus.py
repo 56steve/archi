@@ -23,8 +23,15 @@ was built from, into a directory of plain files, one per record:
 3. The corpus digest is `sha256:` of MANIFEST.txt. A run records it, and refuses a
    corpus whose files no longer match their manifest.
 
-Sources the snapshot has no group for (live fetches, git checkouts, derived sources) are
-left out, each with its reason, in corpus.json and README.md. So is ops-record: its
+TWiki keeps only the pages the instance's TWiki reader reads with its own params (the
+physics filter, seed topics, skip patterns), so the corpus matches what the graph read. A
+git-code checkout goes in as its tracked files at HEAD, under `records/git-repo/<repo>/`:
+no snapshot group checks a source tree, so email addresses are removed here, and binary and
+oversized files are left out and counted. The instance's published generation (read through
+MCP when the corpus is built) is recorded beside the digest.
+
+Sources with no checked cache (live fetches, derived sources) are left out, each with its
+reason, in corpus.json and README.md, and the coverage line says so in one sentence. So is ops-record: its
 records exist only in the graph (okg admission), it has no cache, and an export through
 the MCP tools could not be shown complete, so it is left out of both agent arms: gold
 records from it count as unavailable in both, never as misses.
@@ -42,7 +49,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Mapping, Optional
+from typing import Any, Iterator, Mapping, Optional, Sequence
 from urllib.parse import quote
 
 import yaml
@@ -78,6 +85,10 @@ class Group:
     key_fields: tuple[str, ...] = ()
 
 
+#: The TWiki reader params that decide which pages it reads; the corpus keeps exactly those pages.
+#: (`page_index_path` only names where the reader writes the ids it emitted: it changes no page.)
+TWIKI_SCOPE_PARAMS = ("web_root", "physics_filter", "seed_topics", "max_depth", "skip_patterns", "max_files")
+
 #: Registry source name -> its snapshot group. A source whose registry module differs is
 #: left out (indico_live is not the cache reader `indico` is).
 SOURCE_GROUPS: dict[str, Group] = {
@@ -106,17 +117,24 @@ SOURCE_GROUPS: dict[str, Group] = {
 #: Why a known source has no files in the corpus.
 LEFT_OUT_REASONS = {
     "indico_live": "fetched live from Indico; there is no cache for archi.snapshot to check",
-    "cds": "harvested live from CDS; there is no cache for archi.snapshot to check",
+    "cds": ("harvested live from the CDS OAI-PMH endpoint at ingest; no copy is kept on disk, so its records "
+            "exist only in the graph, and an export through the MCP tools could not be shown complete"),
     "siteconf": "read live from GitLab; there is no cache for archi.snapshot to check",
     "hypernews": "crawled live through a login; there is no cache for archi.snapshot to check",
-    "analysis_notes": "a tree of LaTeX sources that no archi.snapshot group checks",
+    "analysis_notes": ("a mirror of LaTeX trees (sources and figures) that no archi.snapshot group checks or "
+                       "removes email addresses from; including it needs such a group first"),
     "physics_entities": "derived from other sources' records, not a cache",
     "physics_vocabulary": "a vocabulary shipped with archi, not a cache",
-    "git_history": "a git checkout that no archi.snapshot group checks",
-    "repo": "a git checkout that no archi.snapshot group checks",
-    "code_structure": "a git checkout that no archi.snapshot group checks",
-    "code_text": "a git checkout that no archi.snapshot group checks",
+    "git_history": "commit history, not files; the corpus holds the checkout's tracked files (git_repo)",
+    "code_structure": "derived from the git checkout, whose tracked files the corpus holds (git_repo)",
+    "code_text": "derived from the git checkout, whose tracked files the corpus holds (git_repo)",
 }
+#: The git-code pack's file reader, and the corpus source its files go under: okg names its
+#: producer `<deployment>.git-repo`, so a gold id's provenance finds them there.
+GIT_FILES_MODULE = "okg.substrate.library.sources.git_graph_files"
+GIT_SOURCE = "git_repo"
+#: Repository files larger than this are left out of the corpus (and counted).
+MAX_REPO_FILE_BYTES = 1024 * 1024
 _MONIT = "queried live from MONIT; there is no cache for archi.snapshot to check"
 _PLACEHOLDER = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
 #: Characters kept as they are in a record file name; anything else is %-escaped.
@@ -136,12 +154,16 @@ class PlannedSource:
     source: str
     group: str
     directory: Path
+    #: the registry entry's params with the deployment's values filled in
+    params: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class Plan:
     included: list[PlannedSource] = field(default_factory=list)
     left_out: dict[str, str] = field(default_factory=dict)
+    #: git-code checkouts: (registry source, repository name, checkout directory, exclude globs)
+    repos: list[tuple[str, str, Path, tuple[str, ...]]] = field(default_factory=list)
 
 
 def plan_sources(registry: Mapping[str, Any], *, data_root: Path, answers: Optional[Mapping[str, Any]] = None,
@@ -158,6 +180,19 @@ def plan_sources(registry: Mapping[str, Any], *, data_root: Path, answers: Optio
             continue
         if entry.get("enabled") is False:
             continue  # not enabled on the instance: neither in nor left out
+        if entry.get("module") == GIT_FILES_MODULE:
+            params = _fill(dict(entry.get("params") or {}), values)
+            root = params.get("repo_root")
+            if not isinstance(root, str) or not root or _PLACEHOLDER.search(root):
+                plan.left_out[name] = f"its repo_root {root!r} names a value the deployment does not record"
+                continue
+            directory = _locate(Path(root), data_root, deployment_dir)
+            repo = str(params.get("repo") or directory.name)
+            if _PLACEHOLDER.search(repo) or "/" in repo or repo in (".", ".."):
+                repo = directory.name
+            globs = tuple(str(g) for g in params.get("exclude_globs") or ())
+            plan.repos.append((name, repo, directory, globs))
+            continue
         spec = SOURCE_GROUPS.get(name)
         if spec is None:
             plan.left_out[name] = (_MONIT if name.startswith("monit_")
@@ -167,6 +202,7 @@ def plan_sources(registry: Mapping[str, Any], *, data_root: Path, answers: Optio
             plan.left_out[name] = (f"its reader is {entry.get('module')}, not the cache reader {spec.module} "
                                    f"that the snapshot group {spec.group} checks")
             continue
+        params = _fill(dict(entry.get("params") or {}), values)
         raw = (entry.get("params") or {}).get(spec.param)
         if not raw:
             plan.left_out[name] = f"its registry entry sets no {spec.param}"
@@ -180,9 +216,28 @@ def plan_sources(registry: Mapping[str, Any], *, data_root: Path, answers: Optio
         if spec.group in groups_seen:
             raise CorpusError(f"sources {groups_seen[spec.group]} and {name} both map to snapshot group {spec.group}")
         groups_seen[spec.group] = name
-        plan.included.append(PlannedSource(name, spec.group, directory))
+        if spec.group == "twiki-eos":
+            unresolved = [k for k in TWIKI_SCOPE_PARAMS if isinstance(params.get(k), str) and _PLACEHOLDER.search(params[k])]
+            if unresolved:
+                plan.left_out[name] = (f"{', '.join(unresolved)} name a value the deployment does not record, so the "
+                                       "pages the reader keeps are unknown")
+                continue
+        plan.included.append(PlannedSource(name, spec.group, directory, params))
     plan.left_out.setdefault(OPS_RECORD, OPS_RECORD_REASON)
     return plan
+
+
+def _fill(value: Any, values: Mapping[str, str]) -> Any:
+    """`${name}` placeholders filled from the deployment's values; "true" and "false" read as booleans
+    (a registry rendered from an answer holds the string)."""
+    if isinstance(value, dict):
+        return {k: _fill(v, values) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fill(v, values) for v in value]
+    if isinstance(value, str):
+        text = _PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), value)
+        return {"true": True, "false": False}.get(text.strip().lower(), text)
+    return value
 
 
 def _locate(path: Path, data_root: Path, deployment_dir: Optional[Path]) -> Path:
@@ -353,6 +408,10 @@ class Corpus:
     sources: Mapping[str, Any]
     left_out: Mapping[str, str]
     built_at: str
+    #: the instance's published generation when the corpus was built, or None if unknown
+    generation: Optional[str] = None
+    #: one line: what the corpus covers and what it leaves out
+    coverage: str = ""
 
     @property
     def records(self) -> Path:
@@ -380,11 +439,99 @@ def _collected(directory: Path) -> str:
     return datetime.fromtimestamp(max(stamps), timezone.utc).strftime("%Y-%m-%d")
 
 
+def repo_records(repo: str, root: Path, exclude_globs: Sequence[str] = ()) -> tuple[list[RecordFile], str, dict]:
+    """A git-code checkout's tracked files at HEAD, one record each, under `git-repo/<repo>/`.
+
+    Not packed through archi.snapshot (no group checks a source tree): email addresses are
+    removed here, as the snapshot does, and binary files (a NUL byte) and files over
+    MAX_REPO_FILE_BYTES are left out and counted. Returns (records, HEAD sha, left-out counts)."""
+    import fnmatch
+    import subprocess
+
+    from archi.enrichment.anonymizer import redact_email_addresses
+
+    def git(*args: str) -> bytes:
+        try:
+            return subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise CorpusError(f"git-code: cannot read the checkout {root} ({type(exc).__name__})") from exc
+
+    head = git("rev-parse", "HEAD").decode().strip()
+    out: list[RecordFile] = []
+    left = {"binary": 0, "too_large": 0, "excluded": 0, "not_a_file": 0}
+    for raw in git("ls-files", "-z").split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", "replace")
+        pure = PurePosixPath(rel)
+        if pure.is_absolute() or ".." in pure.parts:
+            left["not_a_file"] += 1
+            continue
+        if any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch("/" + rel, g) for g in exclude_globs):
+            left["excluded"] += 1
+            continue
+        path = root / rel
+        if path.is_symlink() or not path.is_file():
+            left["not_a_file"] += 1
+            continue
+        if path.stat().st_size > MAX_REPO_FILE_BYTES:
+            left["too_large"] += 1
+            continue
+        data = path.read_bytes()
+        if b"\0" in data:
+            left["binary"] += 1
+            continue
+        text = redact_email_addresses(data.decode("utf-8", "replace"))
+        key = f"{repo}/{rel}"
+        out.append(RecordFile(key, f"git-repo/{repo}/{rel}", text.encode("utf-8"),
+                              (rel, f"repos/{repo}/{rel}")))
+    return out, head, left
+
+
+def twiki_scope(files: Mapping[str, bytes], params: Mapping[str, Any]) -> tuple[set[str], str]:
+    """The topic files (relative to the TWiki root) the instance's TWiki reader keeps, with its own
+    params (physics filter, seed topics, skip patterns), and a note on how it was scoped."""
+    from archi.sources.twiki import TwikiEOSSource
+
+    kwargs = {k: params[k] for k in TWIKI_SCOPE_PARAMS if k in params and params[k] is not None}
+    with tempfile.TemporaryDirectory(prefix="raw-corpus-twiki-") as tmp:
+        root = Path(tmp)
+        for rel, data in files.items():
+            target = root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        try:
+            reader = TwikiEOSSource(eos_root=str(root), **kwargs)
+            read = reader._records_from_root(root)
+            kept = reader._physics_scoped(list(read.records))
+        except (TypeError, ValueError) as exc:
+            raise CorpusError(f"the TWiki reader refused the instance's params: {exc}") from exc
+    notes = []
+    if kwargs.get("physics_filter"):
+        notes.append("physics filter")
+    if kwargs.get("seed_topics"):
+        notes.append("seed topics")
+    if kwargs.get("max_files"):
+        notes.append(f"at most {kwargs['max_files']} pages")
+    return {r.source_path for r in kept}, ", ".join(notes)
+
+
+def coverage_line(bundle: str, sources: Mapping[str, Any], left_out: Mapping[str, str]) -> str:
+    """`<bundle>: twiki-eos (physics filter), cmssw_releases; cds not included: <why>; ...`"""
+    parts = [name + (f" ({row['scope']})" if row.get("scope") else "") for name, row in sources.items()]
+    line = f"{bundle}: {', '.join(parts) or 'nothing'}"
+    if left_out:
+        line += "; " + "; ".join(f"{name} not included: {why}" for name, why in left_out.items())
+    return line
+
+
 def build_corpus(plan: Plan, *, bundle: str, out_root: Path, built_by: Optional[str] = None,
-                 tmp_dir: Optional[Path] = None) -> Corpus:
+                 tmp_dir: Optional[Path] = None, generation: Optional[str] = None) -> Corpus:
     """Pack `plan.included` with archi.snapshot and unpack it to `<out_root>/<lock sha>/`.
 
-    Nothing is written when a group is refused; the error names each refusal."""
+    `generation` is the instance's published generation as the corpus is built; it is recorded
+    beside the digest so a run can tell when the graph has moved on. Nothing is written when a
+    group is refused; the error names each refusal."""
     from archi.snapshot.builder import (
         LOCK_NAME,
         GroupConfig,
@@ -395,7 +542,7 @@ def build_corpus(plan: Plan, *, bundle: str, out_root: Path, built_by: Optional[
     )
     from archi.snapshot.groups import GROUPS
 
-    if not plan.included:
+    if not plan.included and not plan.repos:
         raise CorpusError("no enabled source of this instance has a cache archi.snapshot can check; "
                           f"left out: {', '.join(sorted(plan.left_out))}")
     config = SnapshotConfig(
@@ -407,12 +554,19 @@ def build_corpus(plan: Plan, *, bundle: str, out_root: Path, built_by: Optional[
     out_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".raw-corpus-", dir=out_root) as scratch:
         snap = Path(scratch) / "snapshot"
-        try:
-            lock = build(config, snap, built_by=built_by, tmp_dir=tmp_dir)
-        except SnapshotError as exc:
-            raise CorpusError(f"archi.snapshot refused the caches: {exc}") from exc
-        lock_bytes = (snap / LOCK_NAME).read_bytes()
-        lock_sha = hashlib.sha256(lock_bytes).hexdigest()
+        lock: dict[str, Any] = {"groups": {}}
+        lock_bytes = b""
+        if plan.included:
+            try:
+                lock = build(config, snap, built_by=built_by, tmp_dir=tmp_dir)
+            except SnapshotError as exc:
+                raise CorpusError(f"archi.snapshot refused the caches: {exc}") from exc
+            lock_bytes = (snap / LOCK_NAME).read_bytes()
+        repos = [(name, repo, *repo_records(repo, directory, globs)) for name, repo, directory, globs in plan.repos]
+        heads = {repo: head for _, repo, _, head, _ in repos}
+        # the snapshot lock's sha; with git-code checkouts, of the lock and their HEADs
+        lock_sha = hashlib.sha256(lock_bytes + (json.dumps(heads, sort_keys=True).encode() if heads else b"")
+                                  ).hexdigest()
         target = out_root / lock_sha[:16]
         if target.exists():
             raise CorpusError(f"{target} exists already")
@@ -426,6 +580,12 @@ def build_corpus(plan: Plan, *, bundle: str, out_root: Path, built_by: Optional[
             group_lock = lock["groups"][planned.group]
             files = read_archive(snap / group_lock["archive"])
             exploded = explode(planned.group, files, GROUPS[planned.group].archive_dir)
+            scope = ""
+            if planned.group == "twiki-eos":
+                prefix = GROUPS[planned.group].archive_dir + "/"
+                kept, scope = twiki_scope({k[len(prefix):]: v for k, v in files.items() if k.startswith(prefix)},
+                                          planned.params)
+                exploded = [r for r in exploded if r.path[len("twiki-eos/"):] in kept]
             table: dict[str, str] = {}
             ambiguous: set[str] = set()
             natural: dict[str, str] = {}
@@ -457,6 +617,36 @@ def build_corpus(plan: Plan, *, bundle: str, out_root: Path, built_by: Optional[
                 "record_count": group_lock["record_count"],
                 "files": len(exploded),
                 "addresses_removed": group_lock["addresses_removed"],
+                **({"scope": scope} if scope else {}),
+            }
+        if repos:
+            table, ambiguous, natural, skipped = {}, set(), {}, {}
+            for name, repo, exploded, head, left in repos:
+                for record in exploded:
+                    target_file = records / record.path
+                    if target_file.exists():
+                        raise CorpusError(f"git-code: two files map to {record.path}")
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    target_file.write_bytes(record.data)
+                    manifest.append((record.path, hashlib.sha256(record.data).hexdigest()))
+                    natural[record.path] = record.key
+                    for alias in (record.key, *record.aliases):
+                        if alias in table and table[alias] != record.path:
+                            ambiguous.add(alias)
+                        table.setdefault(alias, record.path)
+                skipped[repo] = left
+            keys[GIT_SOURCE] = {"group": "git-code",
+                                "lookup": {k: v for k, v in sorted(table.items()) if k not in ambiguous},
+                                "ambiguous": sorted(ambiguous), "natural_key": dict(sorted(natural.items()))}
+            sources[GIT_SOURCE] = {
+                "group": "git-code",
+                "registry_sources": sorted({name for name, *_ in repos}),
+                "repos": {repo: {"head": head, "files": len(exploded), "left_out_files": left}
+                          for _, repo, exploded, head, left in repos},
+                "files": sum(len(exploded) for _, _, exploded, _, _ in repos),
+                "record_count": sum(len(exploded) for _, _, exploded, _, _ in repos),
+                "collected": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "scope": "tracked files at " + ", ".join(f"{repo} @{head[:8]}" for repo, head in heads.items()),
             }
         manifest.sort()
         manifest_text = "".join(f"{path}\t{sha}\n" for path, sha in manifest)
@@ -469,6 +659,8 @@ def build_corpus(plan: Plan, *, bundle: str, out_root: Path, built_by: Optional[
             "digest": digest,
             "lock_sha256": lock_sha,
             "built_at": built_at,
+            "generation": generation,
+            "coverage": coverage_line(bundle, sources, dict(sorted(plan.left_out.items()))),
             "files": len(manifest),
             "sources": sources,
             "left_out": dict(sorted(plan.left_out.items())),
@@ -477,7 +669,8 @@ def build_corpus(plan: Plan, *, bundle: str, out_root: Path, built_by: Optional[
                                                 "left_out": info["left_out"]}, indent=1) + "\n", encoding="utf-8")
         (staging / INFO).write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
         (staging / README).write_text(_readme(info), encoding="utf-8")
-        shutil.copyfile(snap / LOCK_NAME, staging / LOCK_NAME)
+        if lock_bytes:
+            shutil.copyfile(snap / LOCK_NAME, staging / LOCK_NAME)
         os.rename(staging, target)
     return load_corpus(target)
 
@@ -494,7 +687,9 @@ def _readme(info: Mapping[str, Any]) -> str:
         "",
         f"- digest: `{info['digest']}` (sha256 of MANIFEST.txt)",
         f"- snapshot lock sha256: `{info['lock_sha256']}`",
-        f"- built {info['built_at']}; {info['files']} record files",
+        f"- built {info['built_at']} at published generation {info['generation'] or 'unknown'}; "
+        f"{info['files']} record files",
+        f"- coverage: {info['coverage']}",
         "",
         "Only `records/` is mounted into the agent's sandbox, at /corpus.",
         "",
@@ -516,8 +711,10 @@ def load_corpus(path: Path) -> Corpus:
         raise CorpusError(f"{path} is not a raw corpus ({INFO}: {exc})") from exc
     if not isinstance(info, Mapping) or info.get("schema") != CORPUS_SCHEMA:
         raise CorpusError(f"{path / INFO} is not a {CORPUS_SCHEMA} corpus")
+    generation = info.get("generation")
     return Corpus(path, str(info.get("digest")), str(info.get("lock_sha256")), str(info.get("bundle")),
-                  dict(info.get("sources") or {}), dict(info.get("left_out") or {}), str(info.get("built_at")))
+                  dict(info.get("sources") or {}), dict(info.get("left_out") or {}), str(info.get("built_at")),
+                  None if generation is None else str(generation), str(info.get("coverage") or ""))
 
 
 def verify_corpus(path: Path, *, bundle: Optional[str] = None) -> Corpus:
@@ -538,7 +735,13 @@ def verify_corpus(path: Path, *, bundle: Optional[str] = None) -> Corpus:
         rel, _, sha = line.partition("\t")
         listed[rel] = sha
     on_disk = set()
-    for root, _dirs, names in os.walk(corpus.records):
+    if corpus.records.is_symlink():
+        raise CorpusError(f"{path}: records/ is a symbolic link; the sandbox would mount what it points at")
+    for root, dirs, names in os.walk(corpus.records):
+        for name in dirs + names:
+            if Path(root, name).is_symlink():
+                rel = Path(root, name).relative_to(corpus.records).as_posix()
+                raise CorpusError(f"{path}: records/{rel} is a symbolic link; a corpus holds plain files only")
         for name in names:
             on_disk.add(Path(root, name).relative_to(corpus.records).as_posix())
     extra, missing = sorted(on_disk - set(listed)), sorted(set(listed) - on_disk)

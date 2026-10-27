@@ -44,6 +44,10 @@ The question file keeps the smoke format's shape and adds `gold`:
         gold_sources:          # optional, agent arms: where a gold id's record is in the raw
           documentation_page:22: {source: docsite, key: "https://..."}   # corpus, instead of
                                                                          # asking MCP inspect
+        atoms:                 # optional, agent arms: the facts an answer needs
+          - id: a1
+            answer_source: doc or ticket   # live_rucio, live_dbs or monitoring alone: unavailable
+            gold: [documentation_page:22]  # the gold ids that carry this fact
 
 A smoke file with `gold` added to its questions is accepted: `pass_threshold`,
 `must_cite`, `must_contain` and `must_contain_any` are read and ignored. A question
@@ -131,6 +135,31 @@ class ContextQuestion:
     #: gold id -> where its record is in the raw corpus ({source, key} or {path}), overriding
     #: resolution through the MCP inspect tool
     gold_sources: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    #: the facts an answer needs, each with where its answer comes from (`Atom`)
+    atoms: tuple["Atom", ...] = ()
+
+
+#: `answer_source` kinds only a live system answers: no file holds them, in either arm.
+LIVE_SOURCES = frozenset({"live_rucio", "live_dbs", "monitoring"})
+_SOURCE_SPLIT = re.compile(r"\s*(?:\+|,|/|;|\bor\b|\band\b)\s*")
+
+
+@dataclass(frozen=True)
+class Atom:
+    id: str
+    answer_source: str = ""
+    gold: tuple[str, ...] = ()
+    text: str = ""
+    required: bool = True
+
+    @property
+    def kinds(self) -> tuple[str, ...]:
+        return tuple(k for k in _SOURCE_SPLIT.split(self.answer_source.strip().lower()) if k)
+
+    @property
+    def live_only(self) -> bool:
+        """Answered only from live systems ("live_rucio", "monitoring", "ticket+live_rucio" is not)."""
+        return bool(self.kinds) and all(k in LIVE_SOURCES for k in self.kinds)
 
 
 @dataclass(frozen=True)
@@ -192,6 +221,34 @@ def _arms(where: str, raw: Any) -> tuple[Arm, ...]:
     return tuple(arms)
 
 
+def _atoms(label: str, raw: Any, gold: tuple[str, ...]) -> tuple[Atom, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ContextSetError(f"{label}: `atoms` must be a list of {{id, answer_source, gold}}")
+    out, seen = [], set()
+    for i, atom in enumerate(raw):
+        where = f"{label}: atoms[{i}]"
+        if not isinstance(atom, Mapping) or set(atom) - {"id", "answer_source", "gold", "text", "required"}:
+            raise ContextSetError(f"{where} takes id, answer_source, gold, text and required")
+        aid = atom.get("id")
+        if not isinstance(aid, str) or not aid or aid in seen:
+            raise ContextSetError(f"{where}: `id` must be a unique non-empty string")
+        seen.add(aid)
+        source = atom.get("answer_source", "")
+        if not isinstance(source, str):
+            raise ContextSetError(f"{where}: `answer_source` must be a string")
+        atom_gold = _strings(f"{where}: gold", atom.get("gold"))
+        stray = [g for g in atom_gold if g not in gold]
+        if stray:
+            raise ContextSetError(f"{where}: gold {stray} is not among the question's gold ids")
+        required = atom.get("required", True)
+        if not isinstance(required, bool):
+            raise ContextSetError(f"{where}: `required` must be true or false")
+        out.append(Atom(aid, source.strip(), atom_gold, str(atom.get("text") or ""), required))
+    return tuple(out)
+
+
 def _gold_sources(label: str, raw: Any, gold: tuple[str, ...]) -> dict[str, dict[str, str]]:
     if raw is None:
         return {}
@@ -240,7 +297,7 @@ def parse_context(raw: Any, path: Optional[Path] = None, *, sha256: str = "") ->
         label = f"{where}: questions[{i}]"
         if not isinstance(row, Mapping):
             raise ContextSetError(f"{label} must be a mapping")
-        extra = set(row) - {"id", "question", "gold", "answer", "gold_sources"} - SMOKE_QUESTION_KEYS
+        extra = set(row) - {"id", "question", "gold", "answer", "gold_sources", "atoms"} - SMOKE_QUESTION_KEYS
         if extra:
             raise ContextSetError(f"{label}: unknown keys {sorted(extra)}")
         qid, text = row.get("id"), row.get("question")
@@ -254,7 +311,8 @@ def parse_context(raw: Any, path: Optional[Path] = None, *, sha256: str = "") ->
         if answer is not None and (not isinstance(answer, str) or not answer.strip()):
             raise ContextSetError(f"{label}: `answer` must be a non-empty string")
         questions.append(ContextQuestion(qid, text.strip(), gold, answer.strip() if answer else None,
-                                         _gold_sources(label, row.get("gold_sources"), gold)))
+                                         _gold_sources(label, row.get("gold_sources"), gold),
+                                         _atoms(label, row.get("atoms"), gold)))
     if not any(q.gold for q in questions):
         raise ContextSetError(f"{where}: no question has `gold` ids, so nothing can be scored")
     if not sha256:

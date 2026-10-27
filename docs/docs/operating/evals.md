@@ -249,7 +249,7 @@ scored questions; and per question what each arm found and missed.
 | 0 | The run finished (and met `min_recall`, if the file sets one). |
 | 1 | The graph arm's recall@k is below `min_recall`. |
 | 2 | The run could not execute or has no score: the endpoint was unreachable, it has no `search` tool, any graph-arm call failed, a file was unusable, or the set's bundle is not the instance's. |
-| 3 | With `--agents`: the agent arms stopped at the spend cap. The report holds what completed. |
+| 3 | With `--agents`: the agent arms stopped at the spend cap. The report holds what completed. With `--agents`, exit 2 also means the run refused before any model call, or the model endpoint refused a request no retry can fix (a 4xx other than 429). |
 
 A failed baseline call counts as a baseline miss and is listed; a failed
 graph call leaves the run without a score.
@@ -291,11 +291,18 @@ caps; they differ only in where the knowledge is.
 
 | Arm | What the agent has |
 |---|---|
-| `agent-bash` | One tool, `bash`, over the raw corpus. The command runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: no network, the corpus mounted read-only at `/corpus`, a fresh in-memory `HOME`, an empty environment, and `rg`, `jq` and `python3` on `PATH` when the host has them. Each command may run 120 s and print 64 KiB; one that goes over either is stopped. |
+| `agent-bash` | One tool, `bash`, over the raw corpus. Each command runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: no network, the corpus mounted read-only at `/corpus`, a fresh in-memory `HOME`, an empty environment, and `rg`, `jq` and `python3` on `PATH` when the host has them. Limits per command: 120 s of wall time and 64 KiB of output (a command over either is stopped), 256 processes, 4 GiB of address space, 256 MiB per file written, and CPU time equal to the wall limit. |
 | `agent-graph` | The instance's MCP tools. |
 
 The prompt is the same text for both, except the one paragraph that says where
 the knowledge is. The report holds both prompts.
+
+bubblewrap 0.6.3 cannot size its in-memory mounts, so the per-file size limit
+is what bounds a write to `/tmp` or `HOME`. The process limit counts processes
+in bwrap's own user namespace (Linux 5.14 and later); on an older kernel, which
+counts every process of the user, the limit becomes the user's current count
+plus 256. Starting the arm runs `true` and a small pipeline through the real
+sandbox first, and refuses (exit 2) if either fails.
 
 These arms call a model, which may be a paid one. Every call is written to a
 spend ledger, and the run stops at a cap you set.
@@ -319,12 +326,34 @@ the start of the snapshot lock's SHA-256:
 | `records/<group>/...` | One file per record. Only this directory is mounted into the sandbox. |
 | `MANIFEST.txt` | `<path>` and `<sha256>` of every record file. The **corpus digest** is the SHA-256 of this file. |
 | `keys.json` | Per source, the names a node id may give (natural key, node id) mapped to a file, and each file's natural key. |
-| `corpus.json`, `README.md` | The digest, the sources, and every source left out with the reason. |
+| `corpus.json`, `README.md` | The digest, the published generation, the coverage line, the sources, and every source left out with the reason. |
 
-A source with no cache for the snapshot to check (a live fetch such as
-`indico_live`, `cds` or MONIT, a git checkout, a derived source) is left out
-and named. A cache the snapshot refuses refuses the whole corpus, and nothing
-is written. Derived files and okg state are never read.
+**What goes in.**
+
+- A **git-code** checkout goes in as its tracked files at HEAD (`git ls-files`),
+  under `records/git-repo/<repo>/`, one per enabled git-code repository. It does
+  not go through the snapshot, because no snapshot group checks a source tree.
+  Email addresses are removed here, as the snapshot does, and binary files and
+  files over 1 MiB are left out and counted. The HEAD of each repository is
+  recorded.
+- **TWiki** keeps only the pages the instance's TWiki reader reads, with the
+  instance's own `physics_filter`, `seed_topics`, `skip_patterns` and
+  `max_files`. A cms-physics corpus therefore holds the physics pages the graph
+  read, not the whole dump. `page_index_path` changes no page, so it is not
+  needed.
+
+**What stays out.** A source with no cache for the snapshot to check is left
+out and named:
+
+- live fetches: `indico_live`, `cds` (harvested from CDS at ingest, with no copy
+  on disk), MONIT;
+- `analysis_notes`: a LaTeX mirror that no snapshot group checks yet;
+- derived sources.
+
+A cache the snapshot refuses refuses the whole corpus, and nothing is written.
+Derived files and okg state are never read. The coverage line says all of this
+in one sentence, for example `cms-physics: cmssw_releases, twiki_eos (physics
+filter); analysis_notes not included: ...; cds not included: ...`.
 
 **ops-record is left out of both arms.** Its records exist only in the graph,
 written through okg admission; there is no cache. An export through the MCP
@@ -332,6 +361,12 @@ tools could not be shown to be complete, so the corpus does not hold it, and
 its gold records count as *unavailable* in both agent arms: they leave the
 denominator and are listed. The `agent-graph` arm can still read ops records
 through its tools, but they earn it nothing.
+
+**Corpus and generation.** The build reads the published generation through
+MCP `inspect(graph)` and records it beside the digest. A run reports both, and
+warns when the generation it evaluated differs: the arms may then not see the
+same records. A corpus whose files no longer match its manifest, or that holds
+a symbolic link under `records/`, is refused.
 
 ### Run the agent arms
 
@@ -347,28 +382,48 @@ archi eval --context --questions /path/to/operator-questions.yaml \
 | `--agents [ARMS]` | Run the agent arms too: both by default, or `agent-bash` or `agent-graph` alone. |
 | `--tries N` | Tries per question and arm (default 1). |
 | `--corpus DIR` | The corpus. Default: the newest under `<data root>/eval/raw-corpus/<bundle>/`. |
-| `--model`, `--model-url` | The model, at any OpenAI-compatible endpoint. A remote one needs `--allow-remote-model`. |
+| `--model`, `--model-url` | The model, at any OpenAI-compatible endpoint. A remote one needs `--allow-remote-model`. `temperature` and `seed` are never sent to a remote endpoint. |
 | `--model-key-env VAR` | The variable that holds the **path** of a file with the API key (default `ARCHI_EVAL_MODEL_KEY_FILE`). The key is never logged, never written to the report or ledger, and never enters the sandbox. |
-| `--model-price IN/OUT[/CACHED]` | Dollars per million input, output and cached-input tokens. Required: the ledger needs it. |
+| `--model-price IN/OUT[/CACHED]` | Dollars per million input, output and cached-input tokens. Required: the ledger needs it. A price below $0.01 input or $0.04 output per million is refused as a likely typo unless `--allow-low-price` is given (for a local model). |
 | `--reasoning-effort E` | Sent with each agent call. |
-| `--max-turns`, `--max-tool-calls`, `--try-seconds` | Caps per try: 30 model turns, 200 tool calls, 900 s by default. |
-| `--max-output-tokens N` | Output tokens per call (default 16000); also the spend guard's bound. |
-| `--cap DOLLARS` | The spend cap for the run, judge included (default 10). |
+| `--max-turns`, `--max-tool-calls`, `--try-seconds` | Caps per try: 30 model turns, 200 tool calls, 900 s by default. A call is not started with under 60 s of the try left. |
+| `--max-output-tokens N` | `max_completion_tokens` per agent call (default 16000); also the spend guard's bound. |
+| `--cap DOLLARS` | The spend cap for the invocation, judge included and every question set together (default 10). |
 | `--judge` | Grade answers with a judge model. **Off by default.** |
-| `--judge-model`, `--judge-url`, `--judge-reasoning-effort`, `--judge-key-env`, `--judge-price` | The judge: any OpenAI-compatible endpoint (default `https://api.openai.com/v1`, reasoning `xhigh`, key file path in `ARCHI_EVAL_JUDGE_KEY_FILE`). |
+| `--judge-model`, `--judge-url`, `--judge-reasoning-effort`, `--judge-key-env`, `--judge-price`, `--judge-max-output-tokens` | The judge: any OpenAI-compatible endpoint (default `https://api.openai.com/v1`, reasoning `high`, key file path in `ARCHI_EVAL_JUDGE_KEY_FILE`, at most 16000 output tokens per call). |
 | `--judge-passes 1\|2` | Judge each answer once or twice; the score is the mean. |
 
-Before any model call the run refuses, exit 2, naming the reason, when: there
-is no cap or no price; the corpus's files no longer match its manifest, or it
-belongs to another bundle; `bwrap` is not installed and `agent-bash` was asked
-for; or any gold id does not resolve (below). Nothing is installed for you.
+Before any model call, the run refuses (exit 2) and names the reason when:
+
+- there is no cap or no price, or the price is implausibly small;
+- the corpus's files no longer match its manifest, it holds a symbolic link, or
+  it belongs to another bundle;
+- `agent-bash` was asked for and `bwrap` is not installed, or the sandbox
+  cannot start;
+- any gold id does not resolve (see below).
+
+Nothing is installed for you.
+
+**Model failures.**
+
+- A 429 or 5xx reply is retried with backoff (Retry-After when given, else 4,
+  8 and 16 s), at most three times.
+- A context-length error, or a reply that stops at `max_output_tokens` with no
+  answer, ends that try as an **error**.
+- Any other 4xx (a bad key, a bad request) **aborts the run**, exit 2. The
+  report keeps what completed.
+
+Error tries are listed per arm with their reason, counted, and left out of
+evidence recall and MRR.
 
 ### How gold ids map to files
 
 Each gold id is read with the MCP `inspect` tool, which returns its subtype,
-attributes and source. The source and the node id (or an attribute such as a
-URL) are looked up in `keys.json`. A question can name a record directly
-instead:
+attributes and source. The source and the node id (or, for a documentation
+page, its URL) are looked up in `keys.json`. The source is matched as okg
+writes provenance: the `<deployment>.` prefix is dropped and `-` reads as `_`,
+so `cms-physics.twiki-eos` finds `twiki_eos`. A question can name a record
+directly instead:
 
 ```yaml
 questions:
@@ -378,12 +433,45 @@ questions:
     answer: The storage certificate expired.     # optional answer key, for --judge
     gold_sources:                                # optional; overrides inspect for these ids
       chunk:9f2a1c: {path: jira/CMSTRANSF-123.json}
+    atoms:                                       # optional: the facts an answer needs
+      - {id: a1, answer_source: ticket, gold: [jira:CMSTRANSF-123]}
+      - {id: a2, answer_source: live_rucio}
 ```
 
-A gold id whose source is left out of the corpus (ops-record, a live source)
-is **unavailable**. A gold id that `inspect` cannot find, or whose record is
-not in the corpus, makes the run **refuse to score** and names the id and the
-reason. It is never counted as a miss.
+A gold record is **unavailable**, and so leaves the denominator in both arms
+and is listed, when:
+
+- its source is left out of the corpus (ops-record, a live source);
+- its record has no field value or line distinctive enough to recognise;
+- the only atoms that carry it are answered by a live system alone
+  (`answer_source` of `live_rucio`, `live_dbs` or `monitoring`). An atom like
+  that is listed in the report, separately. A mixed atom (`ticket+live_rucio`,
+  `doc or ticket`) counts through its file source.
+
+A gold id that `inspect` cannot find, or whose record is not in the corpus,
+makes the run **refuse to score**, naming the id and the reason. It is never
+counted as a miss.
+
+**Question sets that name evidence in prose.** A benchmark such as CompOps-42
+names its evidence in a `sources:` list and in `verification.evidence`, not as
+node ids. Draft the mapping with:
+
+```bash
+python -m archi.evaluation.draft_gold_sources --questions <dir of golden YAML> --out <private file>
+```
+
+It recognises four kinds of reference:
+
+- Jira keys become `jira`;
+- `repos/<repo>[ @<sha>] <path>` becomes the git-code file `<repo>/<path>`;
+- documentation URLs become `docsite`;
+- CMS site names become `cric`.
+
+It writes per question a draft `gold`, `gold_sources` and `atoms`, with a
+confidence note on each reference and an `unresolved` list for a person to
+review. The draft is private to the set: keep it beside the set, never in this
+repository. The command refuses an `--out` inside it. A person who knows the
+answer key reviews the draft before a run uses it.
 
 To check that gold ids keep naming the same records from one published
 generation to the next, sample 20 of them at two generations:
@@ -398,16 +486,24 @@ source and (with `--corpus`) record, and 1 otherwise. It calls only MCP.
 
 ### How the agent arms are scored
 
-The same scorer reads both arms' transcripts:
+The same scorer reads both arms' transcripts: every tool response the model
+saw, including the visible part of a response that was cut and the output of a
+bash command that exited non-zero. What the agent typed (tool inputs) and its
+final answer never count.
 
+- A gold record is **read** when part of its content appears in a response: a
+  run of six words from one of its field values or lines, or a whole value of
+  four words or more (or of sixteen characters or more). Words are compared
+  lower-cased, ignoring punctuation and JSON escapes, so a `cat` of the file
+  and an MCP excerpt of the same text both count.
+- A record named only by its path, natural key or node id is **listed**, not
+  read. The report counts listed records per try, and they earn no credit. A
+  natural key shorter than six characters does not even list a record.
 - **Evidence recall**, per try: the share of the question's available gold
-  records whose corpus path, natural key or node id appears in a *successful*
-  tool response. What the agent typed (tool inputs) and its final answer never
-  count. A bash command succeeds when it exits 0 within its limits; an MCP call
-  when the server reports no error. A natural key shorter than four characters
-  counts only through its path or node id.
-- **MRR**: 1 / the rank of the first gold record among the distinct records the
-  agent read, in the order it read them.
+  records read.
+- **MRR**: 1 / the rank of the first gold record read among the distinct
+  records the agent met, in order. Other records count as met when their path
+  or node id appears.
 - **Answer score**: with `--judge`, the judge's mean score (0, 0.5 or 1) over
   the answers to questions that have an `answer`. Without answer keys the
   column says **no answer keys**; with keys but no `--judge`, **judge off**.
@@ -415,22 +511,39 @@ The same scorer reads both arms' transcripts:
 
 The report keeps `graph` and `baseline` as they are and adds the agent arms
 under `agent_arms`, with one table of all four side by side: evidence recall
-(recall@k for the search arms), MRR, answer score, cost per try, tool calls
-per try, and failures (errors, tries that hit a cap). It also records the
-corpus digest, the model, the caps, both prompts, the resolved gold map and
-the spend. The context gate still reads only the graph arm's recall@k.
+(recall@k for the search arms), MRR, listed-not-read, answer score, cost per
+try, tool calls per try, and failures (errors, tries that hit a cap). It also
+records the corpus digest, generation and coverage, the model, the caps, both
+prompts, the resolved gold map, the live-only atoms and the spend. The context
+gate still reads only the graph arm's recall@k.
 
 ### Spend
 
-Each model call, agent or judge, adds a row to
-`<data root>/eval/context/<bundle>/<stamp>/ledger.jsonl`: the arm, the
-question and try, the model, input, cached, output and reasoning tokens, and
-the cost. During the run the ledger is written in a hidden directory beside
-the runs and moved into the run's directory with the reports; with `--out` it
-is written there directly.
+Every model call, agent or judge, answered or not, adds a row to
+`<data root>/eval/context/<bundle>/<stamp>/ledger.jsonl`. A row holds the arm,
+the question and try, the model, the outcome, the input, cached, output and
+reasoning tokens, and the cost. Some calls are charged at their bound, not at
+their tokens:
+
+- a call that failed after it was sent (it may still be billed);
+- a reply that carried no token usage, which also prints a warning.
+
+A call that never reached the endpoint is not charged. During the run the
+ledger is written in a hidden directory beside the runs and moved into the
+run's directory with the reports. With `--out` it is written there directly.
+One invocation keeps one cap across all its question sets, with one ledger
+file per run directory.
 
 Before each call the run bounds its cost: the request's size in bytes / 3 for
-input tokens, plus `--max-output-tokens`. When that bound would take the spend
-past `--cap`, the call is not made. The run stops cleanly, the report says
-what completed (a try cut short is listed, not scored), and the command exits
-**3**.
+input tokens, plus `--max-output-tokens`. Before the first call it prints that
+bound for a first call and for a call with 128k tokens of context, so a wrong
+price shows before money is spent. When the bound would take the spend past
+`--cap`, the call is not made. The run stops cleanly, the report says what
+completed (a try cut short is listed, not scored), and the command exits **3**.
+
+### Testing the sandbox
+
+The sandbox tests in `python/tests/evaluation/test_raw_sandbox.py` run real
+`bwrap`. They are skipped, with the reason, on a host without it, which
+includes CI. Set `ARCHI_REQUIRE_BWRAP=1` to make them fail instead, on a host
+that must prove the sandbox.

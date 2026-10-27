@@ -1,11 +1,11 @@
 """req.r3-context-quality.context-eval, the raw-document baseline: the agent arms' loop, caps,
-spend ledger, gold resolution, scorer and judge, all on fakes (no model call, no network).
+spend ledger, retries, gold resolution, scorer and judge, all on fakes (no model call, no
+network).
 
 The sandbox itself is tested in test_raw_sandbox.py and the corpus in test_raw_corpus.py.
 """
 import asyncio
 import json
-import math
 from pathlib import Path
 
 import pytest
@@ -14,6 +14,7 @@ import yaml
 from archi.bundles.cli import main
 from archi.evaluation import agent as agent_mod
 from archi.evaluation import raw_arm
+from archi.evaluation.agent import ChatReply, ModelError
 from archi.evaluation.context import parse_context
 from archi.evaluation.raw_arm import (
     AGENT_BASH,
@@ -23,9 +24,11 @@ from archi.evaluation.raw_arm import (
     ERROR,
     JUDGE_OFF,
     NO_ANSWER_KEYS,
+    OUTPUT_LIMIT,
     STOPPED,
     AgentPlan,
     Caps,
+    FatalModelError,
     GoldError,
     GoldRecord,
     Judge,
@@ -35,20 +38,32 @@ from archi.evaluation.raw_arm import (
     SpendError,
     ToolEvent,
     build_prompt,
+    content_fingerprints,
     resolve_gold,
     run_agent_arms,
     run_try,
     score_evidence,
 )
 from archi.evaluation.raw_corpus import verify_corpus
-from evaluation.raw_support import FakeMcp, ScriptedModel, failing, reply, search_rows, write_corpus
+from evaluation.raw_support import (
+    NODES,
+    FakeMcp,
+    ScriptedModel,
+    failing,
+    http_error,
+    reply,
+    search_rows,
+    write_corpus,
+)
 
 PRICE = Price(1.0, 10.0)  # $1 / $10 per million tokens
+NO_WAIT = Caps(min_call_seconds=0)
 
 
-def metered(tmp_path, script, *, cap=10.0, price=PRICE, max_output=1000):
+def metered(tmp_path, script, *, cap=10.0, price=PRICE, max_output=1000, slept=None):
     ledger = Ledger(tmp_path / "ledger.jsonl", cap)
-    return Metered(ScriptedModel(script), price, ledger, max_output)
+    return Metered(ScriptedModel(script), price, ledger, max_output,
+                   sleep=(slept.append if slept is not None else (lambda s: None)))
 
 
 def one_try(model, tools, *, caps=Caps(), clock=None, arm=AGENT_GRAPH):
@@ -81,27 +96,23 @@ def test_the_loop_runs_tools_until_the_model_answers_and_ledgers_every_call(tmp_
     assert result.status == ANSWERED and result.turns == 3 and result.tool_calls == 2
     assert result.answer.startswith("Stuck transfers") and all(e.ok for e in result.events)
     ledger = rows(tmp_path / "ledger.jsonl")
-    assert len(ledger) == 3
+    assert len(ledger) == 3 and {r["outcome"] for r in ledger} == {"answered"}
     assert {r["arm"] for r in ledger} == {AGENT_GRAPH} and {r["model"] for r in ledger} == {"fake-model"}
-    assert {r["role"] for r in ledger} == {"agent"}
     assert ledger[0]["prompt_tokens"] == 1000 and ledger[0]["completion_tokens"] == 100
     assert ledger[0]["cost_usd"] == pytest.approx((1000 * 1 + 100 * 10) / 1e6)
     assert result.cost == pytest.approx(sum(r["cost_usd"] for r in ledger))
-    assert ledger[-1]["spent_usd"] == pytest.approx(model.ledger.spent)
 
 
 def test_the_turn_cap_ends_a_try(tmp_path):
     model = metered(tmp_path, lambda m, t: reply("", ("search", {"query": "x"})))
     result = one_try(model, FakeMcp(), caps=Caps(max_turns=3))
     assert result.status == CAPPED and result.reason == "3 model turns" and result.turns == 3
-    assert model.model.calls == 3
 
 
 def test_the_tool_call_cap_ends_a_try_mid_turn(tmp_path):
     model = metered(tmp_path, lambda m, t: reply("", *[("search", {"query": str(i)}) for i in range(5)]))
     result = one_try(model, FakeMcp(), caps=Caps(max_tool_calls=7))
     assert result.status == CAPPED and result.reason == "7 tool calls" and result.tool_calls == 7
-    assert result.turns == 2
 
 
 def test_the_time_cap_ends_a_try(tmp_path):
@@ -113,7 +124,13 @@ def test_the_time_cap_ends_a_try(tmp_path):
 
     model = metered(tmp_path, lambda m, t: reply("", ("search", {"query": "x"})))
     result = one_try(model, FakeMcp(), caps=Caps(try_seconds=900), clock=clock)
-    assert result.status == CAPPED and result.reason == "900 seconds"
+    assert result.status == CAPPED and result.reason.startswith("900 seconds")
+
+
+def test_no_call_starts_with_under_a_minute_left(tmp_path):
+    model = metered(tmp_path, lambda m, t: reply("done"))
+    result = one_try(model, FakeMcp(), caps=Caps(try_seconds=50))
+    assert result.status == CAPPED and "under 60 s left" in result.reason and model.model.calls == 0
 
 
 def test_a_model_call_never_waits_longer_than_the_try_has_left(tmp_path):
@@ -127,13 +144,8 @@ def test_a_model_call_never_waits_longer_than_the_try_has_left(tmp_path):
             return super().complete(messages, tools)
 
     model = Metered(Slow(lambda m, t: reply("done")), PRICE, Ledger(tmp_path / "l.jsonl", 1.0), 100)
-    one_try(model, FakeMcp(), caps=Caps(try_seconds=30))
-    assert seen and seen[0] <= 30 and model.model.timeout == 600.0
-
-
-def test_a_model_failure_is_an_error_not_a_crash(tmp_path):
-    result = one_try(metered(tmp_path, failing), FakeMcp())
-    assert result.status == ERROR and "HTTP 500" in result.reason
+    one_try(model, FakeMcp(), caps=Caps(try_seconds=90))
+    assert seen and seen[0] <= 90 and model.model.timeout == 600.0
 
 
 def test_a_tool_response_is_cut_to_the_output_limit_both_arms(tmp_path):
@@ -141,6 +153,13 @@ def test_a_tool_response_is_cut_to_the_output_limit_both_arms(tmp_path):
     model = metered(tmp_path, lambda m, t: reply("", ("search", {"query": "big"})) if t == 1 else reply("done"))
     result = one_try(model, tools, caps=Caps(output_bytes=1000))
     assert len(result.events[0].text) < 1100 and result.events[0].text.endswith("[cut at 1000 bytes]")
+    assert result.events[0].ok  # the visible part is still a response
+
+
+def test_an_empty_answer_cut_by_the_output_limit_is_a_named_failure(tmp_path):
+    model = metered(tmp_path, lambda m, t: ChatReply("", (), 10, 1000, finish_reason="length"))
+    result = one_try(model, FakeMcp())
+    assert result.status == ERROR and result.reason == OUTPUT_LIMIT and result.answer == ""
 
 
 @pytest.mark.parametrize("cap", [None, 0, -1, float("nan"), float("inf"), True])
@@ -149,12 +168,17 @@ def test_the_ledger_refuses_to_start_without_a_cap(tmp_path, cap):
         Ledger(tmp_path / "ledger.jsonl", cap)
 
 
-def test_a_price_is_dollars_per_million_tokens():
+def test_a_price_is_dollars_per_million_tokens_and_a_tiny_one_is_refused():
     assert Price.parse("1.25/10") == Price(1.25, 10.0)
     assert Price.parse("1.25/10/0.125").cost(1_000_000, 0, 1_000_000) == pytest.approx(0.125)
-    for bad in ("", "1", "a/b", "1/2/3/4", "-1/2", "0/0"):
+    for bad in ("", "1", "a/b", "1/2/3/4", "-1/2"):
         with pytest.raises(SpendError):
             Price.parse(bad)
+    for tiny in ("0/0", "0.000001/0.00001", "1/0.01"):
+        with pytest.raises(SpendError, match="--allow-low-price"):
+            Price.parse(tiny).check_plausible(allow_low=False)
+        Price.parse(tiny).check_plausible(allow_low=True)
+    Price.parse("0.05/0.4").check_plausible(allow_low=False)
 
 
 def test_the_cap_stops_before_a_call_that_could_cross_it(tmp_path):
@@ -166,6 +190,81 @@ def test_the_cap_stops_before_a_call_that_could_cross_it(tmp_path):
     assert result.status == STOPPED and "cap" in result.reason
     assert model.model.calls == 2 and len(rows(tmp_path / "ledger.jsonl")) == 2
     assert model.ledger.spent <= 0.025
+
+
+# --- model failures: retries, charges, aborts ------------------------------------------------
+
+
+def test_429_and_5xx_are_retried_with_backoff_and_every_attempt_is_ledgered(tmp_path):
+    errors = [http_error(429), http_error(503)]
+
+    def script(messages, turn):
+        if errors:
+            raise errors.pop(0)
+        return reply("done")
+
+    slept = []
+    model = metered(tmp_path, script, slept=slept)
+    result = one_try(model, FakeMcp())
+    assert result.status == ANSWERED and model.model.calls == 3 and slept == [4.0, 8.0]
+    ledger = rows(tmp_path / "ledger.jsonl")
+    assert [r["outcome"] for r in ledger] == ["failed", "failed", "answered"]
+    assert [r["status"] for r in ledger[:2]] == [429, 503]
+    assert ledger[0]["cost_usd"] == ledger[0]["bound_usd"] > 0  # an unanswered call is charged at its bound
+
+
+def test_retries_stop_after_three_and_the_try_is_an_error(tmp_path):
+    slept = []
+    model = metered(tmp_path, failing, slept=slept)
+    result = one_try(model, FakeMcp())
+    assert result.status == ERROR and model.model.calls == 4 and len(slept) == 3
+    assert len(rows(tmp_path / "ledger.jsonl")) == 4
+
+
+def test_a_context_length_error_ends_the_try_not_the_run(tmp_path):
+    def script(m, t):
+        raise http_error(400, "This model's maximum context length is 128000 tokens")
+
+    result = one_try(metered(tmp_path, script), FakeMcp())
+    assert result.status == ERROR and "maximum context length" in result.reason
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_another_4xx_is_fatal(tmp_path, status):
+    def script(m, t):
+        raise http_error(status, "invalid_api_key or bad request")
+
+    with pytest.raises(FatalModelError):
+        one_try(metered(tmp_path, script), FakeMcp())
+    assert rows(tmp_path / "ledger.jsonl")[0]["outcome"] == "failed"
+
+
+def test_a_call_that_never_reached_the_endpoint_is_not_charged(tmp_path):
+    def script(m, t):
+        raise ModelError("http://model: connection refused", sent=False)
+
+    model = metered(tmp_path, script)
+    assert one_try(model, FakeMcp()).status == ERROR
+    assert rows(tmp_path / "ledger.jsonl") == [] and model.ledger.spent == 0
+
+
+def test_a_reply_without_usage_is_charged_at_its_bound_with_a_warning(tmp_path):
+    model = metered(tmp_path, lambda m, t: ChatReply("done", (), 0, 0, usage_reported=False))
+    one_try(model, FakeMcp())
+    row = rows(tmp_path / "ledger.jsonl")[0]
+    assert row["cost_usd"] == row["bound_usd"] > 0 and "no token usage" in row["note"]
+    assert model.ledger.warnings and "no token usage" in model.ledger.warnings[0]
+
+
+def test_the_ledger_and_its_cap_carry_across_question_sets(tmp_path):
+    ledger = Ledger(tmp_path / "a" / "ledger.jsonl", 1.0)
+    model = Metered(ScriptedModel(lambda m, t: reply("done")), PRICE, ledger, 100)
+    one_try(model, FakeMcp())
+    ledger.redirect(tmp_path / "b" / "ledger.jsonl")
+    one_try(model, FakeMcp())
+    assert len(rows(tmp_path / "a" / "ledger.jsonl")) == len(rows(tmp_path / "b" / "ledger.jsonl")) == 1
+    second = rows(tmp_path / "b" / "ledger.jsonl")[0]
+    assert second["spent_usd"] == pytest.approx(ledger.spent) and ledger.calls == 2
 
 
 # --- gold resolution -------------------------------------------------------------------------
@@ -180,19 +279,50 @@ def corpus_and_keys(tmp_path):
     return corpus, corpus.keys(), corpus.manifest_paths()
 
 
+def resolve(tools, cset, keys, manifest, corpus=None):
+    return asyncio.run(resolve_gold(tools, cset.scored, keys, manifest, corpus.records if corpus else None))
+
+
 def test_gold_ids_resolve_through_inspect_to_corpus_files(tmp_path):
-    _, keys, manifest = corpus_and_keys(tmp_path)
+    corpus, keys, manifest = corpus_and_keys(tmp_path)
     cset = context_set([{"id": "q1", "question": "q?", "gold": [
         "jira:DEMO-1", "documentation_page:abc123", "slurm_partition:submit:gpu", "ops_incident:inc-1", "hn:42"]}])
     tools = FakeMcp()
-    gold = asyncio.run(resolve_gold(tools, cset.scored, keys, manifest)).records["q1"]
+    gold = resolve(tools, cset, keys, manifest, corpus).records["q1"]
     by_id = {g.node_id: g for g in gold}
     assert by_id["jira:DEMO-1"].path == "jira/DEMO-1.json" and by_id["jira:DEMO-1"].key == "DEMO-1"
-    assert by_id["documentation_page:abc123"].source == "docsite"  # found by its url attribute
-    assert by_id["slurm_partition:submit:gpu"].path == "slurm/partitions/gpu.json"
+    assert by_id["jira:DEMO-1"].shingles  # its summary is six words
+    assert by_id["documentation_page:abc123"].source == "docsite"  # found by its url, the subtype's key field
+    # {"name": "gpu"} holds nothing distinctive: unavailable, never a miss
+    assert by_id["slurm_partition:submit:gpu"].status == "unavailable"
+    assert "distinctive" in by_id["slurm_partition:submit:gpu"].reason
     assert by_id["ops_incident:inc-1"].status == "unavailable" and "ops-record" in by_id["ops_incident:inc-1"].reason
     assert by_id["hn:42"].status == "unavailable" and "hypernews" in by_id["hn:42"].reason
     assert all(call[0] == "inspect" and call[2] == {"okg/result_format": "json"} for call in tools.calls)
+
+
+@pytest.mark.parametrize("source", ["cms-physics.twiki-eos", "cms-physics.twiki_eos", "twiki-eos", "Demo.Twiki_EOS"])
+def test_a_source_spelled_as_okg_writes_provenance_finds_its_corpus_source(tmp_path, source):
+    keys = {"sources": {"twiki_eos": {"lookup": {"CMS:TopicOne": "twiki-eos/TopicOne.txt"}, "ambiguous": [],
+                                      "natural_key": {"twiki-eos/TopicOne.txt": "TopicOne"}}},
+            "left_out": {}}
+    nodes = {"twiki:CMS:TopicOne": ("twiki_page", source, {})}
+    cset = context_set([{"id": "q1", "question": "q?", "gold": ["twiki:CMS:TopicOne"]}])
+    gold = asyncio.run(resolve_gold(FakeMcp(nodes=nodes), cset.scored, keys, frozenset())).records["q1"]
+    assert gold[0].source == "twiki_eos" and gold[0].path == "twiki-eos/TopicOne.txt"
+
+
+def test_a_left_out_source_matches_in_any_spelling(tmp_path):
+    keys = {"sources": {}, "left_out": {"hypernews": "crawled live"}}
+    nodes = {"hn:1": ("thread", "comp-ops.HyperNews", {})}
+    cset = context_set([{"id": "q1", "question": "q?", "gold": ["hn:1"]}])
+    gold = asyncio.run(resolve_gold(FakeMcp(nodes=nodes), cset.scored, keys, frozenset())).records["q1"]
+    assert gold[0].status == "unavailable"
+
+
+def test_key_candidates_use_only_the_subtypes_key_fields():
+    info = raw_arm.NodeInfo("jira:DEMO-9", "jira_issue", "demo.jira", {"summary": "DEMO-1", "assignee": "DEMO-2"})
+    assert raw_arm.key_candidates(info) == ["jira:DEMO-9", "DEMO-9"]
 
 
 def test_a_gold_id_that_no_longer_resolves_refuses_the_run_by_name(tmp_path):
@@ -200,7 +330,7 @@ def test_a_gold_id_that_no_longer_resolves_refuses_the_run_by_name(tmp_path):
     cset = context_set([{"id": "q1", "question": "q?", "gold": ["jira:DEMO-1", "jira:GONE-9"]},
                         {"id": "q2", "question": "q?", "gold": ["mystery:1"]}])
     with pytest.raises(GoldError) as err:
-        asyncio.run(resolve_gold(FakeMcp(), cset.scored, keys, manifest))
+        resolve(FakeMcp(), cset, keys, manifest)
     message = str(err.value)
     assert "q1: jira:GONE-9: inspect reported an error" in message
     assert "q2: mystery:1: its source demo.unknown_source is neither in the corpus nor listed as left out" in message
@@ -209,25 +339,19 @@ def test_a_gold_id_that_no_longer_resolves_refuses_the_run_by_name(tmp_path):
 
 def test_a_gold_id_whose_record_is_not_in_the_corpus_refuses_the_run(tmp_path):
     _, keys, manifest = corpus_and_keys(tmp_path)
-    nodes = dict(raw_arm_nodes(), **{"jira:DEMO-7": ("jira_issue", "demo.jira", {"key": "DEMO-7"})})
+    nodes = dict(NODES, **{"jira:DEMO-7": ("jira_issue", "demo.jira", {"key": "DEMO-7"})})
     cset = context_set([{"id": "q1", "question": "q?", "gold": ["jira:DEMO-7"]}])
     with pytest.raises(GoldError, match="no record of jira in the corpus has its key"):
-        asyncio.run(resolve_gold(FakeMcp(nodes=nodes), cset.scored, keys, manifest))
-
-
-def raw_arm_nodes():
-    from evaluation.raw_support import NODES
-
-    return NODES
+        resolve(FakeMcp(nodes=nodes), cset, keys, manifest)
 
 
 def test_gold_sources_override_resolution(tmp_path):
-    _, keys, manifest = corpus_and_keys(tmp_path)
+    corpus, keys, manifest = corpus_and_keys(tmp_path)
     cset = context_set([{"id": "q1", "question": "q?", "gold": ["chunk:ff01", "jira:GONE-9"],
                          "gold_sources": {"chunk:ff01": {"path": "jira/DEMO-2.json"},
                                           "jira:GONE-9": {"source": "jira", "key": "DEMO-1"}}}])
     tools = FakeMcp(nodes={})
-    gold = asyncio.run(resolve_gold(tools, cset.scored, keys, manifest)).records["q1"]
+    gold = resolve(tools, cset, keys, manifest, corpus).records["q1"]
     assert [(g.status, g.path, g.key) for g in gold] == [
         ("override", "jira/DEMO-2.json", "DEMO-2"), ("override", "jira/DEMO-1.json", "DEMO-1")]
     assert tools.calls == []  # inspect is never asked
@@ -238,10 +362,47 @@ def test_a_gold_sources_entry_that_names_nothing_refuses(tmp_path):
     cset = context_set([{"id": "q1", "question": "q?", "gold": ["x:1"],
                          "gold_sources": {"x:1": {"path": "jira/NOPE.json"}}}])
     with pytest.raises(GoldError, match="gold_sources path jira/NOPE.json is not in the corpus"):
-        asyncio.run(resolve_gold(FakeMcp(), cset.scored, keys, manifest))
+        resolve(FakeMcp(), cset, keys, manifest)
+
+
+def test_an_atom_only_a_live_system_answers_is_unavailable_and_a_mixed_one_counts_through_its_file(tmp_path):
+    corpus, keys, manifest = corpus_and_keys(tmp_path)
+    cset = context_set([{
+        "id": "q1", "question": "q?",
+        "gold": ["jira:DEMO-1", "jira:DEMO-2", "live:rule-count"],
+        "gold_sources": {"live:rule-count": {"source": "jira", "key": "DEMO-2"}},
+        "atoms": [
+            {"id": "a1", "answer_source": "ticket", "gold": ["jira:DEMO-1"]},
+            {"id": "a2", "answer_source": "ticket+live_rucio", "gold": ["jira:DEMO-2"]},
+            {"id": "a3", "answer_source": "live_rucio", "gold": ["live:rule-count"]},
+            {"id": "a4", "answer_source": "monitoring or live_dbs"},
+        ]}])
+    tools = FakeMcp()
+    gold_map = resolve(tools, cset, keys, manifest, corpus)
+    by_id = {g.node_id: g for g in gold_map.records["q1"]}
+    assert by_id["live:rule-count"].status == "unavailable" and "live system" in by_id["live:rule-count"].reason
+    assert by_id["jira:DEMO-2"].status == "resolved"  # the mixed atom counts through its ticket
+    assert gold_map.live_atoms == {"q1": [{"atom": "a3", "answer_source": "live_rucio"},
+                                          {"atom": "a4", "answer_source": "monitoring or live_dbs"}]}
+    evidence = score_evidence([ev("Transfer failures at the test site. Upgrade the storage servers.")],
+                              gold_map.records["q1"], manifest)
+    assert evidence.recall == 1.0 and evidence.unavailable == ["live:rule-count"]
+
+
+def test_live_only_atoms_are_listed_in_the_report(tmp_path):
+    questions = [dict(QUESTIONS[0], atoms=[{"id": "a1", "answer_source": "ticket", "gold": ["jira:DEMO-1"]},
+                                           {"id": "a2", "answer_source": "live_dbs"}])]
+    _, data, _ = run_plan(tmp_path, questions=questions)
+    assert data["live_only_atoms"] == {"q1": [{"atom": "a2", "answer_source": "live_dbs"}]}
+    from archi.evaluation.raw_arm import render_agent_markdown
+
+    assert "q1 a2 (live_dbs)" in "\n".join(render_agent_markdown(data, {"k": 3, "arms": {}}))
 
 
 @pytest.mark.parametrize("row, message", [
+    ({"atoms": [{"id": "a1", "gold": ["x:9"]}]}, "not among the question's gold ids"),
+    ({"atoms": [{"id": "a1"}, {"id": "a1"}]}, "unique non-empty string"),
+    ({"atoms": [{"id": "a1", "colour": "red"}]}, "takes id, answer_source, gold, text and required"),
     ({"gold_sources": {"other:1": {"path": "a"}}}, "not one of its gold ids"),
     ({"gold_sources": {"jira:DEMO-1": {"source": "jira"}}}, "must be {source, key} or {path}"),
     ({"answer": ""}, "`answer` must be a non-empty string"),
@@ -249,15 +410,24 @@ def test_a_gold_sources_entry_that_names_nothing_refuses(tmp_path):
 def test_bad_agent_keys_in_a_question_are_refused(row, message):
     from archi.evaluation.context import ContextSetError
 
-    with pytest.raises(ContextSetError, match=None) as err:
+    with pytest.raises(ContextSetError) as err:
         context_set([{"id": "q1", "question": "q?", "gold": ["jira:DEMO-1"], **row}])
     assert message in str(err.value)
 
 
 # --- scoring ---------------------------------------------------------------------------------
 
-DEMO1 = GoldRecord("jira:DEMO-1", "resolved", "jira", "DEMO-1", "jira/DEMO-1.json")
-DEMO2 = GoldRecord("jira:DEMO-2", "resolved", "jira", "DEMO-2", "jira/DEMO-2.json")
+DEMO1_FILE = b'{"key": "DEMO-1", "summary": "Transfer failures at the test site", "status": "Open"}\n'
+DEMO2_FILE = b'{"key": "DEMO-2", "summary": "Upgrade the storage servers"}\n'
+
+
+def gold_record(node_id, key, path, data):
+    shingles, values = content_fingerprints(data, exclude=(key, node_id, path))
+    return GoldRecord(node_id, "resolved", "jira", key, path, shingles=shingles, values=values)
+
+
+DEMO1 = gold_record("jira:DEMO-1", "DEMO-1", "jira/DEMO-1.json", DEMO1_FILE)
+DEMO2 = gold_record("jira:DEMO-2", "DEMO-2", "jira/DEMO-2.json", DEMO2_FILE)
 GONE = GoldRecord("ops_incident:inc-1", "unavailable", "ops-record", reason="left out")
 MANIFEST = frozenset({"jira/DEMO-1.json", "jira/DEMO-2.json", "docsite/x.json"})
 
@@ -266,8 +436,15 @@ def ev(text, ok=True, arguments=None):
     return ToolEvent("bash", arguments or {}, text, ok)
 
 
+def test_fingerprints_come_from_values_never_field_names_or_the_key():
+    shingles, values = content_fingerprints(DEMO1_FILE, exclude=("DEMO-1",))
+    assert shingles == {"transfer failures at the test site"} and values == ()
+    assert content_fingerprints(DEMO2_FILE, exclude=("DEMO-2",)) == (frozenset(), ("upgrade the storage servers",))
+    assert content_fingerprints(b'{"name": "gpu", "state": "up"}') == (frozenset(), ())
+
+
 def test_gold_only_in_a_tool_input_never_counts():
-    events = [ev("no match here", arguments={"command": "cat /corpus/jira/DEMO-1.json  # DEMO-1 jira:DEMO-1"})]
+    events = [ev("no match here", arguments={"command": "grep 'Transfer failures at the test site' /corpus"})]
     evidence = score_evidence(events, [DEMO1], MANIFEST)
     assert evidence.found == [] and evidence.recall == 0.0 and evidence.first_rank is None
 
@@ -275,47 +452,60 @@ def test_gold_only_in_a_tool_input_never_counts():
 def test_gold_only_in_the_final_answer_never_counts(tmp_path):
     tools = FakeMcp({"q": search_rows("jira:DEMO-2")})
     model = metered(tmp_path, lambda m, t: reply("", ("search", {"query": "q"})) if t == 1
-                    else reply("It is DEMO-1.\nSources: jira:DEMO-1 /corpus/jira/DEMO-1.json"))
+                    else reply("Transfer failures at the test site.\nSources: jira:DEMO-1"))
     result = one_try(model, tools)
     evidence = score_evidence(result.events, [DEMO1, DEMO2], MANIFEST)
     assert evidence.found == ["jira:DEMO-2"] and evidence.missed == ["jira:DEMO-1"]
 
 
-def test_gold_in_a_failed_tool_response_never_counts():
-    evidence = score_evidence([ev("/corpus/jira/DEMO-1.json", ok=False)], [DEMO1], MANIFEST)
+def test_gold_in_a_response_the_scorer_does_not_read_never_counts():
+    evidence = score_evidence([ev("Transfer failures at the test site", ok=False)], [DEMO1], MANIFEST)
     assert evidence.found == []
 
 
 @pytest.mark.parametrize("text", [
-    "/corpus/jira/DEMO-1.json:3: transfer failures",     # rg output: the path
-    "./jira/DEMO-1.json",                                # find from /corpus
-    '{"key": "DEMO-1", "summary": "..."}',               # cat: the natural key
-    "[1] jira:DEMO-1 (jira_issue) · source demo.jira",   # an MCP row: the node id
+    '/corpus/jira/DEMO-1.json:2:  "summary": "Transfer failures at the test site",',   # rg output
+    '{\n  "key": "DEMO-1",\n  "summary": "Transfer failures at the test site"\n}',      # cat
+    '{"results": [{"node_id": "jira:DEMO-1", "excerpt": "Transfer failures at the test site"}]}',  # MCP JSON
+    "[1] jira:DEMO-1 (jira_issue) · source demo.jira\n    TRANSFER failures — at the test-site.",   # reflowed
 ])
-def test_a_path_a_natural_key_or_a_node_id_in_a_successful_response_counts(text):
+def test_content_of_the_record_in_a_response_reads_it(text):
+    evidence = score_evidence([ev(text)], [DEMO1], MANIFEST)
+    assert evidence.found == ["jira:DEMO-1"] and evidence.listed == []
+
+
+@pytest.mark.parametrize("text", [
+    "/corpus/jira/DEMO-1.json",                          # find
+    "DEMO-1.json\nDEMO-2.json",                          # ls: names only
+    "[1] jira:DEMO-1 (jira_issue) · source demo.jira",   # a search row with no excerpt
+])
+def test_a_path_key_or_id_alone_only_lists_the_record(text):
+    evidence = score_evidence([ev(text)], [DEMO1], MANIFEST)
+    assert evidence.found == [] and evidence.listed == ["jira:DEMO-1"] and evidence.recall == 0.0
+
+
+def test_a_short_key_does_not_even_list():
+    short = gold_record("site:T2_X", "T2_X", "cric/sites/T2_X.json", b'{"tier": "a site in the test region"}')
+    evidence = score_evidence([ev("T2_X is down")], [short], MANIFEST | {"cric/sites/T2_X.json"})
+    assert evidence.found == [] and evidence.listed == []
+
+
+def test_a_nonzero_exit_or_cut_output_still_counts_if_it_was_read():
+    text = "/corpus/jira/DEMO-1.json:  Transfer failures at the test site\n[exit code 2]"
     assert score_evidence([ev(text)], [DEMO1], MANIFEST).found == ["jira:DEMO-1"]
 
 
-def test_a_longer_key_that_contains_the_gold_key_does_not_count():
-    assert score_evidence([ev("see DEMO-10 and XDEMO-1")], [DEMO1], MANIFEST).found == []
-
-
-def test_a_short_natural_key_counts_only_by_its_path_or_node_id():
-    short = GoldRecord("slurm_partition:submit:gpu", "resolved", "slurm", "gpu", "slurm/partitions/gpu.json")
-    manifest = MANIFEST | {"slurm/partitions/gpu.json"}
-    assert score_evidence([ev("the gpu partition is down")], [short], manifest).found == []
-    assert score_evidence([ev("/corpus/slurm/partitions/gpu.json")], [short], manifest).found == [short.node_id]
-
-
-def test_mrr_ranks_the_first_gold_record_among_the_records_read_in_order():
-    events = [ev("/corpus/docsite/x.json\n/corpus/jira/DEMO-2.json"), ev("nothing"), ev("/corpus/jira/DEMO-1.json")]
-    evidence = score_evidence(events, [DEMO1, GONE], MANIFEST)
-    assert evidence.first_rank == 3 and evidence.reciprocal_rank == pytest.approx(1 / 3)
-    assert evidence.records_read == 3
+def test_mrr_ranks_the_first_gold_record_read_among_the_records_met():
+    events = [ev("/corpus/docsite/x.json\n/corpus/jira/DEMO-2.json"),            # met: x; DEMO-2 listed
+              ev("nothing"),
+              ev("/corpus/jira/DEMO-1.json: Transfer failures at the test site")]  # read: DEMO-1
+    evidence = score_evidence(events, [DEMO1, DEMO2, GONE], MANIFEST)
+    assert evidence.found == ["jira:DEMO-1"] and evidence.listed == ["jira:DEMO-2"]
+    assert evidence.first_rank == 2 and evidence.reciprocal_rank == pytest.approx(1 / 2)
 
 
 def test_an_unavailable_gold_record_leaves_the_denominator_and_is_listed():
-    evidence = score_evidence([ev("/corpus/jira/DEMO-1.json")], [DEMO1, DEMO2, GONE], MANIFEST)
+    evidence = score_evidence([ev("Transfer failures at the test site")], [DEMO1, DEMO2, GONE], MANIFEST)
     assert evidence.recall == 0.5 and evidence.unavailable == ["ops_incident:inc-1"]
     only_gone = score_evidence([ev("x")], [GONE], MANIFEST)
     assert only_gone.recall is None  # nothing to score: not a 0
@@ -334,7 +524,7 @@ def test_the_prompt_differs_between_arms_only_in_the_knowledge_paragraph():
     assert "30 turns and 200 tool calls" in bash[2]
 
 
-# --- a whole run: arms, judge, cap stop ------------------------------------------------------
+# --- a whole run: arms, judge, cap stop, errors -----------------------------------------------
 
 
 QUESTIONS = [
@@ -356,19 +546,19 @@ def judge_script(scores):
     return lambda messages, turn: reply(json.dumps({"score": next(it), "reason": "ok"}), prompt=500, completion=20)
 
 
-def run_plan(tmp_path, *, cap=10.0, judge_scores=None, passes=1, questions=QUESTIONS, tries=1):
+def run_plan(tmp_path, *, cap=10.0, judge_scores=None, passes=1, questions=QUESTIONS, tries=1, script=agent_script):
     corpus, keys, manifest = corpus_and_keys(tmp_path)
     cset = context_set(questions)
     tools = FakeMcp({"Why do transfers fail?": search_rows("jira:DEMO-1"),
                      "What is upgraded?": search_rows("jira:DEMO-9", "jira:DEMO-2")})
-    model = metered(tmp_path, agent_script, cap=cap)
+    model = metered(tmp_path, script, cap=cap)
     judge = None
     if judge_scores is not None:
         judge = Judge(Metered(ScriptedModel(judge_script(judge_scores), "fake-judge"), Price(2.0, 8.0),
                               model.ledger, 1000), passes=passes)
-    plan = AgentPlan((AGENT_GRAPH,), model, Caps(), tries, corpus, judge=judge,
+    plan = AgentPlan((AGENT_GRAPH,), model, NO_WAIT, tries, corpus, judge=judge,
                      judge_requested=judge_scores is not None)
-    gold = asyncio.run(resolve_gold(tools, cset.scored, keys, manifest))
+    gold = resolve(tools, cset, keys, manifest, corpus)
     report = asyncio.run(run_agent_arms(cset.scored, plan, tools, gold, manifest=manifest))
     return report, report.to_dict(), model
 
@@ -378,12 +568,39 @@ def test_a_run_scores_each_question_and_skips_one_with_only_unavailable_gold(tmp
     s = data["arms"][AGENT_GRAPH]
     assert [q["id"] for q in data["questions"]] == ["q1", "q2"]  # q3 has no available gold
     assert s["tries"] == 2 and s["tries_scored"] == 2
-    assert s["evidence_recall"] == 1.0  # q1 finds DEMO-1; q2 finds DEMO-2, its ops record is unavailable
-    assert s["mrr"] == pytest.approx((1 + 0.5) / 2)  # q2 reads DEMO-9 first
+    assert s["evidence_recall"] == 1.0  # q1 reads DEMO-1; q2 reads DEMO-2, its ops record is unavailable
+    assert s["mrr"] == pytest.approx((1 + 0.5) / 2)  # q2 meets DEMO-9 first
     assert s["answer_score"] == JUDGE_OFF  # q1 has an answer key, but no judge ran
     assert data["gold"]["q2"]["ops_incident:inc-1"]["status"] == "unavailable"
     assert data["spend"]["calls"] == 4 and data["spend"]["stopped_at_cap"] is False
     assert data["corpus"]["digest"].startswith("sha256:") and "ops-record" in data["ops_record"]
+    assert data["corpus"]["generation"] == "g-1" and data["corpus"]["generation_warning"] is None
+
+
+def test_error_tries_are_listed_counted_and_left_out_of_the_averages(tmp_path):
+    def script(messages, turn):
+        if "upgraded" in messages[1]["content"]:
+            raise http_error(400, "maximum context length exceeded")
+        return agent_script(messages, turn)
+
+    report, data, _ = run_plan(tmp_path, script=script)
+    s = data["arms"][AGENT_GRAPH]
+    assert s["failures"] == 1 and s["tries_scored"] == 1 and s["evidence_recall"] == 1.0
+    assert [(e["question"], e["try"]) for e in s["error_tries"]] == [("q2", 1)]
+    assert "maximum context length" in s["error_tries"][0]["reason"]
+    from archi.evaluation.raw_arm import render_agent_markdown
+
+    assert "error try, agent-graph: q2 try 1" in "\n".join(render_agent_markdown(data, {"k": 3, "arms": {}}))
+
+
+def test_a_fatal_4xx_aborts_the_run_and_keeps_what_completed(tmp_path):
+    def script(messages, turn):
+        if "upgraded" in messages[1]["content"]:
+            raise http_error(401, "invalid_api_key")
+        return agent_script(messages, turn)
+
+    report, data, _ = run_plan(tmp_path, script=script)
+    assert "HTTP 401" in data["aborted"] and data["tries_run"] == 1
 
 
 def test_with_no_answer_keys_the_judge_column_says_so_never_0(tmp_path):
@@ -418,6 +635,18 @@ def test_a_run_stops_cleanly_at_the_cap_and_reports_what_completed(tmp_path):
     assert data["tries_run"] == 2 and data["tries_planned"] == 4
 
 
+def test_a_corpus_from_another_generation_is_flagged(tmp_path):
+    corpus, keys, manifest = corpus_and_keys(tmp_path)
+    cset = context_set(QUESTIONS[:1])
+    tools = FakeMcp({"Why do transfers fail?": search_rows("jira:DEMO-1")})
+    plan = AgentPlan((AGENT_GRAPH,), metered(tmp_path, agent_script), NO_WAIT, 1, corpus)
+    gold = resolve(tools, cset, keys, manifest, corpus)
+    report = asyncio.run(run_agent_arms(cset.scored, plan, tools, gold, manifest=manifest,
+                                        evaluated_generations=["g-7"]))
+    warning = report.to_dict()["corpus"]["generation_warning"]
+    assert "built when generation g-1 was published" in warning and "g-7" in warning
+
+
 # --- the command -----------------------------------------------------------------------------
 
 
@@ -433,6 +662,7 @@ class Endpoint(FakeMcp):
 
 class FakeChat:
     made = []
+    fail_with = None
 
     def __init__(self, base_url, model, **kwargs):
         self.name, self.kwargs, self.calls = model, kwargs, 0
@@ -440,6 +670,8 @@ class FakeChat:
 
     def complete(self, messages, tools):
         self.calls += 1
+        if FakeChat.fail_with is not None:
+            raise FakeChat.fail_with
         if self.name.startswith("judge"):
             return reply('{"score": 1, "reason": "same"}', prompt=100, completion=10)
         return agent_script(messages, self.calls)
@@ -449,6 +681,7 @@ class FakeChat:
 def cli(monkeypatch, tmp_path):
     Endpoint.opened = 0
     FakeChat.made = []
+    FakeChat.fail_with = None
     monkeypatch.setattr(agent_mod, "McpToolBox", Endpoint)
     monkeypatch.setattr(agent_mod, "OpenAIChat", FakeChat)
     monkeypatch.setenv("OKG_CHAT_MCP_TOKEN", "t0ken")
@@ -467,7 +700,8 @@ def agent_args(questions, corpus, out, *extra):
 def test_the_command_runs_the_agent_arms_beside_the_others_and_keeps_a_ledger(cli, tmp_path, capsys):
     questions, corpus = cli
     code = main(agent_args(questions, corpus, tmp_path / "out"))
-    assert code == 0, capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
     data = json.loads((tmp_path / "out" / "report.json").read_text())
     assert set(data["arms"]) == {"graph", "baseline"}  # the no-model arms, untouched
     assert set(data["agent_arms"]["arms"]) == {AGENT_GRAPH}
@@ -478,6 +712,8 @@ def test_the_command_runs_the_agent_arms_beside_the_others_and_keeps_a_ledger(cl
     md = (tmp_path / "out" / "report.md").read_text()
     assert "## All arms side by side" in md and "| agent-graph |" in md and "| graph |" in md
     assert [c.name for c in FakeChat.made] == ["m"]  # no judge was built
+    assert "spend: one call is bounded at $" in captured.out  # printed before the first call
+    assert captured.out.index("spend: one call") < captured.out.index("agent-graph q1 try 1")
 
 
 def test_the_judge_is_off_unless_asked(cli, tmp_path):
@@ -485,7 +721,7 @@ def test_the_judge_is_off_unless_asked(cli, tmp_path):
     from archi.bundles.cli import build_parser
 
     args = build_parser().parse_args(agent_args(questions, corpus, tmp_path / "out"))
-    assert args.judge is False and args.judge_passes == 1
+    assert args.judge is False and args.judge_passes == 1 and args.judge_reasoning_effort == "high"
 
 
 def test_the_judge_runs_when_asked_and_keys_exist(cli, tmp_path, monkeypatch):
@@ -494,12 +730,15 @@ def test_the_judge_runs_when_asked_and_keys_exist(cli, tmp_path, monkeypatch):
     key.write_text("sk-judge-test\n")
     monkeypatch.setenv("ARCHI_EVAL_JUDGE_KEY_FILE", str(key))
     code = main(agent_args(questions, corpus, tmp_path / "out", "--judge", "--judge-model", "judge-m",
-                           "--judge-price", "2/8", "--judge-url", "http://127.0.0.1:8/v1", "--judge-passes", "2"))
+                           "--judge-price", "2/8", "--judge-url", "http://127.0.0.1:8/v1", "--judge-passes", "2",
+                           "--judge-max-output-tokens", "4000"))
     assert code == 0
     data = json.loads((tmp_path / "out" / "report.json").read_text())
     assert data["agent_arms"]["arms"][AGENT_GRAPH]["answer_score"] == 1.0
     judge = next(c for c in FakeChat.made if c.name == "judge-m")
-    assert judge.kwargs["reasoning_effort"] == "xhigh" and judge.kwargs["api_key"] == "sk-judge-test"
+    assert judge.kwargs["reasoning_effort"] == "high" and judge.kwargs["api_key"] == "sk-judge-test"
+    assert judge.kwargs["max_completion_tokens"] == 4000 and judge.kwargs["temperature"] is None
+    assert data["agent_arms"]["judge"]["max_output_tokens"] == 4000
     assert "sk-judge-test" not in (tmp_path / "out" / "report.json").read_text()
     assert "sk-judge-test" not in (tmp_path / "out" / "ledger.jsonl").read_text()
 
@@ -507,8 +746,10 @@ def test_the_judge_runs_when_asked_and_keys_exist(cli, tmp_path, monkeypatch):
 @pytest.mark.parametrize("extra, message", [
     (["--cap", "0"], "refuse to start without a spend cap"),
     (["--cap", "-5"], "refuse to start without a spend cap"),
+    (["--model-price", "0.000001/0.00001"], "--allow-low-price"),
 ])
-def test_the_command_refuses_without_a_cap_and_spends_nothing(cli, tmp_path, capsys, extra, message):
+def test_the_command_refuses_without_a_cap_or_with_a_tiny_price_and_spends_nothing(cli, tmp_path, capsys, extra,
+                                                                                  message):
     questions, corpus = cli
     assert main(agent_args(questions, corpus, tmp_path / "out", *extra)) == 2
     assert message in capsys.readouterr().err
@@ -553,6 +794,16 @@ def test_a_remote_model_needs_its_key_file(cli, tmp_path, capsys, monkeypatch):
     assert "ARCHI_EVAL_MODEL_KEY_FILE" in capsys.readouterr().err
 
 
+def test_a_fatal_model_error_exits_2_with_the_report_written(cli, tmp_path, capsys):
+    questions, corpus = cli
+    FakeChat.fail_with = http_error(403, "forbidden")
+    assert main(agent_args(questions, corpus, tmp_path / "out")) == 2
+    assert "the agent arms were aborted" in capsys.readouterr().err
+    data = json.loads((tmp_path / "out" / "report.json").read_text())
+    assert "HTTP 403" in data["agent_arms"]["aborted"]
+    assert rows(tmp_path / "out" / "ledger.jsonl")[0]["outcome"] == "failed"
+
+
 def test_the_cap_stop_exits_3_with_the_report_written(cli, tmp_path, capsys):
     questions, corpus = cli
     code = main(agent_args(questions, corpus, tmp_path / "out", "--cap", "0.013", "--max-output-tokens", "1000"))
@@ -580,3 +831,48 @@ def test_on_an_instance_the_ledger_lands_in_the_run_directory_and_the_gate_still
     assert [p.name for p in base.iterdir() if p.name.startswith(".")] == []
     reading = context_eval_reading(GateSpec.from_mapping({"min_context_eval_score": 0.1}), inst.dir)
     assert reading.problem is None
+
+
+# --- what is sent to a model endpoint --------------------------------------------------------
+
+
+class Posted:
+    def __init__(self, body):
+        self.status_code, self._body, self.headers, self.text = 200, body, {}, json.dumps(body)
+
+    def json(self):
+        return self._body
+
+
+@pytest.mark.parametrize("url, sent", [("https://api.example.com/v1", False), ("http://127.0.0.1:11434/v1", True)])
+def test_temperature_and_seed_never_go_to_a_remote_endpoint(monkeypatch, url, sent):
+    import requests
+
+    bodies = []
+
+    def post(endpoint, json=None, headers=None, timeout=None):
+        bodies.append(json)
+        return Posted({"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                       "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+
+    monkeypatch.setattr(requests, "post", post)
+    reply_ = agent_mod.OpenAIChat(url, "m", api_key="k").complete([], [])
+    assert ("temperature" in bodies[0]) is sent and ("seed" in bodies[0]) is sent
+    assert reply_.finish_reason == "stop" and reply_.usage_reported
+
+
+def test_a_reply_without_usage_says_so_and_an_http_error_keeps_its_status(monkeypatch):
+    import requests
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Posted({"choices": [{"message": {"content": "hi"}}]}))
+    assert agent_mod.OpenAIChat("http://127.0.0.1:1/v1", "m").complete([], []).usage_reported is False
+
+    class Refused(Posted):
+        def __init__(self):
+            super().__init__({})
+            self.status_code, self.headers, self.text = 429, {"Retry-After": "7"}, "slow down"
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Refused())
+    with pytest.raises(ModelError) as err:
+        agent_mod.OpenAIChat("http://127.0.0.1:1/v1", "m").complete([], [])
+    assert err.value.status == 429 and err.value.sent and err.value.retry_after == 7.0

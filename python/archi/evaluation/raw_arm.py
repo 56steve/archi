@@ -6,34 +6,44 @@ they differ only in where the knowledge is:
     agent-bash    one tool, bash, run in a bubblewrap sandbox: no network, the raw corpus
                   (`archi.evaluation.raw_corpus`) mounted read-only at /corpus, a tmpfs
                   HOME, an empty environment, rg, jq and python3 on PATH when the host has
-                  them. Each command may run 120 s and print 64 KiB.
+                  them, and resource limits (processes, memory, file size, CPU time). Each
+                  command may run 120 s and print 64 KiB.
     agent-graph   the instance's MCP tools.
 
 The prompt is one text with one paragraph, the one saying where the knowledge lives, that
 differs between the arms (`PROMPT`, `KNOWLEDGE`).
 
-Scoring is the same for both (`score_evidence`):
+Scoring is the same for both (`score_evidence`), over the tool responses the model saw
+(the visible part of a cut response counts; tool inputs and the final answer never do):
 
-- evidence recall per try: the share of the question's gold records whose corpus path,
-  natural key or node id appears in a successful tool response. Tool inputs and the final
-  answer never count. A gold record with no files in the corpus (ops-record, a live
-  source) is unavailable: it leaves the denominator, in both arms, and is listed;
-- MRR: 1 / the rank of the first gold record among the distinct records the agent read,
-  in the order it read them (a record is read when its path, its node id or a gold
-  record's natural key appears in a successful response);
+- a gold record is **read** when part of its content appears in a response: a run of six
+  words from one of its field values or lines, or a whole value of four words or more (or
+  of sixteen characters or more). Its path, natural key or node id alone only **lists**
+  it: listed records are counted and reported, never credited;
+- evidence recall per try: the share of the question's available gold records read. A
+  gold record with no files in the corpus (ops-record, a live source), or with no content
+  distinctive enough to recognise, is unavailable: it leaves the denominator, in both
+  arms, and is listed;
+- MRR: 1 / the rank of the first gold record read among the distinct records the agent
+  met (other records count when their path or node id appears);
 - the answer score: a judge model compares the answer with the question's answer key. It
   runs only with `--judge` and only for questions that have a key; with no keys at all the
   report says "no answer keys", never 0.
+
+A try that ends in a model error is listed and counted per arm, and left out of the
+averages. A 4xx from the model endpoint other than 429 or a context-length error aborts
+the run; 429 and 5xx are retried with backoff, at most three times.
 
 A gold id is resolved to its record through the MCP `inspect` tool (its source and node
 id, matched against the corpus's keys.json), or through the question's `gold_sources`. A
 gold id that does not resolve refuses the run before any model call, with the id and the
 reason: it is never scored as a miss.
 
-Every model call (agent and judge) is written to a JSONL spend ledger with its tokens and
-cost. The run refuses to start without a spend cap, and stops before a call whose cost
-bound (input estimated from the request's size, output at most `max_output_tokens`) would
-cross it; the report then says what completed.
+Every model call, agent and judge, answered or not, is written to a JSONL spend ledger
+with its tokens and cost; a call that failed after it was sent, or a reply without token
+usage, is charged at the call's bound. The run refuses to start without a spend cap, and
+stops before a call whose cost bound (input estimated from the request's size, output at
+most `max_output_tokens`) would cross it; the report then says what completed.
 """
 from __future__ import annotations
 
@@ -64,6 +74,11 @@ JUDGE_OFF = "judge off"
 INSPECT = "inspect"
 #: okg's JSON result format, as the no-model arms ask for it.
 JSON_META = {"okg/result_format": "json"}
+#: Retries of a 429 or 5xx reply, after the first attempt.
+MAX_RETRIES = 3
+#: Prices below these (dollars per million input / output tokens) are refused without
+#: --allow-low-price: a typo in a price would make the cap meaningless.
+LOW_PRICE = (0.01, 0.04)
 
 
 @dataclass(frozen=True)
@@ -71,9 +86,16 @@ class Caps:
     max_turns: int = 30
     max_tool_calls: int = 200
     try_seconds: float = 900.0
+    #: a model call is not started with less of the try left than this
+    min_call_seconds: float = 60.0
     command_seconds: float = 120.0
     #: the most of one tool response the model sees (and the scorer reads), both arms
     output_bytes: int = 64 * 1024
+    #: sandbox limits per command: processes beyond what the user already runs, address
+    #: space, size of any file written, CPU seconds (the wall limit is command_seconds)
+    max_procs: int = 256
+    memory_bytes: int = 4 * 1024 ** 3
+    file_bytes: int = 256 * 1024 ** 2
 
 
 # --- the prompt ------------------------------------------------------------------------------
@@ -127,6 +149,11 @@ class CapReached(Exception):
     """The next model call could cross the spend cap."""
 
 
+class FatalModelError(ModelError):
+    """The model endpoint refused the request in a way a retry cannot fix (a 4xx other than 429
+    or a context-length error): the whole run stops."""
+
+
 @dataclass(frozen=True)
 class Price:
     """US dollars per million tokens."""
@@ -143,9 +170,19 @@ class Price:
             values = [float(p) for p in parts]
         except ValueError:
             values = []
-        if len(values) not in (2, 3) or not all(math.isfinite(v) and v >= 0 for v in values) or not any(values[:2]):
+        if len(values) not in (2, 3) or not all(math.isfinite(v) and v >= 0 for v in values):
             raise SpendError(f"price {text!r} is not IN/OUT or IN/OUT/CACHED in dollars per million tokens")
         return cls(*values)
+
+    def check_plausible(self, *, allow_low: bool, what: str = "--model-price") -> None:
+        """Refuse a price so small the cap would mean nothing, unless the operator says so."""
+        if allow_low:
+            return
+        if self.input_per_m < LOW_PRICE[0] or self.output_per_m < LOW_PRICE[1]:
+            raise SpendError(
+                f"{what} {self.input_per_m:g}/{self.output_per_m:g} is below ${LOW_PRICE[0]:g} input or "
+                f"${LOW_PRICE[1]:g} output per million tokens; that is likely a typo (prices are per MILLION "
+                "tokens). Pass --allow-low-price if it is right, for example for a local model")
 
     def cost(self, prompt: int, completion: int, cached: int = 0) -> float:
         cached = max(0, min(cached, prompt))
@@ -161,18 +198,24 @@ def _now() -> str:
 
 
 class Ledger:
-    """One JSONL row per model call. Refuses to exist without a cap."""
+    """One JSONL row per model call, answered or not. One per invocation: its cap covers every
+    question set; `redirect` moves where the next rows go (one file per run directory) while the
+    spend carries over. Refuses to exist without a cap."""
 
     def __init__(self, path: Path, cap_usd: Optional[float]) -> None:
         if cap_usd is None or isinstance(cap_usd, bool) or not isinstance(cap_usd, (int, float)) \
                 or not math.isfinite(cap_usd) or cap_usd <= 0:
             raise SpendError(f"the agent arms refuse to start without a spend cap (got {cap_usd!r}); "
                              "pass --cap DOLLARS")
-        self.path = Path(path)
         self.cap = float(cap_usd)
         self.spent = 0.0
         self.calls = 0
         self.stopped: Optional[str] = None
+        self.warnings: list[str] = []
+        self.redirect(path)
+
+    def redirect(self, path: Path) -> None:
+        self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch()
 
@@ -184,22 +227,43 @@ class Ledger:
                             f"${self.cap:.2f} cap is spent")
             raise CapReached(self.stopped)
 
-    def record(self, *, arm: str, role: str, question: str, attempt: int, model: str, reply: ChatReply,
-               price: Price, bound: float) -> float:
-        cost = price.cost(reply.prompt_tokens, reply.completion_tokens, reply.cached_tokens)
-        self.spent += cost
-        self.calls += 1
-        row = {"at": _now(), "arm": arm, "role": role, "question": question, "try": attempt, "model": model,
-               "prompt_tokens": reply.prompt_tokens, "cached_tokens": reply.cached_tokens,
-               "completion_tokens": reply.completion_tokens, "reasoning_tokens": reply.reasoning_tokens,
-               "cost_usd": round(cost, 6), "bound_usd": round(bound, 6), "spent_usd": round(self.spent, 6)}
+    def _write(self, row: dict[str, Any]) -> None:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
         if self.spent > self.cap and not self.stopped:
             self.stopped = f"the spend reached ${self.spent:.4f}, over the ${self.cap:.2f} cap"
+
+    def record(self, *, arm: str, role: str, question: str, attempt: int, model: str, reply: ChatReply,
+               price: Price, bound: float) -> float:
+        if reply.usage_reported:
+            cost, note = price.cost(reply.prompt_tokens, reply.completion_tokens, reply.cached_tokens), None
+        else:
+            cost, note = bound, "the reply carried no token usage; charged at the call's bound"
+            self.warnings.append(f"{arm} {question} try {attempt} ({role}): {note}")
+        self.spent += cost
+        self.calls += 1
+        row = {"at": _now(), "arm": arm, "role": role, "question": question, "try": attempt, "model": model,
+               "outcome": "answered", "prompt_tokens": reply.prompt_tokens, "cached_tokens": reply.cached_tokens,
+               "completion_tokens": reply.completion_tokens, "reasoning_tokens": reply.reasoning_tokens,
+               "finish_reason": reply.finish_reason or None,
+               "cost_usd": round(cost, 6), "bound_usd": round(bound, 6), "spent_usd": round(self.spent, 6)}
+        if note:
+            row["note"] = note
+        self._write(row)
         return cost
+
+    def record_failure(self, *, arm: str, role: str, question: str, attempt: int, model: str, bound: float,
+                       error: ModelError) -> float:
+        """A call that failed after it was sent may still be billed: charge it at its bound."""
+        self.spent += bound
+        self.calls += 1
+        self._write({"at": _now(), "arm": arm, "role": role, "question": question, "try": attempt, "model": model,
+                     "outcome": "failed", "status": error.status, "error": str(error)[:300],
+                     "cost_usd": round(bound, 6), "bound_usd": round(bound, 6), "spent_usd": round(self.spent, 6),
+                     "note": "failed after it was sent; charged at the call's bound"})
+        return bound
 
 
 def estimate_tokens(messages: list, tools: list) -> int:
@@ -208,31 +272,71 @@ def estimate_tokens(messages: list, tools: list) -> int:
     return math.ceil(len(json.dumps([messages, tools]).encode("utf-8")) / 3)
 
 
+def _context_length(error: ModelError) -> bool:
+    text = str(error).lower()
+    return error.status == 400 and any(s in text for s in (
+        "context_length", "context length", "maximum context", "too many tokens", "prompt is too long"))
+
+
+def _retryable(error: ModelError) -> bool:
+    return error.status == 429 or (error.status is not None and 500 <= error.status < 600)
+
+
+def _fatal(error: ModelError) -> bool:
+    return (error.status is not None and 400 <= error.status < 500 and error.status != 429
+            and not _context_length(error))
+
+
 @dataclass
 class Metered:
-    """A model behind the ledger: each call is checked against the cap first and recorded after."""
+    """A model behind the ledger: each call is checked against the cap first and recorded after,
+    answered or not; 429 and 5xx are retried with backoff."""
 
     model: ChatModel
     price: Price
     ledger: Ledger
     max_output_tokens: int = 16000
+    sleep: Callable[[float], None] = time.sleep
+
+    def bound_for(self, messages: list, tools: list) -> float:
+        return self.price.bound(estimate_tokens(messages, tools), self.max_output_tokens)
 
     def complete(self, messages: list, tools: list, *, arm: str, role: str, question: str, attempt: int,
                  seconds: Optional[float] = None) -> ChatReply:
-        """`seconds` bounds the call's HTTP timeout (a try's time left), on a model that has one."""
-        bound = self.price.bound(estimate_tokens(messages, tools), self.max_output_tokens)
-        self.ledger.check(bound)
-        saved = getattr(self.model, "timeout", None)
-        if seconds is not None and isinstance(saved, (int, float)):
-            self.model.timeout = max(1.0, min(saved, seconds))
-        try:
-            reply = self.model.complete(messages, tools)
-        finally:
-            if seconds is not None and isinstance(saved, (int, float)):
-                self.model.timeout = saved
-        self.ledger.record(arm=arm, role=role, question=question, attempt=attempt, model=self.model.name,
-                           reply=reply, price=self.price, bound=bound)
-        return reply
+        """`seconds` bounds the call's HTTP timeout (a try's time left), on a model that has one.
+        Raises CapReached before a call that could cross the cap, FatalModelError on a 4xx that a
+        retry cannot fix, ModelError otherwise."""
+        started = time.monotonic()
+        retries = 0
+        while True:
+            bound = self.bound_for(messages, tools)
+            self.ledger.check(bound)
+            left = None if seconds is None else seconds - (time.monotonic() - started)
+            saved = getattr(self.model, "timeout", None)
+            if left is not None and isinstance(saved, (int, float)):
+                self.model.timeout = max(1.0, min(saved, left))
+            try:
+                reply = self.model.complete(messages, tools)
+            except ModelError as exc:
+                if exc.sent:
+                    self.ledger.record_failure(arm=arm, role=role, question=question, attempt=attempt,
+                                               model=self.model.name, bound=bound, error=exc)
+                if _fatal(exc):
+                    raise FatalModelError(str(exc), status=exc.status, sent=exc.sent) from exc
+                if _retryable(exc) and retries < MAX_RETRIES:
+                    retries += 1
+                    delay = min(60.0, exc.retry_after if exc.retry_after else 2.0 * 2 ** retries)
+                    if left is not None and delay >= left:
+                        raise
+                    self.sleep(delay)
+                    continue
+                raise
+            finally:
+                if left is not None and isinstance(saved, (int, float)):
+                    self.model.timeout = saved
+            self.ledger.record(arm=arm, role=role, question=question, attempt=attempt, model=self.model.name,
+                               reply=reply, price=self.price, bound=bound)
+            return reply
 
 
 def read_key_file(variable: str, environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
@@ -264,10 +368,41 @@ _SYSTEM_DIRS = ("/usr/local/bin", "/usr/bin", "/bin")
 _EXTRA_TOOLS = "/opt/tools"
 #: The agent's HOME inside the sandbox: its own tmpfs, empty for every command.
 SANDBOX_HOME = "/agent-home"
+#: Sets each limit inside the sandbox before the command runs: `lim <flag> <value>` lowers a
+#: limit only (a host's lower hard limit stands), and a limit that cannot be set refuses the
+#: command (exit 126). bubblewrap 0.6.3 cannot size its tmpfs mounts (`--size` came later), so
+#: the file-size limit is what bounds a write to /tmp or HOME. RLIMIT_NPROC counts processes per
+#: user namespace on current kernels (5.14 and later), so inside bwrap's new namespace the limit
+#: is `max_procs` itself; on a kernel that counts the user's processes on the whole host, a
+#: sandbox whose probe cannot fork falls back to the user's count plus `max_procs`.
+_LIMITS = (
+    'lim() { h=$(ulimit -H "$1"); if [ "$h" = unlimited ] || [ "$h" -gt "$2" ]; then '
+    'ulimit "$1" "$2" || exit 126; fi; }; '
+    'lim -u {procs} && lim -v {memory_kib} && lim -f {file_kib} && lim -t {cpu} || exit 126; '
+    'exec "$0" --noprofile --norc -c "$1"'
+)
 
 
 def find_bwrap() -> Optional[str]:
     return shutil.which("bwrap")
+
+
+def _user_tasks() -> int:
+    """Threads the current user runs on this host (what RLIMIT_NPROC counts)."""
+    uid, count = os.getuid(), 0
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return 0
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            if os.stat(f"/proc/{entry}").st_uid == uid:
+                count += len(os.listdir(f"/proc/{entry}/task"))
+        except OSError:
+            continue
+    return count
 
 
 @dataclass
@@ -276,17 +411,28 @@ class BashResult:
     exit_code: Optional[int]
     timed_out: bool = False
     cut: bool = False
+    #: whether the command printed anything (before the harness's own notes)
+    produced: bool = False
 
     @property
     def ok(self) -> bool:
+        """A clean run: exit 0 within every limit."""
         return self.exit_code == 0 and not self.timed_out and not self.cut
+
+    @property
+    def responded(self) -> bool:
+        """Whether this is a response the scorer reads: anything the command printed, whatever its
+        exit status, and the visible part of output that was cut."""
+        return self.produced
 
 
 class BashSandbox:
-    """`bash -c` in bubblewrap: no network, an empty environment, the corpus read-only at /corpus."""
+    """`bash -c` in bubblewrap: no network, an empty environment, the corpus read-only at /corpus,
+    resource limits. Starting one runs `true` through the real argv once and refuses on failure."""
 
     def __init__(self, corpus: Path, *, bwrap: Optional[str] = None, command_seconds: float = 120.0,
-                 output_bytes: int = 64 * 1024) -> None:
+                 output_bytes: int = 64 * 1024, max_procs: int = 256, memory_bytes: int = 4 * 1024 ** 3,
+                 file_bytes: int = 256 * 1024 ** 2) -> None:
         self.bwrap = bwrap or find_bwrap()
         if not self.bwrap:
             raise SandboxError("bubblewrap (bwrap) is not installed on this host; the agent-bash arm refuses "
@@ -297,6 +443,9 @@ class BashSandbox:
             raise SandboxError(f"the corpus directory {corpus} does not exist") from exc
         self.command_seconds = command_seconds
         self.output_bytes = output_bytes
+        self.max_procs = max_procs
+        self.memory_bytes = memory_bytes
+        self.file_bytes = file_bytes
         self.binds: list[tuple[str, str]] = []
         self.tools: list[str] = []
         for name in TOOLS:
@@ -311,6 +460,29 @@ class BashSandbox:
         if shell is None:
             raise SandboxError("no bash at /usr/bin/bash or /bin/bash")
         self.shell = shell
+        #: "namespace" (the process limit is max_procs) or "host" (the user's count plus max_procs)
+        self.nproc_mode = "namespace"
+        seconds = min(30.0, command_seconds)
+        try:
+            probe = self.run("true", seconds=seconds)
+        except OSError as exc:
+            raise SandboxError(f"the sandbox cannot start ({self.bwrap}): {exc}") from exc
+        if not probe.ok:
+            raise SandboxError(f"the sandbox cannot start: `true` in it gave exit {probe.exit_code}: "
+                               f"{probe.text.strip()[:300]}")
+        if not self.run("/usr/bin/env true | cat", seconds=seconds).ok:
+            self.nproc_mode = "host"
+            again = self.run("/usr/bin/env true | cat", seconds=seconds)
+            if not again.ok:
+                raise SandboxError(f"the sandbox cannot start a pipeline under its process limit: exit "
+                                   f"{again.exit_code}: {again.text.strip()[:300]}")
+
+    def limits(self) -> str:
+        procs = self.max_procs + (_user_tasks() if self.nproc_mode == "host" else 0)
+        return (_LIMITS.replace("{procs}", str(procs))
+                .replace("{memory_kib}", str(self.memory_bytes // 1024))
+                .replace("{file_kib}", str(max(1, self.file_bytes // 1024)))
+                .replace("{cpu}", str(max(1, math.ceil(self.command_seconds)))))
 
     def argv(self, command: str) -> list[str]:
         args = [
@@ -336,7 +508,7 @@ class BashSandbox:
         for source, target in self.binds:
             args += ["--ro-bind", source, target]
         args += ["--ro-bind", str(self.corpus), "/corpus", "--chdir", "/corpus",
-                 "--", self.shell, "--noprofile", "--norc", "-c", command]
+                 "--", self.shell, "--noprofile", "--norc", "-c", self.limits(), self.shell, command]
         return args
 
     def run(self, command: str, *, seconds: Optional[float] = None) -> BashResult:
@@ -371,6 +543,7 @@ class BashSandbox:
             proc.wait()
         reader.join(timeout=5)
         text = b"".join(chunks).decode("utf-8", "replace")
+        produced = bool(text.strip())
         notes = []
         if state["cut"]:
             notes.append(f"[output cut at {self.output_bytes} bytes; the command was stopped]")
@@ -380,7 +553,7 @@ class BashSandbox:
             notes.append(f"[exit code {proc.returncode}]")
         if notes:
             text = text + ("\n" if text and not text.endswith("\n") else "") + "\n".join(notes)
-        return BashResult(text, None if timed_out else proc.returncode, timed_out, state["cut"])
+        return BashResult(text, None if timed_out else proc.returncode, timed_out, state["cut"], produced)
 
 
 def _kill(proc: subprocess.Popen) -> None:
@@ -400,7 +573,8 @@ BASH_SPEC = ToolSpec(
 
 
 class BashTools:
-    """The bash arm's tool box (the `ToolBox` shape the MCP one has)."""
+    """The bash arm's tool box (the `ToolBox` shape the MCP one has). A command that printed
+    anything is a response, whatever its exit status; one that printed nothing is not."""
 
     instructions: Optional[str] = None
 
@@ -416,12 +590,14 @@ class BashTools:
         if name != "bash" or not isinstance(command, str) or not command.strip():
             return "error: call bash with {\"command\": \"...\"}", True
         result = await asyncio.to_thread(self.sandbox.run, command, seconds=seconds)
-        return result.text, not result.ok
+        return result.text, not result.responded
 
 
 # --- one try ---------------------------------------------------------------------------------
 
 ANSWERED, CAPPED, ERROR, STOPPED = "answered", "capped", "error", "stopped_at_cap"
+#: the reason of a try whose model ran out of output tokens before answering
+OUTPUT_LIMIT = "the model reached max_output_tokens before it answered (finish_reason length)"
 
 
 @dataclass
@@ -430,6 +606,8 @@ class ToolEvent:
     arguments: Mapping[str, Any]
     #: the response as the model saw it (at most `Caps.output_bytes`)
     text: str
+    #: whether the scorer reads it: an MCP call the server did not report as an error, a bash
+    #: command that printed anything
     ok: bool
 
 
@@ -456,12 +634,12 @@ class TryResult:
 
     @property
     def scored(self) -> bool:
-        """A try stopped by the spend cap did not complete; it is listed, not scored."""
-        return self.status != STOPPED and self.evidence is not None and self.evidence.available > 0
+        """A try stopped by the spend cap or ended by a model error is listed, not scored."""
+        return self.status not in (STOPPED, ERROR) and self.evidence is not None and self.evidence.available > 0
 
     def to_dict(self) -> dict[str, Any]:
         out = {"try": self.attempt, "status": self.status, "reason": self.reason, "turns": self.turns,
-               "tool_calls": self.tool_calls, "failed_tool_calls": sum(not e.ok for e in self.events),
+               "tool_calls": self.tool_calls, "unread_tool_calls": sum(not e.ok for e in self.events),
                "prompt_tokens": self.prompt_tokens, "completion_tokens": self.completion_tokens,
                "cost_usd": round(self.cost, 6), "seconds": round(self.seconds, 1), "answer": self.answer,
                "calls": [{"tool": e.name, "arguments": dict(e.arguments), "ok": e.ok, "bytes": len(e.text)}
@@ -483,7 +661,8 @@ def _cut(text: str, limit: int) -> str:
 async def run_try(model: Metered, tools: Any, specs: list[ToolSpec], *, arm: str, system: str, question_id: str,
                   question: str, attempt: int, caps: Caps, clock: Callable[[], float] = time.monotonic) -> TryResult:
     """One question, once, through the loop: model, tool calls, results back, until it answers or
-    a cap ends it. A model failure ends it as an error; the spend cap ends it as stopped."""
+    a cap ends it. A model failure ends it as an error; the spend cap ends it as stopped; a
+    FatalModelError propagates (it stops the run)."""
     result = TryResult(arm, question_id, attempt)
     started = clock()
     deadline = started + caps.try_seconds
@@ -500,16 +679,21 @@ async def run_try(model: Metered, tools: Any, specs: list[ToolSpec], *, arm: str
             if result.turns >= caps.max_turns:
                 cap(f"{caps.max_turns} model turns")
                 break
-            if clock() >= deadline:
-                cap(f"{caps.try_seconds:g} seconds")
+            left = deadline - clock()
+            if left < max(caps.min_call_seconds, 0.0) or left <= 0:
+                cap(f"{caps.try_seconds:g} seconds (a call is not started with under "
+                    f"{caps.min_call_seconds:g} s left)")
                 break
             reply = await asyncio.to_thread(model.complete, messages, schema, arm=arm, role="agent",
-                                            question=question_id, attempt=attempt, seconds=deadline - clock())
+                                            question=question_id, attempt=attempt, seconds=left)
             result.turns += 1
             result.prompt_tokens += reply.prompt_tokens
             result.completion_tokens += reply.completion_tokens
             if not reply.tool_calls:
-                result.answer = reply.content
+                if reply.finish_reason == "length" and not (reply.content or "").strip():
+                    result.status, result.reason = ERROR, OUTPUT_LIMIT
+                else:
+                    result.answer = reply.content
                 break
             messages.append({
                 "role": "assistant", "content": reply.content,
@@ -545,6 +729,8 @@ async def run_try(model: Metered, tools: Any, specs: list[ToolSpec], *, arm: str
                 break
     except CapReached as exc:
         result.status, result.reason = STOPPED, str(exc)
+    except FatalModelError:
+        raise
     except ModelError as exc:
         result.status, result.reason = ERROR, str(exc)
     result.cost = model.ledger.spent - spent_before
@@ -555,6 +741,7 @@ async def run_try(model: Metered, tools: Any, specs: list[ToolSpec], *, arm: str
 # --- gold records ----------------------------------------------------------------------------
 
 RESOLVED, OVERRIDE, UNAVAILABLE = "resolved", "override", "unavailable"
+NO_CONTENT = "its record has no field value or line distinctive enough to recognise in a tool response"
 
 
 @dataclass(frozen=True)
@@ -565,6 +752,10 @@ class GoldRecord:
     key: Optional[str] = None
     path: Optional[str] = None
     reason: str = ""
+    #: six-word runs from the record's values and lines (see `content_fingerprints`)
+    shingles: frozenset = frozenset()
+    #: whole values (four or five words, or a long identifier), matched as word runs
+    values: tuple = ()
 
     @property
     def available(self) -> bool:
@@ -572,7 +763,7 @@ class GoldRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return {"status": self.status, "source": self.source, "key": self.key, "path": self.path,
-                "reason": self.reason or None}
+                "reason": self.reason or None, "fingerprints": len(self.shingles) + len(self.values)}
 
 
 class GoldError(RuntimeError):
@@ -607,6 +798,7 @@ class NodeInfo:
     subtype: str
     source: str
     attrs: Mapping[str, Any]
+    generation: Optional[str] = None
 
 
 async def inspect_node(tools: Any, node_id: str, *, generation: Optional[str] = None) -> tuple[Optional[NodeInfo], str]:
@@ -632,25 +824,36 @@ async def inspect_node(tools: Any, node_id: str, *, generation: Optional[str] = 
     if not isinstance(source, str) or not source:
         return None, "inspect returned the node without its source"
     attrs = node.get("attrs") if isinstance(node.get("attrs"), Mapping) else {}
-    return NodeInfo(node_id, str(node.get("subtype") or ""), source, attrs), ""
+    seen = (payload.get("pinned_generation_id") or payload.get("generation_id")) if isinstance(payload, Mapping) else None
+    return NodeInfo(node_id, str(node.get("subtype") or ""), source, attrs, None if seen is None else str(seen)), ""
+
+
+#: Attributes that carry a record's natural key, by subtype, for records whose node id does not
+#: (a documentation page's id is a hash of its URL). Every other subtype resolves by its id.
+KEY_ATTRS: dict[str, tuple[str, ...]] = {
+    "documentation_page": ("url",),
+}
 
 
 def key_candidates(info: NodeInfo) -> list[str]:
     """Names a node may be filed under in keys.json, most specific first: its id, the id's
-    tails, then its string attributes."""
+    tails, then the key attributes its subtype has (`KEY_ATTRS`)."""
     nid = info.node_id
     out = [nid]
     if ":" in nid:
         first = nid.split(":", 1)[1]
         out += [first, first.replace(":", "/"), nid.rsplit(":", 1)[1]]
-    for name in ("url", "name", "key", "label"):
+    for name in KEY_ATTRS.get(info.subtype, ()):
         value = info.attrs.get(name)
         if isinstance(value, str) and value.strip():
             out.append(value.strip())
-    for value in info.attrs.values():
-        if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value).strip():
-            out.append(str(value).strip())
     return list(dict.fromkeys(out))
+
+
+def normal_source(name: str) -> str:
+    """okg writes a producer as `<deployment>.<source>`, and spells it with `-` or `_`; keys.json
+    uses the registry name. Compare them lower-cased, with `-` read as `_`."""
+    return name.strip().lower().replace("-", "_")
 
 
 def source_candidates(source: str) -> list[str]:
@@ -663,8 +866,13 @@ def source_candidates(source: str) -> list[str]:
 class GoldMap:
     """Every scored question's gold ids, resolved to corpus records or marked unavailable."""
 
-    def __init__(self, records: dict[str, list[GoldRecord]]) -> None:
+    def __init__(self, records: dict[str, list[GoldRecord]], generations: Sequence[str] = (),
+                 live_atoms: Optional[dict[str, list[dict[str, str]]]] = None) -> None:
         self.records = records
+        #: the generations inspect read while resolving
+        self.generations = list(dict.fromkeys(g for g in generations if g))
+        #: per question, the atoms only a live system answers (unavailable in both arms)
+        self.live_atoms = live_atoms or {}
 
     def to_dict(self) -> dict[str, Any]:
         return {qid: {g.node_id: g.to_dict() for g in golds} for qid, golds in self.records.items()}
@@ -681,11 +889,80 @@ def _lookup(keys: Mapping[str, Any], source: str, names: Sequence[str]) -> tuple
 
 def _left_out(keys: Mapping[str, Any], names: Sequence[str]) -> Optional[str]:
     left = keys.get("left_out") or {}
+    by_normal = {normal_source(k): k for k in left}
     for name in names:
-        for variant in (name, name.replace("-", "_"), name.replace("_", "-")):
-            if variant in left:
-                return f"{variant}: {left[variant]}"
+        hit = by_normal.get(normal_source(name))
+        if hit:
+            return f"{hit}: {left[hit]}"
     return None
+
+
+# --- what a record looks like in a response ---------------------------------------------------
+
+SHINGLE_WORDS = 6
+MIN_VALUE_WORDS = 4
+MIN_VALUE_CHARS = 16
+MAX_SHINGLES = 20000
+_WORDS = re.compile(r"[a-z0-9]+")
+#: JSON string escapes, as both a `cat` of a corpus file and an MCP JSON reply show them
+_UNICODE_ESCAPE = re.compile(r"\\u[0-9a-fA-F]{4}")
+_ESCAPE = re.compile(r"\\[nrtbf\"/\\]")
+
+
+def words(text: str) -> list[str]:
+    return _WORDS.findall(_ESCAPE.sub(" ", _UNICODE_ESCAPE.sub("", text)).lower())
+
+
+def _leaves(value: Any) -> list[str]:
+    if isinstance(value, Mapping):
+        return [s for v in value.values() for s in _leaves(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _leaves(v)]
+    if isinstance(value, str):
+        return [value]
+    return []
+
+
+def content_fingerprints(data: bytes, *, exclude: Sequence[str] = ()) -> tuple[frozenset, tuple]:
+    """(six-word runs, whole values) that identify a record's content: from each string value of
+    a JSON record (field names never), else from each line of a text record. The record's own
+    key, id and path are excluded: naming a record is listing it, not reading it."""
+    text = data.decode("utf-8", "replace")
+    try:
+        units = _leaves(json.loads(text))
+    except ValueError:
+        units = text.splitlines()
+    skip = {" ".join(words(x)) for x in exclude if x}
+    shingles: set[str] = set()
+    values: list[str] = []
+    for unit in units:
+        w = words(unit)
+        joined = " ".join(w)
+        if not w or joined in skip:
+            continue
+        if len(w) >= SHINGLE_WORDS:
+            for i in range(len(w) - SHINGLE_WORDS + 1):
+                shingles.add(" ".join(w[i:i + SHINGLE_WORDS]))
+                if len(shingles) >= MAX_SHINGLES:
+                    break
+        elif len(w) >= MIN_VALUE_WORDS or len(joined) >= MIN_VALUE_CHARS:
+            values.append(joined)
+    return frozenset(shingles), tuple(dict.fromkeys(values))
+
+
+def _with_content(record: GoldRecord, records_dir: Optional[Path]) -> GoldRecord:
+    if records_dir is None or not record.path or not record.available:
+        return record
+    try:
+        data = (Path(records_dir) / record.path).read_bytes()
+    except OSError as exc:
+        return GoldRecord(record.node_id, UNAVAILABLE, record.source, record.key, record.path,
+                          reason=f"its file cannot be read ({type(exc).__name__})")
+    shingles, values = content_fingerprints(data, exclude=(record.key or "", record.node_id, record.path))
+    if not shingles and not values:
+        return GoldRecord(record.node_id, UNAVAILABLE, record.source, record.key, record.path, reason=NO_CONTENT)
+    return GoldRecord(record.node_id, record.status, record.source, record.key, record.path, record.reason,
+                      shingles, values)
 
 
 def record_for(info: NodeInfo, keys: Mapping[str, Any]) -> "GoldRecord | str":
@@ -694,11 +971,12 @@ def record_for(info: NodeInfo, keys: Mapping[str, Any]) -> "GoldRecord | str":
     from archi.evaluation.raw_corpus import OPS_RECORD, OPS_RECORD_PRODUCER
 
     sources = keys.get("sources") or {}
+    by_normal = {normal_source(name): name for name in sources}
     gid = info.node_id
     if info.source == OPS_RECORD_PRODUCER or info.subtype.startswith("ops_"):
         return GoldRecord(gid, UNAVAILABLE, OPS_RECORD, reason=_left_out(keys, [OPS_RECORD]) or "ops-record is left out")
     names = source_candidates(info.source)
-    source = next((n for n in names if n in sources), None)
+    source = next((by_normal[normal_source(n)] for n in names if normal_source(n) in by_normal), None)
     if source is None:
         left = _left_out(keys, names)
         if left:
@@ -714,14 +992,30 @@ def record_for(info: NodeInfo, keys: Mapping[str, Any]) -> "GoldRecord | str":
 
 
 async def resolve_gold(tools: Any, questions: Sequence[Any], keys: Mapping[str, Any],
-                       manifest: frozenset[str]) -> GoldMap:
-    """Resolve every gold id, or raise GoldError naming each one that does not resolve."""
+                       manifest: frozenset[str], records_dir: Optional[Path] = None) -> GoldMap:
+    """Resolve every gold id, or raise GoldError naming each one that does not resolve. With
+    `records_dir`, each record's content fingerprints are read from its file."""
     sources = keys.get("sources") or {}
+    by_normal = {normal_source(name): name for name in sources}
     out: dict[str, list[GoldRecord]] = {}
     problems: list[str] = []
+    generations: list[str] = []
+    live_atoms: dict[str, list[dict[str, str]]] = {}
     for question in questions:
         golds = []
+        atoms = tuple(getattr(question, "atoms", ()) or ())
+        live = [a for a in atoms if a.live_only]
+        if live:
+            live_atoms[question.id] = [{"atom": a.id, "answer_source": a.answer_source} for a in live]
+        # A gold id that only live-only atoms carry is unavailable; one a file-backed atom also
+        # carries ("ticket+live_rucio", "doc or ticket") counts through that file.
+        live_gold = {g for a in live for g in a.gold} - {g for a in atoms if not a.live_only for g in a.gold}
         for gid in question.gold:
+            if gid in live_gold:
+                sources_ = sorted({a.answer_source for a in live if gid in a.gold})
+                golds.append(GoldRecord(gid, UNAVAILABLE, reason=f"answered only from a live system "
+                                                                 f"({'; '.join(sources_)}); no file holds it"))
+                continue
             where = (question.gold_sources or {}).get(gid)
             if where is not None:
                 if "path" in where:
@@ -731,42 +1025,45 @@ async def resolve_gold(tools: Any, questions: Sequence[Any], keys: Mapping[str, 
                     natural = next((t["natural_key"].get(where["path"]) for name, t in sources.items()
                                     if where["path"] in t["natural_key"]), None)
                     owner = next((name for name, t in sources.items() if where["path"] in t["natural_key"]), None)
-                    golds.append(GoldRecord(gid, OVERRIDE, owner, natural, where["path"]))
+                    golds.append(_with_content(GoldRecord(gid, OVERRIDE, owner, natural, where["path"]), records_dir))
                     continue
-                if where["source"] not in sources:
+                source = by_normal.get(normal_source(where["source"]))
+                if source is None:
                     left = _left_out(keys, [where["source"]])
                     if left:
                         golds.append(GoldRecord(gid, UNAVAILABLE, where["source"], where["key"], reason=left))
                     else:
                         problems.append(f"{question.id}: {gid}: gold_sources source {where['source']} is not in the corpus")
                     continue
-                path, natural = _lookup(keys, where["source"], [where["key"]])
+                path, natural = _lookup(keys, source, [where["key"]])
                 if path is None:
                     problems.append(f"{question.id}: {gid}: gold_sources key {where['key']!r} is not a record of "
-                                    f"{where['source']} in the corpus")
+                                    f"{source} in the corpus")
                     continue
-                golds.append(GoldRecord(gid, OVERRIDE, where["source"], natural, path))
+                golds.append(_with_content(GoldRecord(gid, OVERRIDE, source, natural, path), records_dir))
                 continue
             info, why = await inspect_node(tools, gid)
             if info is None:
                 problems.append(f"{question.id}: {gid}: {why}")
                 continue
+            if info.generation:
+                generations.append(info.generation)
             record = record_for(info, keys)
             if isinstance(record, str):
                 problems.append(f"{question.id}: {gid}: {record}")
                 continue
-            golds.append(record)
+            golds.append(_with_content(record, records_dir))
         out[question.id] = golds
     if problems:
         raise GoldError(problems)
-    return GoldMap(out)
+    return GoldMap(out, generations, live_atoms)
 
 
 # --- scoring ---------------------------------------------------------------------------------
 
-#: A natural key shorter than this counts only through its path or node id: "gpu" or "12"
-#: would match too much text.
-MIN_KEY_CHARS = 4
+#: A natural key shorter than this does not even list a record: "gpu" or "T2_US_X" would match
+#: too much text. No key ever credits a record; only its content does.
+MIN_KEY_CHARS = 6
 _WORD = r"A-Za-z0-9_"
 _PATH_TOKEN = re.compile(r"[\w.%@+=,~-]+(?:/[\w.%@+=,~-]+)+")
 #: okg row heads (`[n] <id> (subtype)`) and JSON `"node_id": "<id>"` fields
@@ -780,9 +1077,12 @@ def _bounded(term: str, *, left: str, right: str) -> re.Pattern:
 
 @dataclass
 class Evidence:
+    #: gold records read (their content appeared)
     found: list[str] = field(default_factory=list)
     missed: list[str] = field(default_factory=list)
     unavailable: list[str] = field(default_factory=list)
+    #: gold records named (path, key or id) without their content: not credited
+    listed: list[str] = field(default_factory=list)
     first_rank: Optional[int] = None
     records_read: int = 0
 
@@ -801,11 +1101,11 @@ class Evidence:
     def to_dict(self) -> dict[str, Any]:
         return {"recall": None if self.recall is None else round(self.recall, 4),
                 "reciprocal_rank": round(self.reciprocal_rank, 4), "first_rank": self.first_rank,
-                "found": self.found, "missed": self.missed, "unavailable": self.unavailable,
-                "records_read": self.records_read}
+                "found": self.found, "missed": self.missed, "listed": self.listed,
+                "unavailable": self.unavailable, "records_met": self.records_read}
 
 
-def _gold_patterns(gold: GoldRecord) -> list[re.Pattern]:
+def _name_patterns(gold: GoldRecord) -> list[re.Pattern]:
     patterns = [_bounded(gold.node_id, left=_WORD + ":", right=_WORD + "-")]
     if gold.path:
         patterns.append(_bounded(gold.path, left=_WORD + ".%-", right=_WORD + "%-"))
@@ -814,47 +1114,68 @@ def _gold_patterns(gold: GoldRecord) -> list[re.Pattern]:
     return patterns
 
 
-def score_evidence(events: Sequence[ToolEvent], gold: Sequence[GoldRecord], manifest: frozenset[str]) -> Evidence:
-    """Evidence recall and the first gold record's rank, from successful tool responses only.
+def _read_in(gold: GoldRecord, norm: str, grams: set) -> bool:
+    if gold.shingles and not gold.shingles.isdisjoint(grams):
+        return True
+    return any(f" {value} " in norm for value in gold.values)
 
-    Tool inputs (`ToolEvent.arguments`) and the final answer are never read."""
+
+def score_evidence(events: Sequence[ToolEvent], gold: Sequence[GoldRecord], manifest: frozenset[str]) -> Evidence:
+    """Evidence recall, listed records and the first gold record's rank, from the tool responses
+    the scorer reads (`ToolEvent.ok`). Tool inputs (`ToolEvent.arguments`) and the final answer are
+    never read."""
     evidence = Evidence(unavailable=[g.node_id for g in gold if not g.available])
     targets = [g for g in gold if g.available]
-    patterns = {g.node_id: _gold_patterns(g) for g in targets}
+    names = {g.node_id: _name_patterns(g) for g in targets}
     alias = {}
     for g in targets:
         alias[g.node_id] = g.node_id
         if g.path:
             alias[g.path] = g.node_id
-    found: set[str] = set()
+    read: set[str] = set()
+    named: set[str] = set()
     order: list[str] = []
+    first_read: Optional[int] = None
     for event in events:
         if not event.ok:
             continue
-        mentions: list[tuple[int, str]] = []
+        w = words(event.text)
+        norm = " " + " ".join(w) + " "
+        grams = {" ".join(w[i:i + SHINGLE_WORDS]) for i in range(len(w) - SHINGLE_WORDS + 1)}
+        mentions: list[tuple[int, str]] = []  # (offset, identity) of records met by name
+        gold_at: dict[str, int] = {}
         for g in targets:
-            for pattern in patterns[g.node_id]:
-                for match in pattern.finditer(event.text):
-                    mentions.append((match.start(), g.node_id))
+            for pattern in names[g.node_id]:
+                match = pattern.search(event.text)
+                if match:
+                    named.add(g.node_id)
+                    gold_at[g.node_id] = min(gold_at.get(g.node_id, match.start()), match.start())
         for match in _PATH_TOKEN.finditer(event.text):
             token = match.group(0)
             for prefix in ("./", "corpus/"):
                 if token.startswith(prefix):
                     token = token[len(prefix):]
-            if token in manifest:
-                mentions.append((match.start(), alias.get(token, "path:" + token)))
+            if token in manifest and token not in alias:
+                mentions.append((match.start(), "path:" + token))
         for regex in (_ROW_HEAD, _JSON_ID):
             for match in regex.finditer(event.text):
-                mentions.append((match.start(1), alias.get(match.group(1), "id:" + match.group(1))))
+                if match.group(1) not in alias:
+                    mentions.append((match.start(1), "id:" + match.group(1)))
+        # A gold record read here is placed where it is first named, else after everything named.
+        for g in targets:
+            if g.node_id not in read and _read_in(g, norm, grams):
+                read.add(g.node_id)
+                mentions.append((gold_at.get(g.node_id, len(event.text)), "gold:" + g.node_id))
         for _, identity in sorted(mentions):
             if identity not in order:
                 order.append(identity)
-            if identity in patterns:
-                found.add(identity)
-    evidence.found = [g.node_id for g in targets if g.node_id in found]
-    evidence.missed = [g.node_id for g in targets if g.node_id not in found]
+            if identity.startswith("gold:") and first_read is None:
+                first_read = len([i for i in order if not i.startswith("gold:")]) + 1
+    evidence.found = [g.node_id for g in targets if g.node_id in read]
+    evidence.missed = [g.node_id for g in targets if g.node_id not in read]
+    evidence.listed = [g.node_id for g in targets if g.node_id in named and g.node_id not in read]
     evidence.records_read = len(order)
-    evidence.first_rank = next((i for i, name in enumerate(order, 1) if name in patterns), None)
+    evidence.first_rank = first_read
     return evidence
 
 
@@ -887,7 +1208,17 @@ class Judge:
                                                 f"Answer to grade:\n{answer}"}]
         passes = []
         for _ in range(self.passes):
-            reply = self.model.complete(messages, [], arm=arm, role="judge", question=question_id, attempt=attempt)
+            try:
+                reply = self.model.complete(messages, [], arm=arm, role="judge", question=question_id,
+                                            attempt=attempt)
+            except FatalModelError:
+                raise
+            except ModelError as exc:
+                passes.append({"score": None, "error": str(exc)[:300]})
+                continue
+            if reply.finish_reason == "length" and not (reply.content or "").strip():
+                passes.append({"score": None, "error": OUTPUT_LIMIT})
+                continue
             passes.append(_verdict(reply.content))
         scores = [p["score"] for p in passes if p.get("score") is not None]
         return {"score": sum(scores) / len(scores) if scores else None, "passes": passes}
@@ -929,14 +1260,19 @@ class AgentReport:
     tries: dict[str, dict[str, list[TryResult]]] = field(default_factory=dict)  # question -> arm -> tries
     planned: int = 0
     stopped: Optional[str] = None
+    #: why the run was aborted (a model endpoint refusal no retry can fix), or None
+    aborted: Optional[str] = None
     started_at: str = ""
     finished_at: str = ""
+    questions: list = field(default_factory=list)
+    #: the generations the graph arm read during the context run, to compare with the corpus's
+    evaluated_generations: list = field(default_factory=list)
+    spent_before: float = 0.0
+    calls_before: int = 0
 
     @property
     def answer_keys(self) -> int:
         return sum(1 for q in self.questions if q.answer)
-
-    questions: list = field(default_factory=list)
 
     def summary(self, arm: str) -> dict[str, Any]:
         rows = [t for per_arm in self.tries.values() for t in per_arm.get(arm, [])]
@@ -951,11 +1287,13 @@ class AgentReport:
         else:
             graded = [t.judge["score"] for t in completed if t.judge and t.judge.get("score") is not None]
             answer = round(sum(graded) / len(graded), 4) if graded else None
+        listed = [len(t.evidence.listed) for t in scored]
         return {
             "tries": len(rows),
             "tries_scored": len(scored),
             "evidence_recall": round(sum(recalls) / len(recalls), 4) if recalls else None,
             "mrr": round(sum(rrs) / len(rrs), 4) if rrs else None,
+            "listed_not_read_per_try": round(sum(listed) / len(listed), 2) if listed else None,
             "answer_score": answer,
             "judge_errors": sum(1 for t in completed if t.judge and t.judge.get("score") is None),
             "cost_usd": round(sum(t.cost for t in rows), 6),
@@ -963,6 +1301,8 @@ class AgentReport:
             "tool_calls_per_try": round(sum(t.tool_calls for t in completed) / len(completed), 2) if completed else None,
             "turns_per_try": round(sum(t.turns for t in completed) / len(completed), 2) if completed else None,
             "failures": sum(t.status == ERROR for t in rows),
+            "error_tries": [{"question": t.question, "try": t.attempt, "reason": t.reason}
+                            for t in rows if t.status == ERROR],
             "capped": sum(t.status == CAPPED for t in rows),
             "stopped_at_cap": sum(t.status == STOPPED for t in rows),
         }
@@ -970,9 +1310,18 @@ class AgentReport:
     def to_dict(self) -> dict[str, Any]:
         plan = self.plan
         ledger = plan.model.ledger
+        spent = ledger.spent - self.spent_before
         judge_cost = 0.0
         if plan.judge is not None:
-            judge_cost = ledger.spent - sum(t.cost for per in self.tries.values() for ts in per.values() for t in ts)
+            judge_cost = spent - sum(t.cost for per in self.tries.values() for ts in per.values() for t in ts)
+        corpus_generation = getattr(plan.corpus, "generation", None)
+        evaluated = list(dict.fromkeys(g for g in [*self.evaluated_generations, *self.gold.generations] if g))
+        warning = None
+        if corpus_generation is None:
+            warning = "the corpus records no published generation; it cannot be checked against the graph"
+        elif evaluated and evaluated != [corpus_generation]:
+            warning = (f"the corpus was built when generation {corpus_generation} was published, but this run "
+                       f"read {', '.join(evaluated)}: the two arms may not see the same records")
         return {
             "arms": {arm: self.summary(arm) for arm in plan.arms},
             "model": plan.model.model.name,
@@ -980,24 +1329,34 @@ class AgentReport:
             "reasoning_effort": plan.reasoning_effort,
             "price_usd_per_million": vars(plan.model.price),
             "caps": {"max_turns": plan.caps.max_turns, "max_tool_calls": plan.caps.max_tool_calls,
-                     "try_seconds": plan.caps.try_seconds, "command_seconds": plan.caps.command_seconds,
-                     "output_bytes": plan.caps.output_bytes, "max_output_tokens": plan.model.max_output_tokens},
+                     "try_seconds": plan.caps.try_seconds, "min_call_seconds": plan.caps.min_call_seconds,
+                     "command_seconds": plan.caps.command_seconds, "output_bytes": plan.caps.output_bytes,
+                     "max_output_tokens": plan.model.max_output_tokens, "max_procs": plan.caps.max_procs,
+                     "memory_bytes": plan.caps.memory_bytes, "file_bytes": plan.caps.file_bytes},
             "tries_per_question": plan.tries,
             "prompt": {arm: build_prompt(arm, plan.caps, folders=_folders(plan.corpus),
                                          tools=plan.sandbox.tools if plan.sandbox else ()) for arm in plan.arms},
             "sandbox": None if plan.sandbox is None else {"bwrap": plan.sandbox.bwrap, "tools": plan.sandbox.tools,
                                                          "missing_tools": [t for t in TOOLS if t not in plan.sandbox.tools]},
             "corpus": {"path": str(plan.corpus.path), "digest": plan.corpus.digest,
+                       "generation": corpus_generation, "evaluated_generations": evaluated,
+                       "generation_warning": warning,
                        "lock_sha256": plan.corpus.lock_sha256, "built_at": plan.corpus.built_at,
+                       "coverage": getattr(plan.corpus, "coverage", ""),
                        "sources": sorted(plan.corpus.sources), "left_out": dict(plan.corpus.left_out)},
             "ops_record": "left out of both agent arms: " + str(plan.corpus.left_out.get("ops-record", "")),
             "judge": {"requested": plan.judge_requested, "enabled": plan.judge is not None,
                       "model": plan.judge.model.model.name if plan.judge else None,
                       "passes": plan.judge.passes if plan.judge else None,
+                      "max_output_tokens": plan.judge.model.max_output_tokens if plan.judge else None,
                       "answer_keys": self.answer_keys, "cost_usd": round(judge_cost, 6)},
-            "spend": {"cap_usd": ledger.cap, "spent_usd": round(ledger.spent, 6), "calls": ledger.calls,
+            "spend": {"cap_usd": ledger.cap, "spent_usd": round(spent, 6),
+                      "spent_this_invocation_usd": round(ledger.spent, 6),
+                      "calls": ledger.calls - self.calls_before,
                       "stopped_at_cap": self.stopped is not None, "stop_reason": self.stopped,
-                      "ledger": LEDGER},
+                      "warnings": list(ledger.warnings), "ledger": LEDGER},
+            "aborted": self.aborted,
+            "live_only_atoms": self.gold.live_atoms,
             "tries_planned": self.planned,
             "tries_run": sum(len(ts) for per in self.tries.values() for ts in per.values()),
             "started_at": self.started_at,
@@ -1016,11 +1375,15 @@ def _folders(corpus: Any) -> list[str]:
 
 
 async def run_agent_arms(questions: Sequence[Any], plan: AgentPlan, mcp: Any, gold: GoldMap, *,
-                         manifest: frozenset[str],
+                         manifest: frozenset[str], evaluated_generations: Sequence[str] = (),
                          progress: Optional[Callable[[TryResult, int, int], None]] = None) -> AgentReport:
     """Every scored question, `plan.tries` times, in each arm (arms interleaved per question so a
-    spend stop leaves both arms with the same questions done)."""
-    report = AgentReport(plan, gold, questions=list(questions), started_at=_now())
+    spend stop leaves both arms with the same questions done). A FatalModelError aborts the run;
+    the report says so and keeps what completed."""
+    ledger = plan.model.ledger
+    report = AgentReport(plan, gold, questions=list(questions), started_at=_now(),
+                         evaluated_generations=list(evaluated_generations), spent_before=ledger.spent,
+                         calls_before=ledger.calls)
     folders = _folders(plan.corpus)
     systems = {arm: build_prompt(arm, plan.caps, folders=folders,
                                  tools=plan.sandbox.tools if plan.sandbox else ()) for arm in plan.arms}
@@ -1037,38 +1400,59 @@ async def run_agent_arms(questions: Sequence[Any], plan: AgentPlan, mcp: Any, go
     todo = [q for q in questions if any(g.available for g in gold.records.get(q.id, []))]
     report.planned = len(todo) * plan.tries * len(plan.arms)
     done = 0
-    for question in todo:
-        per_arm = report.tries.setdefault(question.id, {})
-        for attempt in range(1, plan.tries + 1):
-            for arm in plan.arms:
-                if plan.model.ledger.stopped:
-                    report.stopped = plan.model.ledger.stopped
+    try:
+        for question in todo:
+            per_arm = report.tries.setdefault(question.id, {})
+            for attempt in range(1, plan.tries + 1):
+                for arm in plan.arms:
+                    if ledger.stopped:
+                        report.stopped = ledger.stopped
+                        break
+                    result = await run_try(plan.model, boxes[arm], specs[arm], arm=arm, system=systems[arm],
+                                           question_id=question.id, question=question.question, attempt=attempt,
+                                           caps=plan.caps)
+                    per_arm.setdefault(arm, []).append(result)
+                    result.evidence = score_evidence(result.events, gold.records[question.id], manifest)
+                    if plan.judge is not None and question.answer and result.status not in (STOPPED, ERROR):
+                        try:
+                            result.judge = await asyncio.to_thread(
+                                plan.judge.grade, arm=arm, question_id=question.id, attempt=attempt,
+                                question=question.question, key=question.answer, answer=result.answer)
+                        except CapReached as exc:
+                            result.judge = {"score": None, "error": f"stopped at the spend cap: {exc}"}
+                    done += 1
+                    if progress:
+                        progress(result, done, report.planned)
+                if report.stopped:
                     break
-                result = await run_try(plan.model, boxes[arm], specs[arm], arm=arm, system=systems[arm],
-                                       question_id=question.id, question=question.question, attempt=attempt,
-                                       caps=plan.caps)
-                result.evidence = score_evidence(result.events, gold.records[question.id], manifest)
-                if plan.judge is not None and question.answer and result.status != STOPPED:
-                    try:
-                        result.judge = await asyncio.to_thread(
-                            plan.judge.grade, arm=arm, question_id=question.id, attempt=attempt,
-                            question=question.question, key=question.answer, answer=result.answer)
-                    except CapReached as exc:
-                        result.judge = {"score": None, "error": f"stopped at the spend cap: {exc}"}
-                    except ModelError as exc:
-                        result.judge = {"score": None, "error": str(exc)}
-                per_arm.setdefault(arm, []).append(result)
-                done += 1
-                if progress:
-                    progress(result, done, report.planned)
             if report.stopped:
                 break
-        if report.stopped:
-            break
-    if plan.model.ledger.stopped and report.stopped is None:
-        report.stopped = plan.model.ledger.stopped
+    except FatalModelError as exc:
+        report.aborted = (f"the model endpoint refused a request in a way a retry cannot fix (HTTP {exc.status}): "
+                          f"{str(exc)[:300]}")
+    if ledger.stopped and report.stopped is None:
+        report.stopped = ledger.stopped
     report.finished_at = _now()
     return report
+
+
+def one_call_bounds(plan: AgentPlan, questions: Sequence[Any], *, context_tokens: int = 128_000) -> dict[str, float]:
+    """What one call can cost: the first call of a try (the system prompt and the longest question)
+    and a call with `context_tokens` of context; the judge's when there is one. Printed before
+    the first call so a wrong price shows before money is spent."""
+    longest = max((q.question for q in questions), key=len, default="")
+    out = {}
+    for arm in plan.arms:
+        system = build_prompt(arm, plan.caps, folders=_folders(plan.corpus),
+                              tools=plan.sandbox.tools if plan.sandbox else ())
+        schema = openai_tools([BASH_SPEC]) if arm == AGENT_BASH else []
+        out[f"{arm} first call"] = plan.model.bound_for(
+            [{"role": "system", "content": system}, {"role": "user", "content": longest}], schema)
+    out[f"agent call with {context_tokens // 1000}k tokens of context"] = plan.model.price.bound(
+        context_tokens, plan.model.max_output_tokens)
+    if plan.judge is not None:
+        out["judge call"] = plan.judge.model.price.bound(8000, plan.judge.model.max_output_tokens)
+    return out
 
 
 # --- the report section ----------------------------------------------------------------------
@@ -1086,42 +1470,61 @@ def render_agent_markdown(agents: Mapping[str, Any], data: Mapping[str, Any]) ->
     """The agent arms beside the no-model arms, for report.md."""
     k = data.get("k")
     lines = ["## All arms side by side", "",
-             "| arm | what it is | evidence recall | MRR | answer score | cost per try | tool calls per try | failures |",
-             "|---|---|---|---|---|---|---|---|"]
+             "| arm | what it is | evidence recall | MRR | listed, not read | answer score | cost per try "
+             "| tool calls per try | failures |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for name, s in (data.get("arms") or {}).items():
         lines.append(f"| {name} | search call, no model | {_fmt(s['recall_at_k'])} (recall@{k}) | {_fmt(s['mrr'])} "
-                     f"| n/a | $0 | 1 | {s['errors']} failed calls |")
+                     f"| n/a | n/a | $0 | 1 | {s['errors']} failed calls |")
     what = {AGENT_BASH: "agent, bash over the raw files", AGENT_GRAPH: "agent, the instance's MCP tools"}
     for name, s in agents["arms"].items():
         cost = "none" if s["cost_per_try_usd"] is None else f"${s['cost_per_try_usd']:.4f}"
         failures = f"{s['failures']} errors, {s['capped']} capped" + (
             f", {s['stopped_at_cap']} stopped at the spend cap" if s["stopped_at_cap"] else "")
         lines.append(f"| {name} | {what.get(name, 'agent')} | {_fmt(s['evidence_recall'])} | {_fmt(s['mrr'])} "
+                     f"| {_fmt(s['listed_not_read_per_try'], 2)} per try "
                      f"| {_fmt(s['answer_score'])} | {cost} | {_fmt(s['tool_calls_per_try'], 1)} | {failures} |")
     spend = agents["spend"]
     corpus = agents["corpus"]
     caps = agents["caps"]
     lines += [
         "",
+        "Evidence recall and MRR count a gold record only when its content appears in a tool response; "
+        "naming it (path, key or id) lists it, uncredited. Error tries are left out of both and listed below.",
+        "",
         f"- agent arms: model {agents['model']} (reasoning {agents['reasoning_effort'] or 'default'}), "
         f"{agents['tries_per_question']} tries per question; caps {caps['max_turns']} turns, "
         f"{caps['max_tool_calls']} tool calls, {caps['try_seconds']:g} s per try; bash commands "
         f"{caps['command_seconds']:g} s and {caps['output_bytes'] // 1024} KiB",
-        f"- corpus: `{corpus['digest']}` at {corpus['path']} (snapshot lock `{corpus['lock_sha256'][:16]}`); "
-        f"sources {', '.join(corpus['sources'])}",
+        f"- corpus: `{corpus['digest']}` at {corpus['path']} (snapshot lock `{corpus['lock_sha256'][:16]}`), "
+        f"built at generation {corpus['generation'] or 'unknown'}",
+        f"- coverage: {corpus['coverage'] or ', '.join(corpus['sources'])}",
         f"- left out of the corpus: " + "; ".join(f"{k}: {v}" for k, v in corpus["left_out"].items()),
         f"- {agents['ops_record']}",
-        f"- spend: ${spend['spent_usd']:.4f} of the ${spend['cap_usd']:.2f} cap over {spend['calls']} model calls "
-        f"(ledger `{spend['ledger']}`)" + (f"; **stopped at the cap**: {spend['stop_reason']}; "
-                                           f"{agents['tries_run']} of {agents['tries_planned']} tries ran"
-                                           if spend["stopped_at_cap"] else ""),
+        f"- spend: ${spend['spent_usd']:.4f} over {spend['calls']} model calls (ledger `{spend['ledger']}`); "
+        f"${spend['spent_this_invocation_usd']:.4f} of the ${spend['cap_usd']:.2f} cap this invocation"
+        + (f"; **stopped at the cap**: {spend['stop_reason']}; {agents['tries_run']} of "
+           f"{agents['tries_planned']} tries ran" if spend["stopped_at_cap"] else ""),
         f"- judge: " + (NO_ANSWER_KEYS if not agents["judge"]["answer_keys"] else
                         (f"{agents['judge']['model']}, {agents['judge']['passes']} pass(es), "
                          f"{agents['judge']['answer_keys']} answer keys" if agents["judge"]["enabled"] else JUDGE_OFF)),
     ]
+    if corpus.get("generation_warning"):
+        lines.append(f"- **warning**: {corpus['generation_warning']}")
+    if agents.get("aborted"):
+        lines.append(f"- **aborted**: {agents['aborted']}")
+    for warning in spend.get("warnings") or []:
+        lines.append(f"- spend warning: {warning}")
     if agents.get("sandbox") and agents["sandbox"]["missing_tools"]:
         lines.append(f"- not installed on this host, so not in the sandbox: {', '.join(agents['sandbox']['missing_tools'])}")
+    live = agents.get("live_only_atoms") or {}
+    if live:
+        lines.append("- atoms only a live system answers (left out of evidence recall in both arms): " + "; ".join(
+            f"{qid} {a['atom']} ({a['answer_source']})" for qid, atoms in live.items() for a in atoms))
     unavailable = sorted({gid for per in agents["gold"].values() for gid, g in per.items() if g["status"] == UNAVAILABLE})
     if unavailable:
         lines.append(f"- gold records unavailable to the agent arms (not counted as misses): {', '.join(unavailable)}")
+    for name, s in agents["arms"].items():
+        for row in s["error_tries"]:
+            lines.append(f"- error try, {name}: {row['question']} try {row['try']}: {row['reason']}")
     return lines
