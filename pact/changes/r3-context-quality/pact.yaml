@@ -144,6 +144,14 @@ tasks:
     refuses to start without a cap, a price, bwrap (for agent-bash) or a corpus that matches its
     digest, and stops before a call that could cross the cap.
 
+    Fixture results, not acceptance evidence (no row, so req.context-eval stays unproven until the
+    comp-ops run; orchestrator decision on #698): at 2401f97c on a dev host with bubblewrap 0.6.3,
+    test_raw_sandbox.py, test_raw_arm.py and test_raw_corpus.py gave 78 passed, none skipped. They show
+    no network inside the sandbox, a read-only /corpus, a tmpfs HOME, no key visible inside, the time
+    and output limits, and the refusals (no bwrap, no cap, no price, a stale corpus, an unresolved gold
+    id). No model was called. Full suite 3687 passed, 28 skipped, 2 failed (the anonymizer timing tests
+    under load).
+
 
     Test plan:
 
