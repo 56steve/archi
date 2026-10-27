@@ -6,10 +6,12 @@ are pull requests on `archi-physics/archi`. The v2 line (`v2.x` tags, branch
 
 ## 3.0.0
 
-Archi 3.0 is a new product, not an upgrade of v2. It is a knowledge graph
-(OKG) with the facility's own sources in it, an agent-ready MCP endpoint over
-that graph, and an operations layer that proposes and records actions. There
-is no in-place conversion from v2. See
+Archi 3.0 is a new product, not an upgrade of v2. It automates operations
+for scientific computing on two layers built on OKG: a context layer that
+holds the facility's own knowledge, kept current, linked, cited and measured,
+and an operations layer whose automations propose actions that a person
+approves, and record every outcome. Any MCP agent can read the context layer.
+There is no in-place conversion from v2. See
 [Moving from v2 to 3.0](docs/docs/migration-from-v2.md).
 
 This entry covers milestones M2 to M7 of
@@ -55,9 +57,17 @@ name is `archi`.
   `archi diff` reports drift from the lock. (#782)
 - The connectors, schemas, invariants and playbooks are split into
   context and tool packs. `cern-team` is a bundle of them. (#789)
-- A second bundle, `cms-physics`, with the `analysis-notes` and
-  `cms-analyses` packs. It links analysis ids across CDS records, TWiki pages
-  and analysis notes. (#838)
+- `cms-physics`, with the `analysis-notes` and `cms-analyses` packs. It links
+  analysis ids across CDS records, TWiki pages and analysis notes. (#838)
+- `cms-comp-ops`: sites, storage, datasets, workflows, site status, CMSSW
+  releases and past incidents, with the comp-ops playbooks moved into their
+  packs. (#849)
+- `cluster-manager`, for any cluster operator at any site: documentation,
+  tickets and operational memory by default; ServiceNow, Slurm, HTCondor,
+  node health and code as options. The Slurm pack's live tools act only after
+  an approved escalation. (#850)
+- The `tickets` pack reads Redmine, any JIRA Server or Data Center, or both,
+  with nothing CERN-specific. (#855)
 
 **A context layer that says how current and complete it is** (M2)
 
@@ -80,6 +90,20 @@ name is `archi`.
 - `instance-health`, the first automation. It watches the instance itself and
   keeps one issue per problem, with no duplicates. It starts at L1 and may go to L2. (#839)
 
+**Evals: a checked claim that a bundle answers, and how well it retrieves** (M5, M2)
+
+- `archi eval --bundle <name>` runs a bundle's smoke set against the
+  instance's MCP endpoint and writes `report.md` and `report.json`. A question
+  passes when the answer cites a record of the right source or type and holds
+  the required strings; there is no LLM judge. Smoke sets ship for
+  `cern-team`, `cms-physics` and `cluster-manager`. (#851, #852, #857)
+- `archi eval --context` scores retrieval on its own, with no model: recall@k
+  and MRR for the default search against a lexical baseline. The question set
+  is named at run time, so private question sets stay out of the repository.
+  The automation context gate reads the newest clean run of its bundle. (#858)
+- `instance-health` reads the eval reports and raises an issue when a bundle's
+  latest run could not run, falls below its threshold, or drops. (#853)
+
 **Bring your own agent** (M6)
 
 - `archi connect` writes the MCP configuration for Claude Code, codex,
@@ -92,39 +116,39 @@ name is `archi`.
 - The documentation site is rewritten for 3.0. v2 pages sit under "v2
   (legacy)". The bundle, pack and command reference pages are generated from
   the code and checked by a test. (#841, #831, #832)
+- The README, the package description and the docs home describe Archi as
+  operations automation for scientific computing. (#860)
 - The upgrade guide for v2 operators, the cutover runbook, release notes and
   this changelog. (This release.)
 
 **Maintenance**
 
 - Regenerated `uv.lock` (#784). Recorded that archi-okg is archived (#783).
-  PACT evidence and approvals: #788, #791, #794, #795, #797, #836.
+  PACT evidence and approvals: #788, #791, #794, #795, #797, #836, #856.
 
 ### Known limits
-
-Open pull requests #844 to #847 (Windows file modes, HTTP backoff, the
-`archi eval` smoke harness, a generic tickets pack) were not merged when this
-entry was written. If one lands before the release, update the lists below.
 
 Some of what the plan calls for is not in 3.0.0. Plan around these.
 
 Open requirements (each is a PACT requirement still unproven at this tag):
 
-- **Context evals.** `archi eval --context` does not exist. A gate that asks
-  for a context-eval score fails, so the automation stays in shadow.
-  (`r3-context-quality`, requirement `context-eval`.)
-- **Bundle evals.** There is no `archi eval`, no per-bundle smoke set, and no
-  CI job that gates a bundle on one. (`r3-bundle-evals`.)
-- **`cms-physics` install proof.** The bundle ships and its packs are tested,
-  but its bundle-install proof in CI and the rebuild of the cms-kb instance
-  from it are not recorded. (`r3-bundle-cms-physics`.)
-- **`cms-comp-ops` is not shipped.** (`r3-bundle-cms-comp-ops`.)
-- **`cluster-manager` is not shipped.** (`r3-bundle-cluster-manager`.)
-- **`ticket-triage` is not shipped.** There is no shadow report. The v2 queue
-  bots (Redmine, JIRA, Mattermost) keep serving on a tagged `v2.x` until a
+- **The context-eval acceptance run.** `archi eval --context` ships and is
+  tested on fixtures, but the run on the comp-ops instance with the operator
+  question set has not happened. (`r3-context-quality`, requirement
+  `context-eval`.)
+- **Smoke sets on a local model.** The smoke sets pass their threshold (7 of
+  10) on GPT-6 Luna, which was accepted for this release (board d366). No local
+  model has reached it. The nightly run reports a small CPU model's score and
+  does not gate. A CI gate on bundle changes waits for the #619 eval framework.
+  `cms-comp-ops` has no smoke set in 3.0. (`r3-bundle-evals`.)
+- **Instances rebuilt from the bundles.** The lab `cms-physics` instance,
+  the live comp-ops instance (#726) and SubMIT (#740) have not been rebuilt
+  from their bundles yet. (`r3-bundle-cms-physics`, `r3-bundle-cms-comp-ops`,
+  `r3-bundle-cluster-manager`.)
+- **`ticket-triage` is not shipped.** There is no shadow report. The four-week
+  shadow is planned at SubMIT only; the comp-ops shadow (#748) is out of 3.0
+  (board d380). The v2 queue bots keep serving on a tagged `v2.x` until a
   promotion that is a later goal. (`r3-auto-ticket-triage`.)
-- **`cern-team` bundle proof.** The bundle ships and the nightly runs it, but
-  its PACT requirement is not marked proven. (`r3-bundle-cern-team`.)
 - **PyPI pre-release proof.** `archi-kb` has not been published to PyPI before
   this tag. The clean-venv install check is part of the release. (`r3-release-home`,
   `r3-release`.)

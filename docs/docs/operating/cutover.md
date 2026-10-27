@@ -22,7 +22,7 @@ before". Where each stands when 3.0.0 is prepared:
 |---|---|---|
 | 1. Every live v2 deployment has a named owner (R1). | **Answered** 2026-10-27 (board d384): two deployments, both moving to 3.0. See step 1. | Step 1 (done). |
 | 2. Each of those deployments is migrated or stays on a tagged `v2.x`. | Not started. | Step 4. |
-| 3. Parity for comp-ops and the chat migration hold, or the losses are accepted in writing. | **Not met.** The `cms-comp-ops` bundle, `ticket-triage` and its four-week shadow report are not in 3.0.0. See [what has no equivalent yet](../migration-from-v2.md#what-has-no-equivalent-yet). | Step 2 (the written acceptance), `JASON`. |
+| 3. Parity for comp-ops and the chat migration hold, or the losses are accepted in writing. | **Not met.** `ticket-triage` and its four-week SubMIT shadow report are not in 3.0.0, and the live comp-ops instance and SubMIT have not been rebuilt from their bundles. See [what has no equivalent yet](../migration-from-v2.md#what-has-no-equivalent-yet). | Step 2 (the written acceptance), `JASON`. |
 | 4. The last v2 release is tagged and documented. | The newest tag is `v2.5.0`. `main` has had 52 commits since (check: step 0). | Step 3. |
 
 State today of the repository settings this runbook changes (read with `gh`
@@ -36,12 +36,10 @@ on 2026-10-26, so re-check at the time):
 - `archi-kb` has no pending publisher on PyPI. (Nobody has looked at
   pypi.org for this page. Check it in step 6.)
 
-Open pull requests #844 to #847 (Windows file modes, HTTP backoff, `archi
-eval` smoke harness, a generic tickets pack) were **not merged** when this
-page was written. If one lands before the freeze in step 3, update the
-"not in 3.0.0" lists in the changelog, the release notes and the
-[v2 guide](../migration-from-v2.md) first. `archi eval` (#846) in particular
-changes three of them.
+This page was last brought up to date on 2026-10-27, after #849 to #860
+merged. If anything else lands before the freeze in step 3 (`ticket-triage`,
+#746, in particular), update the "not in 3.0.0" lists in the changelog, the
+release notes and the [v2 guide](../migration-from-v2.md) first.
 
 ## Step 0. Look at the starting point
 
@@ -102,11 +100,13 @@ go from Jason.
 writing. 3.0.0 does not have parity. Write the acceptance and keep it with the
 inventory. It lists, from [the 3.0 limits](../migration-from-v2.md#what-has-no-equivalent-yet):
 
-- the `cms-comp-ops` and `cluster-manager` bundles are not shipped;
-- `ticket-triage` is not shipped and has no four-week shadow report, so the v2
-  queue bots stay on a tagged `v2.x`;
-- `archi eval` and the bundle evals are not shipped (unless #846 has merged);
-- no upload, Redmine, SSO-page or Helm equivalents.
+- `ticket-triage` is not shipped and has no four-week SubMIT shadow report,
+  so the v2 queue bots stay on a tagged `v2.x`;
+- the live comp-ops instance and SubMIT have not been rebuilt from their
+  bundles;
+- the smoke sets pass on GPT-6 Luna, not on a local model, and the
+  context-eval acceptance run on a live instance has not happened;
+- no upload, SSO-page or Helm equivalents.
 
 **Check:** the written acceptance is linked from the tracking issue and from
 the `r3-release` PACT evidence.

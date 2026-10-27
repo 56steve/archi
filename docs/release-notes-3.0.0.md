@@ -1,9 +1,10 @@
 # archi 3.0.0
 
-Archi 3.0 turns a facility's own knowledge (documentation, meetings, wikis,
-tickets, code, catalogs) into a graph that an agent can read and cite, and
-adds an operations layer that proposes and records actions. The package is
-`archi-kb` on PyPI. You import it as `archi`.
+Archi 3.0 automates operations for scientific computing. It turns a
+facility's own knowledge (documentation, meetings, wikis, tickets, code,
+catalogs, past incidents) into a context layer that any agent can read and
+cite, and adds an operations layer whose automations propose actions that a
+person approves. The package is `archi-kb` on PyPI. You import it as `archi`.
 
 3.0 is a new product, not an upgrade of v2. v2 lives on in the `v2` branch
 and its `v2.x` tags.
@@ -13,11 +14,17 @@ and its `v2.x` tags.
 - **One command from an empty machine to a cited answer.** `archi init`,
   `archi up`, `archi doctor`. The graph survives `archi down` and `archi up`.
   A nightly build proves the path on an empty runner.
-- **Bundles and packs.** Pick what goes in the graph. Shipped bundles:
-  `cern-team` (documentation, meetings, wiki, documents, tickets, code) and
-  `cms-physics` (physics TWiki, CDS, CMSSW releases, analysis notes and the
-  analysis ids that link them). Add a source later with `archi add <pack>`.
+- **Bundles and packs.** Pick what goes in the graph. Four bundles ship:
+  `cern-team` (documentation and meetings, no credential needed), `cms-physics`
+  (physics TWiki, CDS, CMSSW releases, analysis notes and the analysis ids that
+  link them), `cms-comp-ops` (sites, storage, datasets, workflows, site status,
+  past incidents) and `cluster-manager` (documentation, Redmine or JIRA
+  tickets, operational memory, and optionally ServiceNow, Slurm, HTCondor and
+  node health, for any site). Add a source later with `archi add <pack>`.
   Write your own pack in a separate pip package.
+- **Evals.** `archi eval --bundle <name>` checks that a bundle answers its
+  smoke set with cited records; `archi eval --context` scores retrieval with no
+  model. `instance-health` raises an issue when an eval fails or drops.
 - **A context layer that reports its own health.** Each pack declares how stale
   its sources may be, and which links and checks must hold. `archi doctor`
   reports them. The `ops-record` pack keeps incidents, proposals, decisions,
@@ -33,14 +40,12 @@ and its `v2.x` tags.
 
 ## What is not in 3.0.0
 
-- `archi eval` and context evals. A gate that needs a context-eval score fails,
-  so the automation stays in shadow.
-- The `cms-comp-ops` and `cluster-manager` bundles, and the `ticket-triage`
-  automation with its shadow report. The v2 queue bots keep serving on a
-  tagged `v2.x`.
-- The `cms-physics` install proof in CI and the rebuild of the cms-kb instance
-  from it.
-- Level L3. Document upload in the chat UI. Redmine, SSO-page and Helm support.
+- The `ticket-triage` automation and its shadow report. The v2 queue bots
+  keep serving on a tagged `v2.x`.
+- Instances rebuilt from the bundles: the live comp-ops instance and SubMIT.
+- The context-eval acceptance run on a live instance, and a smoke-set pass on
+  a local model (the sets pass on GPT-6 Luna).
+- Level L3. Document upload in the chat UI. SSO-page and Helm support.
 
 The full list, and what each missing piece means for a v2 deployment, is in
 [Moving from v2 to 3.0](https://github.com/archi-physics/archi/blob/main/docs/docs/migration-from-v2.md). Every item is
