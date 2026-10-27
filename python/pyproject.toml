@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # belongs to an unrelated package. The import name stays `archi`.
 name = "archi-kb"
 version = "3.0.0a1"
-description = "Archi — the HEP distribution of OKG (v3 distribution)"
+description = "Archi automates operations for scientific computing, on a cited, measured context layer built on OKG"
 requires-python = ">=3.12"
 dependencies = [
     "requests>=2.31",
