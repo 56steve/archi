@@ -301,11 +301,12 @@ def declare_runtime_database(deployment_dir: Path, database: str) -> bool:
     manifest = _load_yaml(path) or {}
     if not (manifest.get("runtime") or {}).get("enabled"):
         return False
-    postgres = manifest.setdefault("postgres", {})
+    postgres = manifest.get("postgres") or {}
+    manifest["postgres"] = postgres
     declared = postgres.get("database")
     if declared == database:
         return False
-    if declared:
+    if isinstance(declared, str) and declared.strip():
         raise InitError(
             f"{path} declares postgres.database {declared!r}, but this instance's database is "
             f"{database!r}; fix one of them"

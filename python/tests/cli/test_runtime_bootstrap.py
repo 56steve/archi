@@ -195,13 +195,20 @@ def test_a_different_declared_database_is_refused_not_overwritten(tmp_path):
 def test_install_and_publish_declares_the_database_right_after_the_install(monkeypatch, instance):
     from archi.stack.instance import DEPLOYMENTS_DIR, read_env
 
-    monkeypatch.setattr(init_mod, "commit_all", lambda d, m: False)
+    deployment = instance.dir / DEPLOYMENTS_DIR / instance.name
+    order = []
+
+    def commit(directory, message):
+        # okg publishes only committed configuration: the database must be declared by now.
+        order.append(("commit", _read(deployment)["postgres"].get("database")))
+        return False
+
+    monkeypatch.setattr(init_mod, "commit_all", commit)
     monkeypatch.setattr(init_mod.stack_compose, "write_stack_files", lambda i: None)
     monkeypatch.setattr(init_mod, "role_password", lambda path, role: "pw")
     monkeypatch.setattr(init_mod, "write_env", lambda path, values: None)
     monkeypatch.setattr(init_mod, "has_automations", lambda d: True)
     monkeypatch.setattr(init_mod, "ensure_ops_tables", lambda inst, secrets: None)
-    deployment = instance.dir / DEPLOYMENTS_DIR / instance.name
     okg = Okg(bootstrapped=True)
     real_run = okg.run
 
@@ -210,9 +217,39 @@ def test_install_and_publish_declares_the_database_right_after_the_install(monke
             deployment.mkdir(parents=True, exist_ok=True)
             _manifest(deployment, runtime=True)
         if args[0] == "provision":
-            assert _read(deployment)["postgres"]["database"] == instance.database
+            order.append(("provision", _read(deployment)["postgres"]["database"]))
         return real_run(*args, **kw)
 
     okg.run = run
     init_mod.install_and_publish(instance, read_env(instance.env_path), okg, "prof", {}, echo=lambda _: None)
-    assert _read(deployment)["postgres"]["database"] == instance.database
+    assert order == [("commit", instance.database), ("provision", instance.database)]
+
+
+def test_an_empty_postgres_block_or_blank_database_is_filled_in(tmp_path):
+    import yaml
+
+    (tmp_path / "deployment.yaml").write_text(yaml.safe_dump({"postgres": None, "runtime": {"enabled": True}}))
+    assert init_mod.declare_runtime_database(tmp_path, "my_team") is True
+    assert _read(tmp_path)["postgres"] == {"database": "my_team"}
+    _manifest(tmp_path, runtime=True, postgres={"dsn": "${OKG_DSN}", "database": "  "})
+    assert init_mod.declare_runtime_database(tmp_path, "my_team") is True
+    assert _read(tmp_path)["postgres"]["database"] == "my_team"
+
+
+def test_up_declares_the_runtime_database_of_an_instance_made_before_the_fix(monkeypatch, instance):
+    from archi.stack import compose as stack_compose
+    from archi.stack import webui
+
+    instance.deployment_dir.mkdir(parents=True, exist_ok=True)
+    _manifest(instance.deployment_dir, runtime=True)  # what an older `archi init` left: no database
+    committed = []
+    monkeypatch.setattr(up_mod, "commit_all",
+                        lambda d, m: committed.append(_read(instance.deployment_dir)["postgres"].get("database")))
+    monkeypatch.setattr(up_mod, "has_automations", lambda d: True)
+    monkeypatch.setattr(up_mod, "ensure_ops_tables", lambda inst, secrets: None)
+    monkeypatch.setattr(stack_compose, "wait_for", lambda *a, **k: None)
+    monkeypatch.setattr(stack_compose, "http_status", lambda url, **k: 0)
+    monkeypatch.setattr(webui, "admin_token", lambda *a, **k: "tok")
+    up_mod.up(instance, echo=lambda _: None, compose_runner=_runner({}),
+              okg_runner=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+    assert committed[0] == instance.database
