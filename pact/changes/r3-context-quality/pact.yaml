@@ -14,6 +14,16 @@ affected_code:
 - python/archi/ops/
 - python/archi/evaluation/
 - python/archi/enrichment/
+- python/archi/cli/evaluate.py
+- python/archi/health/signals.py
+- python/tests/evaluation/
+- python/tests/ops/test_workflow.py
+- python/tests/ops/test_health_signals.py
+- docs/docs/operating/evals.md
+- docs/docs/reference/cli.md
+- docs/docs/reference/pack-format.md
+- docs/docs/context-layer.md
+- docs/docs/migration-from-v2.md
 requirements:
 - id: req.r3-context-quality.freshness
   statement: 'Every context pack declares max_staleness per source; archi doctor reports each
@@ -78,7 +88,20 @@ tasks:
 
     Test plan:
 
-    - comp-ops run [evidence: executed_test]'
+    - comp-ops run [evidence: executed_test]
+
+
+    Fixture results so far (NOT the acceptance; the comp-ops run has not happened: it waits on access
+    and on the private operator set, boards d379 and d380, so the requirement stays unproven): at
+    6e94ae5c on submit75 (okg 0.2.0), python -m pytest python/tests/evaluation python/tests/ops/test_context_gate.py
+    python/tests/ops/test_health_signals.py python/tests/ops/test_workflow.py -q: 264 passed; python -m
+    pytest python/tests -q: 3611 passed, 28 skipped (2026-10-27T12:17:38+00:00). They prove, on a fake
+    MCP search tool and an invented fixture set, the eval mode itself: no model; okg JSON results; a
+    graph arm and a lexical baseline arm; recall@k, MRR, failed calls, the baseline delta over questions
+    both arms executed, the generation read, the question file''s hash and count; runs kept under
+    <data root>/eval/context/<bundle>/<UTC stamp>/ and written atomically. The baseline is the server''s
+    lexical index over chunks and attributes, not the raw documents; whether the requirement''s
+    "raw-document baseline" wording stands is a decision for Jason (board d398).'
 - id: task.r3-context-quality.gate
   requirement: req.r3-context-quality.gate
   verification: 'Context gate evaluator.
@@ -136,4 +159,23 @@ evidence:
     Only True or a passing string counts as an invariant pass (not 1, not a list). A malformed spec is
     refused. Passing and failing fixtures covered. The gate is a library; its first caller is the
     automation runtime (r3-ops-runtime).'
+- kind: executed_test
+  requirement: req.r3-context-quality.gate
+  status: pass
+  command: python -m pytest python/tests/ops/test_context_gate.py python/tests/ops/test_workflow.py
+    python/tests/evaluation/test_context.py -q (submit75, okg 0.2.0)
+  head: 6e94ae5c4225ea6d64a3c9f4aaafe36b49ef9572
+  at: '2026-10-27T12:17:56+00:00'
+  note: 'acc.r3-context-quality.gate, now with the context-eval score read from real reports: 143 passed.
+    The gate''s min_context_eval_score check reads the newest archi eval --context run of one bundle
+    (context_eval_bundle, else the instance''s only bundle) under <data root>/eval/context/<bundle>/ and
+    passes on a fresh, clean fixture run; it fails, with the reason named in the context_eval check, on no
+    run, an unreadable or unlistable directory, another schema or bundle, an execution_failed run or any
+    failed graph-arm call, an overridden graph arm, a missing question hash or a count that does not match,
+    a run older than max_age_days (default 14, at most 3650) or more than five minutes in the future, a k
+    or question count outside the optional context_eval_k and context_eval_min_questions pins, and a score
+    below the minimum. The ops workflow''s gate step turns an old or unreadable run into a failing check
+    instead of raising (test_workflow.py). Malformed gate keys are refused. This row is about the gate
+    only: it says nothing of req.r3-context-quality.context-eval, whose comp-ops acceptance has not run.
+    Full suite at this head: 3611 passed, 28 skipped.'
 decisions: []

@@ -242,8 +242,10 @@ class McpToolBox:
         result = await self._session.list_tools()
         return [ToolSpec(t.name, t.description or "", t.inputSchema or {}) for t in result.tools]
 
-    async def call(self, name: str, arguments: Mapping[str, Any]) -> tuple[str, bool]:
-        result = await self._session.call_tool(name, dict(arguments))
+    async def call(self, name: str, arguments: Mapping[str, Any], *,
+                   meta: Optional[Mapping[str, Any]] = None) -> tuple[str, bool]:
+        """`meta` goes in the request's `_meta` (okg reads `okg/result_format` there)."""
+        result = await self._session.call_tool(name, dict(arguments), meta=dict(meta) if meta else None)
         text = "".join(getattr(c, "text", "") for c in result.content)
         return text, bool(result.isError)
 
