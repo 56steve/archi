@@ -474,7 +474,8 @@ def gate_step_on(monkeypatch, tmp_path, report=None):
 
 def good_report(finished_at):
     return {"schema": "archi-context-eval-report/1", "bundle": "demo", "status": "pass", "errors": 0,
-            "score": 0.75, "arms": {"graph": {"errors": 0}}, "questions_sha256": "sha256:" + "0" * 64,
+            "score": 0.75, "arms": {"graph": {"errors": 0, "tool": "search", "arguments": {}}},
+            "k": 10, "questions_sha256": "sha256:" + "0" * 64,
             "question_count": 1, "questions": [{"id": "q"}], "finished_at": finished_at, "generation": "41"}
 
 

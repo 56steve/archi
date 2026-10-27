@@ -28,7 +28,7 @@ from archi.evaluation.context import (
     parse_context,
     read_page,
     run_context,
-    run_dir,
+    publish_run,
     score_hits,
     write_report,
 )
@@ -173,7 +173,7 @@ def test_an_arm_in_the_file_replaces_the_default_of_that_name():
     assert arms[BASELINE] == ("search", {"method": "lexical", "where": {"type": "document_chunk"}},
                               "set by the question file")
     assert arms["semantic"][:2] == ("search", {"method": "semantic"}) and arms[GRAPH][:2] == ("search", {})
-    assert "roll up to their records" in arms[GRAPH][2]
+    assert "rolled up to their records" in arms[GRAPH][2] and "not graph links" in arms[GRAPH][2]
 
 
 # --- reading a ranking ---------------------------------------------------------------
@@ -279,16 +279,45 @@ def test_an_unreachable_endpoint_is_execution_failed():
 
 def write_run(data_root, tools=None, *, cset=None):
     report = run(cset or load_context(FIXTURE), tools or FakeSearch(fail={(BASELINE, Q3): "x"}))
-    out = run_dir(context_eval_dir(data_root, report.bundle), report.finished_at)
-    return report, write_report(report, out)
+    return report, publish_run(report, context_eval_dir(data_root, report.bundle))
 
 
 def test_runs_are_kept_one_directory_each_with_a_collision_suffix(tmp_path):
+    report = run(load_context(FIXTURE), FakeSearch(fail={(BASELINE, Q3): "x"}))
+    report.finished_at = "2026-10-27T03:01:44Z"
     root = tmp_path / "eval" / "context" / "demo"
-    first = run_dir(root, "2026-10-27T03:01:44Z")
-    second = run_dir(root, "2026-10-27T03:01:44Z")
-    third = run_dir(root, "2026-10-27T03:01:44Z")
-    assert [p.name for p in (first, second, third)] == ["20261027T030144Z", "20261027T030144Z-2", "20261027T030144Z-3"]
+    names = [publish_run(report, root)[1].parent.name for _ in range(3)]
+    assert names == ["20261027T030144Z", "20261027T030144Z-2", "20261027T030144Z-3"]
+    assert sorted(p.name for p in root.iterdir()) == names  # no temporary directory left behind
+
+
+def test_a_crash_while_writing_leaves_no_report_where_readers_look(tmp_path, monkeypatch):
+    from archi.evaluation import context as context_mod
+
+    def half_written(directory, report):
+        (directory / "report.json").write_text('{"schema": "archi-context-eval-report/1", "bun')
+        raise KeyboardInterrupt
+
+    report = run(load_context(FIXTURE), FakeSearch(fail={(BASELINE, Q3): "x"}))
+    root = context_eval_dir(tmp_path, "demo")
+    monkeypatch.setattr(context_mod, "_write", half_written)
+    with pytest.raises(KeyboardInterrupt):
+        publish_run(report, root)
+    assert list(root.iterdir()) == []
+    # had the process died before cleaning up, the half-written run would sit in a hidden directory,
+    # which neither the gate nor the instance-health reader looks at
+    hidden = root / ".20261027T030144Z.tmp-1"
+    hidden.mkdir()
+    (hidden / "report.json").write_text("{half")
+    assert "no context eval of bundle demo" in read_context_eval(tmp_path, "demo").problem
+
+
+def test_out_files_are_replaced_whole(tmp_path):
+    report = run(load_context(FIXTURE), FakeSearch(fail={(BASELINE, Q3): "x"}))
+    md, js = write_report(report, tmp_path / "out")
+    md, js = write_report(report, tmp_path / "out")
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["report.json", "report.md"]
+    assert json.loads(js.read_text())["bundle"] == "demo"
 
 
 def test_the_report_and_the_gate(tmp_path):
@@ -334,12 +363,54 @@ def edit_newest(data_root, change):
     (lambda d: d["arms"]["graph"].update(errors=1), "graph arm whose every call executed"),
     (lambda d: d.update(score=1.5), "no score from 0 to 1"),
     (lambda d: d.update(finished_at="yesterday"), "no usable finished_at"),
+    (lambda d: d.update(arms=["graph"]), "graph arm whose every call executed"),  # not a mapping: no raise
+    (lambda d: d.update(arms="graph"), "graph arm whose every call executed"),
+    (lambda d: d["arms"]["graph"].update(arguments={"method": "semantic"}), "informational only"),
+    (lambda d: d["arms"]["graph"].update(tool="query"), "informational only"),
+    (lambda d: d.update(finished_at=(datetime.now(timezone.utc) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+     "in the future"),
 ])
 def test_an_invalid_report_fails_the_gate_with_the_reason(tmp_path, change, message):
     write_run(tmp_path)
     edit_newest(tmp_path, change)
     reading = read_context_eval(tmp_path, "demo")
     assert reading.score is None and message in reading.problem
+
+
+def test_a_finish_time_a_little_ahead_is_clock_skew_and_accepted(tmp_path):
+    write_run(tmp_path)
+    edit_newest(tmp_path, lambda d: d.update(
+        finished_at=(datetime.now(timezone.utc) + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")))
+    assert read_context_eval(tmp_path, "demo").problem is None
+
+
+def test_a_directory_that_cannot_be_listed_is_a_named_failure(tmp_path, monkeypatch):
+    write_run(tmp_path)
+
+    def refuse(self):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "iterdir", refuse)
+    reading = read_context_eval(tmp_path, "demo")
+    assert reading.score is None and "cannot list the context evals" in reading.problem
+
+
+def test_any_other_error_while_checking_is_a_named_failure(tmp_path, monkeypatch):
+    from archi.ops import context_gate
+
+    write_run(tmp_path)
+    monkeypatch.setattr(context_gate, "_parse_time", lambda value: 1 / 0)
+    reading = read_context_eval(tmp_path, "demo")
+    assert reading.score is None and "could not be checked (ZeroDivisionError" in reading.problem
+
+
+def test_the_gate_can_pin_k_and_a_minimum_question_count(tmp_path):
+    write_run(tmp_path)  # k 3, 3 scored questions
+    assert read_context_eval(tmp_path, "demo", k=3, min_questions=3).problem is None
+    assert "used k=3, not the k=10 the gate pins" in read_context_eval(tmp_path, "demo", k=10).problem
+    assert "scored 3 questions, fewer than the 4" in read_context_eval(tmp_path, "demo", min_questions=4).problem
+    spec = GateSpec.from_mapping({"min_context_eval_score": 0.5, "context_eval_k": 10, "context_eval_min_questions": 40})
+    assert (spec.context_eval_k, spec.context_eval_min_questions) == (10, 40)
 
 
 def test_an_unreadable_report_fails_with_the_reason(tmp_path):
@@ -358,9 +429,16 @@ def test_a_report_older_than_max_age_days_fails(tmp_path):
 
 
 @pytest.mark.parametrize("raw, message", [
-    ({"min_context_eval_score": 0.5, "max_age_days": 0}, "max_age_days must be a positive"),
+    ({"min_context_eval_score": 0.5, "max_age_days": 0}, "max_age_days must be a number of days above 0"),
+    ({"min_context_eval_score": 0.5, "max_age_days": float("inf")}, "at most 3650"),
+    ({"min_context_eval_score": 0.5, "max_age_days": float("nan")}, "at most 3650"),
+    ({"min_context_eval_score": 0.5, "max_age_days": 3651}, "at most 3650"),
     ({"min_context_eval_score": 0.5, "context_eval_bundle": "../x"}, "cannot be used in a path"),
+    ({"min_context_eval_score": 0.5, "context_eval_k": 0}, "context_eval_k must be an integer from 1 to 100"),
+    ({"min_context_eval_score": 0.5, "context_eval_k": 2.5}, "context_eval_k must be an integer"),
+    ({"min_context_eval_score": 0.5, "context_eval_min_questions": 0}, "at least 1"),
     ({"max_age_days": 3, "sources": ["a.b"]}, "apply only with min_context_eval_score"),
+    ({"context_eval_k": 10, "sources": ["a.b"]}, "context_eval_k apply only with min_context_eval_score"),
 ])
 def test_bad_gate_keys_are_refused(raw, message):
     with pytest.raises(GateSpecError, match=None) as err:
@@ -474,6 +552,28 @@ def test_on_an_instance_a_set_of_another_bundle_is_refused(endpoint, monkeypatch
     assert main(["eval", "--context", "--questions", str(FIXTURE)]) == 2
     assert "bundle demo, which this instance does not list" in capsys.readouterr().err
     assert Endpoint.seen == [] and not (tmp_path / "data").exists()
+
+
+def test_on_an_instance_a_set_that_overrides_the_graph_arm_is_refused_unless_written_elsewhere(
+        endpoint, monkeypatch, tmp_path, capsys):
+    from archi.stack.instance import Instance
+
+    inst = instance_at(tmp_path, ["demo"])
+    monkeypatch.setattr(Instance, "load", classmethod(lambda cls, d: inst))
+    custom = tmp_path / "custom.yaml"
+    custom.write_text(yaml.safe_dump({**fixture_raw(), "arms": {"graph": {"tool": "search",
+                                                                          "arguments": {"method": "semantic"}}}}))
+    assert main(["eval", "--context", "--questions", str(custom)]) == 2
+    assert "overrides the graph arm" in capsys.readouterr().err
+    assert Endpoint.seen == [] and not (tmp_path / "data").exists()
+    # written with --out it runs, as an informational report the gate would refuse anyway
+    main(["eval", "--context", "--questions", str(custom), "--out", str(tmp_path / "elsewhere")])
+    data = json.loads((tmp_path / "elsewhere" / "report.json").read_text())
+    assert data["arms"]["graph"]["arguments"] == {"method": "semantic"}
+    # a file that spells out the default graph arm overrides nothing
+    same = tmp_path / "same.yaml"
+    same.write_text(yaml.safe_dump({**fixture_raw(), "arms": {"graph": {"tool": "search", "arguments": {}}}}))
+    assert load_context(same).graph_overridden is False and load_context(custom).graph_overridden is True
 
 
 def test_a_failed_graph_call_exits_2_and_the_gate_refuses_the_run(endpoint, monkeypatch, tmp_path, capsys):

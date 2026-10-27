@@ -11,8 +11,14 @@ come back in the top k. Each question runs in two arms:
               roll-up to records and no concept expansion. It is the closest the MCP surface
               comes to keyword search over the raw documents, not a separate raw-document index.
 
-Chunk rows can fill the baseline's k slots where the graph arm returns one row per record,
-so part of the difference between the arms is that roll-up, not the graph's links.
+The graph arm is lexical search too (okg's default method), with concept expansion and
+record roll-up on, so the difference between the arms measures those two, not graph
+links. Chunk rows can fill the baseline's k slots where the graph arm returns one row per
+record.
+
+A question file may override the graph arm; such a run is informational only. On an
+instance, where the run would be offered to the context gate, the CLI refuses it, and the
+gate refuses any report whose graph arm is not the default.
 
 A hit counts for a gold id when its row's id is that id, or when the row is a passage
 whose record is that id (`parent` in JSON, `in <id>` on a text row line). Ids in a row's
@@ -46,9 +52,12 @@ bundle; its score is the graph arm's recall@k.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -74,7 +83,8 @@ DEFAULT_ARMS: dict[str, dict[str, Any]] = {
     BASELINE: {"tool": "search", "arguments": {"method": "lexical", "rank_by": "self", "expand_concepts": False}},
 }
 ARM_DESCRIPTIONS = {
-    GRAPH: "the server's default search, as an operator's agent calls it; passages roll up to their records",
+    GRAPH: ("the server's default search, as an operator's agent calls it: lexical too, with concept expansion "
+            "and passages rolled up to their records, so the delta measures those, not graph links"),
     BASELINE: ("lexical baseline: the server's lexical index over chunks and attributes, each text unit ranked "
                "on its own words, no roll-up to records, no concept expansion. Chunk rows can fill its k slots "
                "where the graph arm rolls up to records, so part of the delta is that roll-up"),
@@ -124,6 +134,13 @@ class ContextSet:
     @property
     def scored(self) -> tuple[ContextQuestion, ...]:
         return tuple(q for q in self.questions if q.gold)
+
+    @property
+    def graph_overridden(self) -> bool:
+        """Whether the file replaced the default graph arm (such a run is informational only)."""
+        graph = next(a for a in self.arms if a.name == GRAPH)
+        default = DEFAULT_ARMS[GRAPH]
+        return graph.tool != default["tool"] or dict(graph.arguments) != default["arguments"]
 
 
 def _strings(where: str, raw: Any) -> tuple[str, ...]:
@@ -607,25 +624,58 @@ def render_markdown(report: ContextReport) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def run_dir(root: Path, finished_at: str) -> Path:
-    """A new directory `<root>/<YYYYMMDDTHHMMSSZ>` for one run, `-2`, `-3`, ... appended on a collision."""
-    stamp = finished_at.replace("-", "").replace(":", "")
-    root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
-    n = 1
-    while True:
-        path = root / (stamp if n == 1 else f"{stamp}-{n}")
-        try:
-            path.mkdir()
-            return path
-        except FileExistsError:
-            n += 1
-
-
-def write_report(report: ContextReport, out: Path) -> tuple[Path, Path]:
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    md, js = out / "report.md", out / CONTEXT_EVAL_REPORT
+def _write(directory: Path, report: ContextReport) -> tuple[Path, Path]:
+    md, js = directory / "report.md", directory / CONTEXT_EVAL_REPORT
     md.write_text(render_markdown(report), encoding="utf-8")
     js.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
     return md, js
+
+
+def publish_run(report: ContextReport, root: Path) -> tuple[Path, Path]:
+    """Write one run to `<root>/<YYYYMMDDTHHMMSSZ>` (`-2`, `-3`, ... on a collision), atomically.
+
+    Both reports are written into a hidden `<root>/.<stamp>.tmp-<pid>` first and the directory is
+    renamed into place only when they are complete, so a crash never leaves a half-written report
+    where the context gate or anything else reads. Readers skip names that start with a dot."""
+    stamp = report.finished_at.replace("-", "").replace(":", "")
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = root / f".{stamp}.tmp-{os.getpid()}"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir()
+    try:
+        _write(tmp, report)
+        n = 1
+        while True:
+            target = root / (stamp if n == 1 else f"{stamp}-{n}")
+            if not target.exists():
+                try:
+                    os.rename(tmp, target)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                        raise
+            n += 1
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return target / "report.md", target / CONTEXT_EVAL_REPORT
+
+
+def write_report(report: ContextReport, out: Path) -> tuple[Path, Path]:
+    """Write both reports into `out` (`--out`), each file replaced atomically."""
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for name, text in (("report.md", render_markdown(report)),
+                       (CONTEXT_EVAL_REPORT, json.dumps(report.to_dict(), indent=2) + "\n")):
+        final = out / name
+        tmp = out / f".{name}.tmp-{os.getpid()}"
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, final)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        paths.append(final)
+    return paths[0], paths[1]

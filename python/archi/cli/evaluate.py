@@ -217,7 +217,7 @@ def _context(args: argparse.Namespace, instance, bundles: list, mcp_url: str, to
         context_path,
         load_context,
         run_context,
-        run_dir,
+        publish_run,
         write_report,
     )
     from archi.ops.context_gate import context_eval_dir
@@ -262,6 +262,11 @@ def _context(args: argparse.Namespace, instance, bundles: list, mcp_url: str, to
             return _fail(f"the question set is for bundle {', '.join(foreign)}, which this instance does not list "
                          f"({', '.join(instance.bundles) or 'none'}); its run would be read by the context gate, "
                          "so it is refused")
+        overridden = [c.bundle for c in sets if c.graph_overridden]
+        if overridden and not args.out:
+            return _fail(f"the question set of {', '.join(overridden)} overrides the graph arm; such a run is "
+                         "informational only and would be written where the context gate reads, so it is refused "
+                         "(write it elsewhere with --out)")
 
     worst = 0
     for cset in sets:
@@ -276,13 +281,13 @@ def _context(args: argparse.Namespace, instance, bundles: list, mcp_url: str, to
         print(f"archi eval --context: {cset.bundle}, {len(cset.scored)} scored questions, k={cset.k}, MCP {mcp_url}")
         report = asyncio.run(run_context(cset, lambda: McpToolBox(mcp_url, token), mcp_url=mcp_url, progress=progress))
         if args.out:
-            out = args.out / cset.bundle if len(sets) > 1 else args.out
+            md, js = write_report(report, args.out / cset.bundle if len(sets) > 1 else args.out)
         else:
-            # one directory per run, so the history is kept: <root>/context/<bundle>/<UTC stamp>[-n]/
+            # one directory per run, so the history is kept: <root>/context/<bundle>/<UTC stamp>[-n]/,
+            # built in a hidden directory and renamed into place when complete
             base = (context_eval_dir(instance.data_root, cset.bundle) if instance is not None
                     else report_root / "context" / cset.bundle)
-            out = run_dir(base, report.finished_at)
-        md, js = write_report(report, out)
+            md, js = publish_run(report, base)
         data = report.to_dict()
         arms = ", ".join(f"{name} {s['recall_at_k']:.3f}" for name, s in data["arms"].items())
         print(f"{report.status}: recall@{cset.k} {arms}; {data['errors']} failed calls; {md} and {js}")

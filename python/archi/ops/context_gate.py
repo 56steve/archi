@@ -12,6 +12,8 @@ shadow mode carrying those names, so the operator sees why.
         "min_context_eval_score": 0.8,     # optional
         "max_age_days": 7,                 # optional, with the score; default 14
         "context_eval_bundle": "cms-comp-ops",  # optional; default the instance's only bundle
+        "context_eval_k": 10,              # optional: the run must have used this k
+        "context_eval_min_questions": 40,  # optional: and scored at least this many questions
         "invariants": ["cms_catalogs_coverage", "cms_catalogs_link_site_config_site"],
     })
     result = evaluate_gate(spec, facts_from_doctor(doctor_report, invariants=..., context_eval_score=...))
@@ -37,6 +39,7 @@ shadow exactly when the thing it reports is stale.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -56,6 +59,12 @@ BUNDLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: `<YYYYMMDDTHHMMSSZ>` or `<YYYYMMDDTHHMMSSZ>-<n>`, the run directories `archi eval --context` makes
 RUN_DIR = re.compile(r"^(\d{8}T\d{6}Z)(?:-(\d+))?$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+#: The graph arm a run must have used for the gate to take its score: `search` with the server's
+#: defaults (no arguments besides the question and k). A question file may override it, but such a
+#: run is informational only.
+DEFAULT_GRAPH_TOOL = "search"
+#: The largest `max_age_days` a gate may set (ten years).
+MAX_AGE_DAYS_LIMIT = 3650
 
 
 def bundle_path_name(name: Any) -> str:
@@ -95,19 +104,39 @@ class ContextEvalReading:
 
 
 def read_context_eval(data_root: Path | str, bundle: str, *, max_age_days: float = DEFAULT_CONTEXT_EVAL_MAX_AGE_DAYS,
-                      now: Optional[datetime] = None) -> ContextEvalReading:
+                      now: Optional[datetime] = None, k: Optional[int] = None,
+                      min_questions: Optional[int] = None) -> ContextEvalReading:
     """The newest `archi eval --context` run of `bundle` under the data root. Never raises.
 
     Only the newest run is read: when it is unusable the gate fails, and an older run is not used
     instead. It is unusable when it cannot be read, is not a context-eval report of this bundle, did
-    not execute cleanly (an MCP call of the graph arm failed), lacks its question-file hash or
-    question count, or finished more than `max_age_days` ago.
+    not execute cleanly (an MCP call of the graph arm failed), ran a graph arm other than the default,
+    lacks its question-file hash or question count, finished more than `max_age_days` ago or more than
+    five minutes in the future, or (when the gate pins them) used another `k` or fewer than
+    `min_questions` scored questions.
     """
+    try:
+        return _read_context_eval(data_root, bundle, max_age_days=max_age_days, now=now, k=k,
+                                  min_questions=min_questions)
+    except Exception as exc:  # noqa: BLE001 - the gate must get a named failure, never an exception
+        return ContextEvalReading(problem=f"the context eval of bundle {bundle} could not be checked "
+                                          f"({type(exc).__name__}: {exc})")
+
+
+#: How far in the future a run's finished_at may lie (clock skew) before it is refused.
+FUTURE_TOLERANCE = timedelta(minutes=5)
+
+
+def _read_context_eval(data_root, bundle, *, max_age_days, now, k, min_questions) -> ContextEvalReading:
     try:
         directory = context_eval_dir(data_root, bundle)
     except ValueError as exc:
         return ContextEvalReading(problem=str(exc))
-    runs = run_dirs(directory)
+    try:
+        runs = run_dirs(directory)
+    except OSError as exc:
+        return ContextEvalReading(problem=f"cannot list the context evals of bundle {bundle} under {directory} "
+                                          f"({type(exc).__name__}: {exc})")
     if not runs:
         return ContextEvalReading(problem=f"no context eval of bundle {bundle} is recorded under {directory} "
                                           f"(run `archi eval --context`)")
@@ -132,9 +161,14 @@ def read_context_eval(data_root: Path | str, bundle: str, *, max_age_days: float
     errors = data.get("errors")
     if isinstance(errors, bool) or not isinstance(errors, int) or errors < 0:
         return bad("has no error count")
-    graph = (data.get("arms") or {}).get("graph")
+    arms = data.get("arms")
+    graph = arms.get("graph") if isinstance(arms, Mapping) else None
     if not isinstance(graph, Mapping) or graph.get("errors") != 0:
         return bad("does not show a graph arm whose every call executed")
+    if graph.get("tool") != DEFAULT_GRAPH_TOOL or graph.get("arguments") != {}:
+        return bad("ran a graph arm the question file overrode; such a run is informational only")
+    if k is not None and data.get("k") != k:
+        return bad(f"used k={data.get('k')!r}, not the k={k} the gate pins (context_eval_k)")
     score = data.get("score")
     if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 1:
         return bad(f"has no score from 0 to 1 (got {score!r})")
@@ -145,10 +179,16 @@ def read_context_eval(data_root: Path | str, bundle: str, *, max_age_days: float
             or count != len(rows):
         shown = len(rows) if isinstance(rows, list) else "no"
         return bad(f"records {count!r} scored questions but has {shown} question rows")
+    if min_questions is not None and count < min_questions:
+        return bad(f"scored {count} questions, fewer than the {min_questions} the gate requires "
+                   "(context_eval_min_questions)")
     finished = _parse_time(data.get("finished_at"))
     if finished is None:
         return bad(f"has no usable finished_at ({data.get('finished_at')!r})")
-    age = (now or datetime.now(timezone.utc)) - finished
+    now = now or datetime.now(timezone.utc)
+    if finished - now > FUTURE_TOLERANCE:
+        return bad(f"says it finished at {data['finished_at']}, in the future; a clock or the report is wrong")
+    age = now - finished
     if age > timedelta(days=max_age_days):
         return bad(f"finished {format_age(int(age.total_seconds()))} ago, more than the {max_age_days:g} days "
                    "the gate accepts (max_age_days); run `archi eval --context` again")
@@ -189,7 +229,8 @@ def context_eval_reading(spec: "GateSpec", instance_dir: Path | str, *, now: Opt
     elif bundle not in instance.bundles:
         return ContextEvalReading(problem=f"context_eval_bundle {bundle!r} is not a bundle of this instance")
     max_age = spec.max_age_days if spec.max_age_days is not None else DEFAULT_CONTEXT_EVAL_MAX_AGE_DAYS
-    return read_context_eval(instance.data_root, bundle, max_age_days=max_age, now=now)
+    return read_context_eval(instance.data_root, bundle, max_age_days=max_age, now=now, k=spec.context_eval_k,
+                             min_questions=spec.context_eval_min_questions)
 
 # The results that mean an invariant holds. Compared by type as well as value,
 # so 1 (equal to True) and unhashable values never count as a pass.
@@ -199,7 +240,9 @@ PASSING = frozenset({"pass", "passed", "ok"})
 def _holds(result: Any) -> bool:
     return result is True or (isinstance(result, str) and result in PASSING)
 SPEC_KEYS = frozenset({"sources", "max_staleness", "min_context_eval_score", "invariants", "published",
-                       "max_age_days", "context_eval_bundle"})
+                       "max_age_days", "context_eval_bundle", "context_eval_k", "context_eval_min_questions"})
+#: keys that only mean something together with min_context_eval_score
+CONTEXT_EVAL_KEYS = ("max_age_days", "context_eval_bundle", "context_eval_k", "context_eval_min_questions")
 
 
 class GateSpecError(ValueError):
@@ -219,6 +262,10 @@ class GateSpec:
     max_age_days: Optional[float] = None
     #: the bundle whose context eval is trusted; None: the instance's only bundle
     context_eval_bundle: Optional[str] = None
+    #: the k the run must have used; None: any
+    context_eval_k: Optional[int] = None
+    #: the fewest scored questions the run may have had; None: any
+    context_eval_min_questions: Optional[int] = None
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "GateSpec":
@@ -243,8 +290,10 @@ class GateSpec:
             raise GateSpecError(f"published must be true or false, got {published!r}")
         max_age = data.get("max_age_days")
         if max_age is not None:
-            if isinstance(max_age, bool) or not isinstance(max_age, (int, float)) or max_age <= 0:
-                raise GateSpecError(f"max_age_days must be a positive number of days, got {max_age!r}")
+            if isinstance(max_age, bool) or not isinstance(max_age, (int, float)) or not math.isfinite(max_age) \
+                    or not 0 < max_age <= MAX_AGE_DAYS_LIMIT:
+                raise GateSpecError(f"max_age_days must be a number of days above 0 and at most "
+                                    f"{MAX_AGE_DAYS_LIMIT}, got {max_age!r}")
             max_age = float(max_age)
         bundle = data.get("context_eval_bundle")
         if bundle is not None:
@@ -252,9 +301,22 @@ class GateSpec:
                 bundle_path_name(bundle)
             except ValueError as exc:
                 raise GateSpecError(f"context_eval_bundle: {exc}") from exc
-        if (max_age is not None or bundle is not None) and score is None:
-            raise GateSpecError("max_age_days and context_eval_bundle apply only with min_context_eval_score")
-        return cls(sources, staleness, score, invariants, published, max_age, bundle)
+        k = _count(data, "context_eval_k", 1, 100)
+        min_questions = _count(data, "context_eval_min_questions", 1, None)
+        given = [key for key in CONTEXT_EVAL_KEYS if data.get(key) is not None]
+        if given and score is None:
+            raise GateSpecError(f"{', '.join(given)} apply only with min_context_eval_score")
+        return cls(sources, staleness, score, invariants, published, max_age, bundle, k, min_questions)
+
+
+def _count(data: Mapping[str, Any], key: str, low: int, high: Optional[int]) -> Optional[int]:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < low or (high is not None and value > high):
+        bound = f"from {low} to {high}" if high is not None else f"of at least {low}"
+        raise GateSpecError(f"{key} must be an integer {bound}, got {value!r}")
+    return value
 
 
 def _names(data: Mapping[str, Any], key: str) -> tuple[str, ...]:

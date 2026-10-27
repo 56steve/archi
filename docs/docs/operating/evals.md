@@ -111,9 +111,8 @@ when the latest run is `execution_failed`, below the threshold, or more than
 `min_drop` below the earlier runs of the same model and question set. Each run overwrites the
 report in the default `--out` directory, so to give it a trend, keep runs
 apart: `archi eval --bundle cern-team --out <data root>/eval/cern-team/$(date +%F)`.
-It does not read [context evals](#context-evals-archi-eval-context): their
-reports under `<data root>/eval/context/` carry another schema and are left
-out.
+It does not read [context evals](#context-evals-archi-eval-context): it skips
+`<data root>/eval/context/` and hidden directories.
 
 ## The shipped sets
 
@@ -205,10 +204,15 @@ keyword search over the raw documents. It is not a separate index of the raw
 documents: it searches the same server's lexical index, which covers chunks
 and node attributes. Chunk rows can fill its *k* slots where the graph arm
 returns one row per record, so part of the difference between the arms is
-that roll-up, not the graph's links. A question file can replace either arm,
-or add more, under `arms:`, for example `baseline: {tool: search, arguments:
-{method: lexical, where: {type: document_chunk}}}`. The harness always sets
-`query` (the question) and `limit` (k) itself.
+that roll-up, not the graph's links. The `graph` arm is lexical search too
+(okg's default method), with concept expansion and record roll-up on, so the
+delta measures those two, not graph links. A question file can replace either
+arm, or add more, under `arms:`, for example `baseline: {tool: search,
+arguments: {method: lexical, where: {type: document_chunk}}}`. The harness
+always sets `query` (the question) and `limit` (k) itself. A file that
+replaces the `graph` arm makes the run informational only: on an instance it
+is refused (exit 2) unless written elsewhere with `--out`, and the context
+gate refuses any report whose graph arm is not the default.
 
 Each call asks okg for JSON (`_meta` `okg/result_format: json`, which okg
 0.2.0 serves). A server that answers in text instead is read from its row
@@ -223,7 +227,10 @@ excerpt do not count. The generation each call read is taken from the reply.
 Each run gets its own directory, so the history is kept:
 `<data root>/eval/context/<bundle>/<UTC stamp>/report.json` and `report.md`
 (the stamp is `YYYYMMDDTHHMMSSZ`, with `-2`, `-3`, ... added when two runs
-finish in the same second). With `--mcp-url` the default is
+finish in the same second). A run is written into a hidden
+`.<stamp>.tmp-<pid>` directory beside it and renamed into place only when both
+files are complete, so a crash never leaves a half-written report where a
+reader looks; readers skip names that start with a dot. With `--mcp-url` the default is
 `eval-reports/context/<bundle>/<UTC stamp>/`; `--out DIR` writes to that
 directory instead.
 
@@ -255,13 +262,18 @@ fails, naming the reason, when that run:
 
 - cannot be read, or is not an `archi-context-eval-report/1` report of that bundle;
 - did not execute cleanly (status `execution_failed`, or any graph-arm call failed);
+- ran a graph arm the question file overrode;
 - lacks its question-file hash, or its scored-question count does not match its rows;
-- finished more than `max_age_days` ago (a gate key; default 14 days);
+- finished more than `max_age_days` ago (a gate key: above 0, at most 3650; default 14 days), or
+  more than five minutes in the future;
+- used another k than `context_eval_k`, or scored fewer questions than
+  `context_eval_min_questions` (both optional gate keys, unset by default);
 - or scores below `min_context_eval_score`.
 
 A run written elsewhere with `--out`, or against `--mcp-url`, is not read by
 any gate.
 
 The `instance-health` automation does **not** read context evals. It reads
-only the smoke reports (`archi-eval-report/1`) and leaves context-eval reports
-out.
+only the smoke reports (`archi-eval-report/1`) and never looks under
+`<data root>/eval/context/` or in hidden directories, so a broken context-eval
+file cannot break its eval signal.

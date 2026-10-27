@@ -47,8 +47,9 @@ targets, for example [`cms-catalogs`](library/packs/cms-catalogs.md).
 ## The context gate
 
 An automation says which context it needs: sources, a maximum staleness, a
-minimum context-eval score (with `max_age_days`, default 14, and
-`context_eval_bundle` when the instance has more than one bundle) and the
+minimum context-eval score (with `max_age_days`, default 14,
+`context_eval_bundle` when the instance has more than one bundle, and the
+optional pins `context_eval_k` and `context_eval_min_questions`) and the
 invariants that must hold. Before each
 run the runtime checks that gate against the current generation. If any check
 fails, the run drops to **shadow** mode: it proposes and records, and never
@@ -66,12 +67,16 @@ should answer it (its gold node ids). `archi eval --context` scores retrieval
 (was the right evidence found) separately from answer quality: it calls the
 instance's MCP search tool directly, with no model, and reports recall@k of
 the gold ids for the graph search and for a lexical baseline (the server's
-lexical index over chunks and attributes, without roll-up to records). Each
+lexical index over chunks and attributes, without roll-up to records). The
+graph search is lexical too, with concept expansion and record roll-up on, so
+the difference measures those, not graph links. Each
 run is kept under `<data root>/eval/context/<bundle>/<UTC stamp>/`. The graph
 search's recall@k is the score: the context gate reads the newest run of its
 bundle for `min_context_eval_score`, and fails the check, naming the reason,
-when there is none, or it cannot be read, did not execute cleanly, or is older
-than `max_age_days` (default 14). The `instance-health` automation does not
+when there is none, or it cannot be read, did not execute cleanly, overrode
+the graph arm, is older than `max_age_days` (default 14) or dated in the
+future, or misses the gate's optional `context_eval_k` and
+`context_eval_min_questions` pins. The `instance-health` automation does not
 read context evals. Question sets are private to the instance and
 never committed here; name one at run time with `--questions` or
 `ARCHI_CONTEXT_EVAL_QUESTIONS`. See [Operating](operating/evals.md#context-evals-archi-eval-context).
