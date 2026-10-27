@@ -56,7 +56,10 @@ requirements:
     Acceptance:
 
     - acc.r3-context-quality.run: context eval on the comp-ops instance produces a report
-    with the baseline arm. [evidence: executed_test]
+    with the baseline arm. [evidence: executed_test] Preconditions (board d406): the comp-ops
+    instance has the jira pack and git-code enabled, multi-repo git-code if the gold cites
+    several repositories (it does; #726, the comp-ops rebuild); and the drafted gold_sources
+    mapping for CompOps-42 has had one review by the person who built answer key v1.
 
     - acc.r3-context-quality.raw-arm: a bash agent over the files the graph was built from,
     scored on gold-evidence recall next to a graph-tool agent on the same model, caps and scorer,
@@ -126,7 +129,11 @@ tasks:
     sha>/ with README.md, MANIFEST.txt (path, sha256), keys.json (source and natural key -> path) and
     corpus.json; every other source is left out with its reason. ops-record has no cache and an MCP
     export could not be shown complete, so it is left out of both agent arms. The corpus digest is the
-    sha256 of MANIFEST.txt and goes in the report.
+    sha256 of MANIFEST.txt and goes in the report. TWiki keeps the pages the instance''s TWiki reader
+    keeps (its physics_filter, seed topics, skip patterns); git-code checkouts go in as their tracked
+    files at HEAD under git-repo/<repo>/ (emails removed, binaries and files over 1 MiB left out and
+    counted); the published generation is recorded beside the digest; symbolic links under records/
+    refuse the corpus; a coverage line names what is in and what is out, with why.
 
 
     Test plan:
@@ -140,17 +147,27 @@ tasks:
     corpus read-only at /corpus, tmpfs HOME, empty environment, 120 s and 64 KiB per command) and
     agent-graph (the instance''s MCP tools), one OpenAI-compatible model, one prompt but for the
     paragraph on where knowledge lives, caps of 30 turns, 200 tool calls and 900 s per try, k tries.
-    Every model call is written to <data root>/eval/context/<bundle>/<stamp>/ledger.jsonl; the run
-    refuses to start without a cap, a price, bwrap (for agent-bash) or a corpus that matches its
-    digest, and stops before a call that could cross the cap.
+    Every model call, answered or not, is written to <data root>/eval/context/<bundle>/<stamp>/ledger.jsonl
+    (a call that failed after it was sent, or a reply without usage, is charged at its bound); one
+    ledger and one cap per invocation; the run refuses to start without a cap, a plausible price, a
+    sandbox that runs (bwrap present, `true` and a pipeline pass) or a corpus that matches its digest,
+    prints the one-call bound before the first call, starts no call with under 60 s of the try left,
+    and stops before a call that could cross the cap. Sandbox limits per command: 256 processes (in
+    bwrap''s user namespace), 4 GiB address space, 256 MiB per file, CPU time. 429 and 5xx retried at
+    most three times; another 4xx aborts the run (exit 2); error tries are listed and left out of the
+    averages; no temperature or seed to a remote endpoint.
 
     Fixture results, not acceptance evidence (no row, so req.context-eval stays unproven until the
-    comp-ops run; orchestrator decision on #698): at 2401f97c on a dev host with bubblewrap 0.6.3,
-    test_raw_sandbox.py, test_raw_arm.py and test_raw_corpus.py gave 78 passed, none skipped. They show
-    no network inside the sandbox, a read-only /corpus, a tmpfs HOME, no key visible inside, the time
-    and output limits, and the refusals (no bwrap, no cap, no price, a stale corpus, an unresolved gold
-    id). No model was called. Full suite 3687 passed, 28 skipped, 2 failed (the anonymizer timing tests
-    under load).
+    comp-ops run; orchestrator decision on #698): at 84752d6d on submit75 (okg 0.2.0, bubblewrap 0.6.3,
+    ARCHI_REQUIRE_BWRAP=1, so no sandbox test could skip), test_raw_sandbox.py, test_raw_arm.py,
+    test_raw_corpus.py and test_draft_gold_sources.py gave 128 passed, none skipped; python/tests/evaluation
+    and python/tests/snapshot 673 passed. They show no network inside the sandbox, a read-only /corpus,
+    a tmpfs HOME, no key visible inside, the time, output, memory, process and file-size limits (a 3 GiB
+    allocation and a fork bomb stopped), and the refusals (no bwrap, a sandbox that cannot run true, no
+    cap, a tiny price, no price, a stale corpus, a symlink in it, an unresolved gold id). No model was
+    called. Full suite python -m pytest python/tests -q: 3745 passed, 28 skipped, 1 failed (the
+    anonymizer linear-time test, known to fail under load), 2026-10-27T17:47:49+00:00. CI skips the
+    sandbox tests (no bwrap there); a host that must prove the sandbox sets ARCHI_REQUIRE_BWRAP=1.
 
 
     Test plan:
@@ -165,15 +182,26 @@ tasks:
   verification: 'Gold ids resolved to corpus files through MCP inspect (source and node id against
     keys.json) or a question''s gold_sources; an id that does not resolve refuses the run by name and
     is never a 0; a gold record from a source left out of the corpus is unavailable in both arms.
-    Evidence recall per try from successful tool responses only (never tool inputs or the answer),
-    MRR from the first gold record among the records read, the same scorer for both arms; an answer
-    judge behind --judge (off by default) that runs only where answer keys exist, else the report says
-    "no answer keys". python -m archi.evaluation.gold_check samples 20 gold ids at two generations.
+    A gold record is credited only when part of its content (a six-word run from a field value or line,
+    or a whole distinctive value) appears in a tool response the model saw, the visible part of cut
+    output and non-zero exits included; its path, key or id alone lists it, uncredited and counted.
+    Evidence recall per try over the available gold (never tool inputs or the answer), MRR from the
+    first gold record read among the records met, the same scorer for both arms; an answer judge
+    behind --judge (off by default, reasoning high, max_completion_tokens) that runs only where answer
+    keys exist, else the report says "no answer keys". Provenance sources match as okg writes them
+    (cms-physics.twiki-eos finds twiki_eos). Questions may carry atoms with answer_source; an atom only
+    a live system answers (live_rucio, live_dbs, monitoring) is unavailable in both arms and listed, a
+    mixed one counts through its file source. python -m archi.evaluation.draft_gold_sources drafts
+    gold_sources from a set''s sources, verification evidence and atoms, for review (private; refused
+    inside this repository). python -m archi.evaluation.gold_check samples 20 gold ids at two
+    generations.
 
 
     Test plan:
 
-    - python/tests/evaluation/test_raw_arm.py [evidence: pytest]'
+    - python/tests/evaluation/test_raw_arm.py [evidence: pytest]
+
+    - python/tests/evaluation/test_draft_gold_sources.py [evidence: pytest]'
 - id: task.r3-context-quality.gate
   requirement: req.r3-context-quality.gate
   verification: 'Context gate evaluator.
@@ -250,4 +278,19 @@ evidence:
     instead of raising (test_workflow.py). Malformed gate keys are refused. This row is about the gate
     only: it says nothing of req.r3-context-quality.context-eval, whose comp-ops acceptance has not run.
     Full suite at this head: 3611 passed, 28 skipped.'
-decisions: []
+decisions:
+- digest: sha256:2b644e2b8e11d4be069b07ce5d888e78f5eb461414d8853dfc7aa1f1516834a2
+  reviewer: Jason Mohoney
+  at: '2026-10-27'
+  note: 'The comp-ops operator top-50 named in req.r3-context-quality.context-eval and #698 is
+    superseded by CompOps-42, the okg comp-ops benchmark bundle, with its corrected answer key v1
+    (board d373). Board d406, Jason: "isn''t this the comp ops benchmark we have with 42 questions?";
+    orchestrator decision. The requirement statement is kept as written; this row records which set
+    it now means. CompOps-42 names its evidence in prose (sources, verification evidence, per-atom
+    answer_source), not as node ids, so its gold_sources are drafted with python -m
+    archi.evaluation.draft_gold_sources and reviewed once by the person who built key v1 before the
+    run; atoms answered only by a live system (live_rucio, live_dbs, monitoring) are unavailable in
+    both agent arms. The set and the draft are private to the instance and are not in this
+    repository. Preconditions for acc.r3-context-quality.run: the jira pack and git-code (multi-repo)
+    on the comp-ops instance (#726). This row proves nothing: req.r3-context-quality.context-eval
+    stays unproven until the comp-ops run.'
