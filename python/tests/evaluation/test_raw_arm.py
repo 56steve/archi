@@ -291,7 +291,7 @@ def test_gold_ids_resolve_through_inspect_to_corpus_files(tmp_path):
     gold = resolve(tools, cset, keys, manifest, corpus).records["q1"]
     by_id = {g.node_id: g for g in gold}
     assert by_id["jira:DEMO-1"].path == "jira/DEMO-1.json" and by_id["jira:DEMO-1"].key == "DEMO-1"
-    assert by_id["jira:DEMO-1"].shingles  # its summary is six words
+    assert by_id["jira:DEMO-1"].units  # its summary is six words
     assert by_id["documentation_page:abc123"].source == "docsite"  # found by its url, the subtype's key field
     # {"name": "gpu"} holds nothing distinctive: unavailable, never a miss
     assert by_id["slurm_partition:submit:gpu"].status == "unavailable"
@@ -422,8 +422,8 @@ DEMO2_FILE = b'{"key": "DEMO-2", "summary": "Upgrade the storage servers"}\n'
 
 
 def gold_record(node_id, key, path, data):
-    shingles, values = content_fingerprints(data, exclude=(key, node_id, path))
-    return GoldRecord(node_id, "resolved", "jira", key, path, shingles=shingles, values=values)
+    units = content_fingerprints(data, exclude=(key, node_id, path))
+    return GoldRecord(node_id, "resolved", "jira", key, path, units=units)
 
 
 DEMO1 = gold_record("jira:DEMO-1", "DEMO-1", "jira/DEMO-1.json", DEMO1_FILE)
@@ -437,10 +437,66 @@ def ev(text, ok=True, arguments=None):
 
 
 def test_fingerprints_come_from_values_never_field_names_or_the_key():
-    shingles, values = content_fingerprints(DEMO1_FILE, exclude=("DEMO-1",))
-    assert shingles == {"transfer failures at the test site"} and values == ()
-    assert content_fingerprints(DEMO2_FILE, exclude=("DEMO-2",)) == (frozenset(), ("upgrade the storage servers",))
-    assert content_fingerprints(b'{"name": "gpu", "state": "up"}') == (frozenset(), ())
+    assert content_fingerprints(DEMO1_FILE, exclude=("DEMO-1",)) == (("transfer failures at the test site",),)
+    assert content_fingerprints(DEMO2_FILE, exclude=("DEMO-2",)) == (("upgrade the storage servers",),)
+    assert content_fingerprints(b'{"name": "gpu", "state": "up"}') == ()
+
+
+def test_a_short_value_never_fingerprints_however_long_its_characters():
+    # two or three words are a name or a label, not content: "Alexandra Kowalczyk-Smith" is 25 characters
+    data = b'{"key": "DEMO-7", "assignee": "Alexandra Kowalczyk-Smith", "project": "Computing Operations"}'
+    assert content_fingerprints(data, exclude=("DEMO-7",)) == ()
+
+
+SHARED_LINE = "from __future__ import annotations"
+GOLD_CODE = (f"{SHARED_LINE}\n# Retry stuck transfers after the storage element comes back online\n"
+             "def retry(transfer): return transfer.resubmit()\n")
+OTHER_CODE = f"{SHARED_LINE}\n#!/usr/bin/env python3\ndef unrelated(): pass\n"
+
+
+def shared_corpus(tmp_path, files):
+    root = tmp_path / "records"
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    return root, frozenset(files)
+
+
+def test_text_another_corpus_record_holds_is_dropped_from_the_gold_fingerprints(tmp_path):
+    root, manifest = shared_corpus(tmp_path, {"code/a/retry.py": GOLD_CODE, "code/b/other.py": OTHER_CODE})
+    gold = GoldRecord("file:a/retry.py", "resolved", "git_code", "a/retry.py", "code/a/retry.py",
+                      units=content_fingerprints(GOLD_CODE.encode()))
+    assert ("from future import annotations",) in gold.units
+    kept = raw_arm.drop_shared({"q1": [gold]}, root, manifest)["q1"][0]
+    assert ("from future import annotations",) not in kept.units and kept.shared == 1 and kept.available
+    # a cat of the other file shows the shared line: it lists nothing and reads nothing
+    evidence = score_evidence([ev(OTHER_CODE)], [kept], manifest)
+    assert evidence.found == [] and evidence.recall == 0.0
+    assert score_evidence([ev(GOLD_CODE)], [kept], manifest).found == ["file:a/retry.py"]
+
+
+def test_a_record_whose_every_fingerprint_is_shared_is_unavailable_not_a_miss(tmp_path):
+    meta = "%META:TOPICPARENT{name=\"WebHome\"}%\n%META:TOPICINFO{author=\"BaseUserMapping\" format=\"1.1\" version=\"1\"}%\n"
+    root, manifest = shared_corpus(tmp_path, {"twiki/A.txt": meta, "twiki/B.txt": meta + "Other text here.\n"})
+    gold = GoldRecord("twiki:A", "resolved", "twiki", "A", "twiki/A.txt", units=content_fingerprints(meta.encode()))
+    assert gold.units
+    kept = raw_arm.drop_shared({"q1": [gold]}, root, manifest)["q1"][0]
+    assert kept.status == "unavailable" and "also appears in another corpus record" in kept.reason
+
+
+TWO_PART = gold_record("jira:DEMO-5", "DEMO-5", "jira/DEMO-5.json",
+                       b'{"key": "DEMO-5", "summary": "Transfers stuck at the test site", '
+                       b'"description": "The storage element rejected writes after the upgrade"}')
+
+
+def test_a_search_row_title_alone_only_lists_a_record_with_more_to_read():
+    row = "[1] jira:DEMO-5 (jira_issue) · source demo.jira\n    Transfers stuck at the test site"
+    evidence = score_evidence([ev(row)], [TWO_PART], MANIFEST | {"jira/DEMO-5.json"})
+    assert evidence.found == [] and evidence.listed == ["jira:DEMO-5"]
+    # its title, then its description in a later response: read
+    later = score_evidence([ev(row), ev("The storage element rejected writes after the upgrade")], [TWO_PART],
+                           MANIFEST | {"jira/DEMO-5.json"})
+    assert later.found == ["jira:DEMO-5"]
 
 
 def test_gold_only_in_a_tool_input_never_counts():
@@ -593,6 +649,38 @@ def test_error_tries_are_listed_counted_and_left_out_of_the_averages(tmp_path):
     assert "error try, agent-graph: q2 try 1" in "\n".join(render_agent_markdown(data, {"k": 3, "arms": {}}))
 
 
+def test_the_arms_take_turns_going_first(tmp_path, monkeypatch):
+    corpus, keys, manifest = corpus_and_keys(tmp_path)
+    cset = context_set(QUESTIONS)
+    tools = FakeMcp({"Why do transfers fail?": search_rows("jira:DEMO-1"),
+                     "What is upgraded?": search_rows("jira:DEMO-2")})
+    monkeypatch.setattr(raw_arm, "BashTools", lambda sandbox: tools)  # no bwrap needed to check the order
+    plan = AgentPlan((AGENT_BASH, AGENT_GRAPH), metered(tmp_path, agent_script), NO_WAIT, 1, corpus,
+                     sandbox=type("Box", (), {"tools": []})())
+    order = []
+    asyncio.run(run_agent_arms(cset.scored, plan, tools, resolve(tools, cset, keys, manifest, corpus),
+                               manifest=manifest, progress=lambda r, i, n: order.append((r.question, r.arm))))
+    assert order == [("q1", AGENT_BASH), ("q1", AGENT_GRAPH), ("q2", AGENT_GRAPH), ("q2", AGENT_BASH)]
+
+
+def test_recall_and_mrr_compare_the_arms_only_on_pairs_both_finished():
+    def done(arm, qid, recall_hit):
+        ev_ = raw_arm.Evidence(found=["g"] if recall_hit else [], missed=[] if recall_hit else ["g"],
+                               first_rank=1 if recall_hit else None)
+        return raw_arm.TryResult(arm, qid, 1, evidence=ev_)
+
+    plan = AgentPlan((AGENT_BASH, AGENT_GRAPH), None, Caps(), 1, None)
+    report = raw_arm.AgentReport(plan, raw_arm.GoldMap({}))
+    report.tries = {"q1": {AGENT_BASH: [done(AGENT_BASH, "q1", True)], AGENT_GRAPH: [done(AGENT_GRAPH, "q1", True)]},
+                    # the spend stop cut q2 short in the graph arm: bash's q2 miss is left out of both
+                    "q2": {AGENT_BASH: [done(AGENT_BASH, "q2", False)],
+                           AGENT_GRAPH: [raw_arm.TryResult(AGENT_GRAPH, "q2", 1, status=STOPPED)]}}
+    assert report.paired() == {("q1", 1)}
+    bash = report.summary(AGENT_BASH)
+    assert bash["tries_scored"] == 1 and bash["tries_unpaired"] == 1 and bash["evidence_recall"] == 1.0
+    assert report.summary(AGENT_GRAPH)["tries_scored"] == 1
+
+
 def test_a_fatal_4xx_aborts_the_run_and_keeps_what_completed(tmp_path):
     def script(messages, turn):
         if "upgraded" in messages[1]["content"]:
@@ -694,7 +782,7 @@ def cli(monkeypatch, tmp_path):
 def agent_args(questions, corpus, out, *extra):
     return ["eval", "--context", "--questions", str(questions), "--mcp-url", "http://127.0.0.1:9/mcp",
             "--out", str(out), "--agents", "agent-graph", "--corpus", str(corpus), "--model", "m",
-            "--model-price", "1/10", *extra]
+            "--model-price", "1/10", "--cap", "10", *extra]
 
 
 def test_the_command_runs_the_agent_arms_beside_the_others_and_keeps_a_ledger(cli, tmp_path, capsys):
@@ -744,8 +832,8 @@ def test_the_judge_runs_when_asked_and_keys_exist(cli, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("extra, message", [
-    (["--cap", "0"], "refuse to start without a spend cap"),
-    (["--cap", "-5"], "refuse to start without a spend cap"),
+    (["--cap", "0"], "refuse to start without a positive spend cap"),
+    (["--cap", "-5"], "refuse to start without a positive spend cap"),
     (["--model-price", "0.000001/0.00001"], "--allow-low-price"),
 ])
 def test_the_command_refuses_without_a_cap_or_with_a_tiny_price_and_spends_nothing(cli, tmp_path, capsys, extra,
@@ -753,6 +841,15 @@ def test_the_command_refuses_without_a_cap_or_with_a_tiny_price_and_spends_nothi
     questions, corpus = cli
     assert main(agent_args(questions, corpus, tmp_path / "out", *extra)) == 2
     assert message in capsys.readouterr().err
+    assert FakeChat.made == [] and Endpoint.opened == 0 and not (tmp_path / "out").exists()
+
+
+def test_the_command_has_no_default_cap_and_refuses_without_one(cli, tmp_path, capsys):
+    questions, corpus = cli
+    args = agent_args(questions, corpus, tmp_path / "out")
+    at = args.index("--cap")
+    assert main(args[:at] + args[at + 2:]) == 2
+    assert "refuse to start without a positive spend cap: pass --cap DOLLARS" in capsys.readouterr().err
     assert FakeChat.made == [] and Endpoint.opened == 0 and not (tmp_path / "out").exists()
 
 

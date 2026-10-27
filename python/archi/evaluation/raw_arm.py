@@ -383,6 +383,16 @@ _LIMITS = (
 )
 
 
+#: The rlimits above bound each process, so a command's processes together, and what it writes to
+#: its tmpfs mounts, could still take max_procs x memory_bytes. Where the user's systemd manager
+#: runs, each command also runs in its own transient scope, whose MemoryMax (tmpfs pages
+#: included) and TasksMax bound the command as a whole. `BashSandbox.limit_scope` says which held.
+SCOPE_COMMAND, SCOPE_PROCESS = "command", "process"
+#: What systemd-run --user needs to find the user's manager; nothing else reaches it, and
+#: bubblewrap clears the environment before the command starts.
+_SCOPE_ENV = ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+
+
 def find_bwrap() -> Optional[str]:
     return shutil.which("bwrap")
 
@@ -462,6 +472,12 @@ class BashSandbox:
         self.shell = shell
         #: "namespace" (the process limit is max_procs) or "host" (the user's count plus max_procs)
         self.nproc_mode = "namespace"
+        #: SCOPE_COMMAND (a systemd scope bounds each command's memory and tasks as a whole) or
+        #: SCOPE_PROCESS (only the per-process rlimits), and why not the first
+        self.limit_scope = SCOPE_PROCESS
+        self.scope_note = ""
+        self._scope: list[str] = []
+        self._scope_env: dict[str, str] = {}
         seconds = min(30.0, command_seconds)
         try:
             probe = self.run("true", seconds=seconds)
@@ -476,6 +492,24 @@ class BashSandbox:
             if not again.ok:
                 raise SandboxError(f"the sandbox cannot start a pipeline under its process limit: exit "
                                    f"{again.exit_code}: {again.text.strip()[:300]}")
+        self._try_scope(seconds)
+
+    def _try_scope(self, seconds: float) -> None:
+        systemd_run = shutil.which("systemd-run")
+        if not systemd_run:
+            self.scope_note = "systemd-run is not installed"
+            return
+        self._scope = [systemd_run, "--user", "--scope", "--quiet", "--collect",
+                       "-p", f"MemoryMax={self.memory_bytes}", "-p", "MemorySwapMax=0",
+                       "-p", f"TasksMax={self.max_procs}", "--"]
+        self._scope_env = {k: os.environ[k] for k in _SCOPE_ENV if os.environ.get(k)}
+        probe = self.run("/usr/bin/env true | cat", seconds=seconds)
+        if probe.ok:
+            self.limit_scope = SCOPE_COMMAND
+            return
+        self._scope, self._scope_env = [], {}
+        self.scope_note = (f"systemd-run --user --scope did not run a command (exit {probe.exit_code}: "
+                           f"{probe.text.strip()[:200]})")
 
     def limits(self) -> str:
         procs = self.max_procs + (_user_tasks() if self.nproc_mode == "host" else 0)
@@ -486,6 +520,7 @@ class BashSandbox:
 
     def argv(self, command: str) -> list[str]:
         args = [
+            *self._scope,
             self.bwrap,
             "--unshare-all", "--unshare-net", "--die-with-parent", "--new-session",
             "--clearenv",
@@ -514,7 +549,7 @@ class BashSandbox:
     def run(self, command: str, *, seconds: Optional[float] = None) -> BashResult:
         limit = self.command_seconds if seconds is None else max(0.1, min(seconds, self.command_seconds))
         proc = subprocess.Popen(self.argv(command), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, env={}, start_new_session=True)
+                                stderr=subprocess.STDOUT, env=dict(self._scope_env), start_new_session=True)
         chunks: list[bytes] = []
         state = {"size": 0, "cut": False}
 
@@ -742,6 +777,8 @@ async def run_try(model: Metered, tools: Any, specs: list[ToolSpec], *, arm: str
 
 RESOLVED, OVERRIDE, UNAVAILABLE = "resolved", "override", "unavailable"
 NO_CONTENT = "its record has no field value or line distinctive enough to recognise in a tool response"
+ALL_SHARED = ("every value or line of its record that is long enough to recognise also appears in another "
+              "corpus record, so no tool response can show that this one was read")
 
 
 @dataclass(frozen=True)
@@ -752,18 +789,24 @@ class GoldRecord:
     key: Optional[str] = None
     path: Optional[str] = None
     reason: str = ""
-    #: six-word runs from the record's values and lines (see `content_fingerprints`)
-    shingles: frozenset = frozenset()
-    #: whole values (four or five words, or a long identifier), matched as word runs
-    values: tuple = ()
+    #: one entry per value or line of the record: the word runs that show it (see `content_fingerprints`)
+    units: tuple = ()
+    #: fingerprints dropped because another corpus record holds the same text (see `drop_shared`)
+    shared: int = 0
 
     @property
     def available(self) -> bool:
         return self.status != UNAVAILABLE
 
+    @property
+    def needed(self) -> int:
+        """How many of its values or lines a response must show for the record to count as read."""
+        return min(READ_UNITS, len(self.units))
+
     def to_dict(self) -> dict[str, Any]:
         return {"status": self.status, "source": self.source, "key": self.key, "path": self.path,
-                "reason": self.reason or None, "fingerprints": len(self.shingles) + len(self.values)}
+                "reason": self.reason or None, "units": len(self.units),
+                "fingerprints": sum(len(u) for u in self.units), "shared_fingerprints_dropped": self.shared}
 
 
 class GoldError(RuntimeError):
@@ -901,8 +944,10 @@ def _left_out(keys: Mapping[str, Any], names: Sequence[str]) -> Optional[str]:
 
 SHINGLE_WORDS = 6
 MIN_VALUE_WORDS = 4
-MIN_VALUE_CHARS = 16
 MAX_SHINGLES = 20000
+#: A record counts as read once a response shows two of its values or lines (or its only one): a
+#: search row's title, or one line a grep matched, alone only lists it.
+READ_UNITS = 2
 _WORDS = re.compile(r"[a-z0-9]+")
 #: JSON string escapes, as both a `cat` of a corpus file and an MCP JSON reply show them
 _UNICODE_ESCAPE = re.compile(r"\\u[0-9a-fA-F]{4}")
@@ -923,31 +968,34 @@ def _leaves(value: Any) -> list[str]:
     return []
 
 
-def content_fingerprints(data: bytes, *, exclude: Sequence[str] = ()) -> tuple[frozenset, tuple]:
-    """(six-word runs, whole values) that identify a record's content: from each string value of
-    a JSON record (field names never), else from each line of a text record. The record's own
-    key, id and path are excluded: naming a record is listing it, not reading it."""
+def content_fingerprints(data: bytes, *, exclude: Sequence[str] = ()) -> tuple[tuple[str, ...], ...]:
+    """The units that identify a record's content, one per string value of a JSON record (field
+    names never) or per line of a text record, each as the word runs that show it: a value of six
+    words or more as its six-word runs, one of four or five words whole. Shorter values carry no
+    unit. The record's own key, id and path are excluded: naming a record is listing it, not
+    reading it."""
     text = data.decode("utf-8", "replace")
     try:
-        units = _leaves(json.loads(text))
+        parts = _leaves(json.loads(text))
     except ValueError:
-        units = text.splitlines()
+        parts = text.splitlines()
     skip = {" ".join(words(x)) for x in exclude if x}
-    shingles: set[str] = set()
-    values: list[str] = []
-    for unit in units:
-        w = words(unit)
+    units: list[tuple[str, ...]] = []
+    total = 0
+    for part in parts:
+        w = words(part)
         joined = " ".join(w)
-        if not w or joined in skip:
+        if not w or joined in skip or total >= MAX_SHINGLES:
             continue
         if len(w) >= SHINGLE_WORDS:
-            for i in range(len(w) - SHINGLE_WORDS + 1):
-                shingles.add(" ".join(w[i:i + SHINGLE_WORDS]))
-                if len(shingles) >= MAX_SHINGLES:
-                    break
-        elif len(w) >= MIN_VALUE_WORDS or len(joined) >= MIN_VALUE_CHARS:
-            values.append(joined)
-    return frozenset(shingles), tuple(dict.fromkeys(values))
+            unit = tuple(dict.fromkeys(" ".join(w[i:i + SHINGLE_WORDS]) for i in range(len(w) - SHINGLE_WORDS + 1)))
+        elif len(w) >= MIN_VALUE_WORDS:
+            unit = (joined,)
+        else:
+            continue
+        units.append(unit[:MAX_SHINGLES - total])
+        total += len(units[-1])
+    return tuple(dict.fromkeys(units))
 
 
 def _with_content(record: GoldRecord, records_dir: Optional[Path]) -> GoldRecord:
@@ -958,11 +1006,67 @@ def _with_content(record: GoldRecord, records_dir: Optional[Path]) -> GoldRecord
     except OSError as exc:
         return GoldRecord(record.node_id, UNAVAILABLE, record.source, record.key, record.path,
                           reason=f"its file cannot be read ({type(exc).__name__})")
-    shingles, values = content_fingerprints(data, exclude=(record.key or "", record.node_id, record.path))
-    if not shingles and not values:
+    units = content_fingerprints(data, exclude=(record.key or "", record.node_id, record.path))
+    if not units:
         return GoldRecord(record.node_id, UNAVAILABLE, record.source, record.key, record.path, reason=NO_CONTENT)
-    return GoldRecord(record.node_id, record.status, record.source, record.key, record.path, record.reason,
-                      shingles, values)
+    return GoldRecord(record.node_id, record.status, record.source, record.key, record.path, record.reason, units)
+
+
+def _runs(w: list[str], sizes: Mapping[str, frozenset]) -> set[str]:
+    """The word runs of `w` that start with a word in `sizes` and have one of its lengths."""
+    out = set()
+    for i, first in enumerate(w):
+        for n in sizes.get(first, ()):
+            if i + n <= len(w):
+                out.add(" ".join(w[i:i + n]))
+    return out
+
+
+def drop_shared(records: Mapping[str, list[GoldRecord]], records_dir: Path,
+                manifest: frozenset[str]) -> dict[str, list[GoldRecord]]:
+    """Each gold record without the fingerprints another corpus record also holds (a
+    `from __future__` line, a TWiki META line, an assignee's name): text many records share would
+    credit the gold record whichever of them was read. One pass over the corpus, reading each
+    file as `cat` shows it. A record left with no unit is unavailable."""
+    wanted = {fp for golds in records.values() for g in golds if g.available for u in g.units for fp in u}
+    if not wanted:
+        return dict(records)
+    lengths: dict[str, set[int]] = {}
+    for fp in wanted:
+        parts = fp.split(" ")
+        lengths.setdefault(parts[0], set()).add(len(parts))
+    sizes = {first: frozenset(ns) for first, ns in lengths.items()}
+    holders: dict[str, set[str]] = {}
+    for rel in sorted(manifest):
+        try:
+            data = (Path(records_dir) / rel).read_bytes()
+        except OSError:
+            continue
+        for fp in _runs(words(data.decode("utf-8", "replace")), sizes) & wanted:
+            seen = holders.setdefault(fp, set())
+            if len(seen) < 2:
+                seen.add(rel)
+    out: dict[str, list[GoldRecord]] = {}
+    for qid, golds in records.items():
+        kept_golds = []
+        for g in golds:
+            if not g.available:
+                kept_golds.append(g)
+                continue
+            units, dropped = [], 0
+            for unit in g.units:
+                kept = tuple(fp for fp in unit if not (holders.get(fp, set()) - {g.path}))
+                dropped += len(unit) - len(kept)
+                if kept:
+                    units.append(kept)
+            if units:
+                kept_golds.append(GoldRecord(g.node_id, g.status, g.source, g.key, g.path, g.reason,
+                                             tuple(units), dropped))
+            else:
+                kept_golds.append(GoldRecord(g.node_id, UNAVAILABLE, g.source, g.key, g.path, ALL_SHARED,
+                                             shared=dropped))
+        out[qid] = kept_golds
+    return out
 
 
 def record_for(info: NodeInfo, keys: Mapping[str, Any]) -> "GoldRecord | str":
@@ -994,7 +1098,8 @@ def record_for(info: NodeInfo, keys: Mapping[str, Any]) -> "GoldRecord | str":
 async def resolve_gold(tools: Any, questions: Sequence[Any], keys: Mapping[str, Any],
                        manifest: frozenset[str], records_dir: Optional[Path] = None) -> GoldMap:
     """Resolve every gold id, or raise GoldError naming each one that does not resolve. With
-    `records_dir`, each record's content fingerprints are read from its file."""
+    `records_dir`, each record's content fingerprints are read from its file, less those another
+    corpus record also holds (`drop_shared`)."""
     sources = keys.get("sources") or {}
     by_normal = {normal_source(name): name for name in sources}
     out: dict[str, list[GoldRecord]] = {}
@@ -1056,6 +1161,8 @@ async def resolve_gold(tools: Any, questions: Sequence[Any], keys: Mapping[str, 
         out[question.id] = golds
     if problems:
         raise GoldError(problems)
+    if records_dir is not None:
+        out = drop_shared(out, records_dir, manifest)
     return GoldMap(out, generations, live_atoms)
 
 
@@ -1114,16 +1221,17 @@ def _name_patterns(gold: GoldRecord) -> list[re.Pattern]:
     return patterns
 
 
-def _read_in(gold: GoldRecord, norm: str, grams: set) -> bool:
-    if gold.shingles and not gold.shingles.isdisjoint(grams):
-        return True
-    return any(f" {value} " in norm for value in gold.values)
+def _units_in(gold: GoldRecord, norm: str, grams: set) -> set[int]:
+    """The indexes of the gold record's units this response shows."""
+    return {i for i, unit in enumerate(gold.units)
+            if any(fp in grams if fp.count(" ") == SHINGLE_WORDS - 1 else f" {fp} " in norm for fp in unit)}
 
 
 def score_evidence(events: Sequence[ToolEvent], gold: Sequence[GoldRecord], manifest: frozenset[str]) -> Evidence:
     """Evidence recall, listed records and the first gold record's rank, from the tool responses
-    the scorer reads (`ToolEvent.ok`). Tool inputs (`ToolEvent.arguments`) and the final answer are
-    never read."""
+    the scorer reads (`ToolEvent.ok`). A record is read once the responses show `READ_UNITS` of its
+    values or lines (its only one, if it has one). Tool inputs (`ToolEvent.arguments`) and the final
+    answer are never read."""
     evidence = Evidence(unavailable=[g.node_id for g in gold if not g.available])
     targets = [g for g in gold if g.available]
     names = {g.node_id: _name_patterns(g) for g in targets}
@@ -1133,6 +1241,7 @@ def score_evidence(events: Sequence[ToolEvent], gold: Sequence[GoldRecord], mani
         if g.path:
             alias[g.path] = g.node_id
     read: set[str] = set()
+    shown: dict[str, set[int]] = {g.node_id: set() for g in targets}
     named: set[str] = set()
     order: list[str] = []
     first_read: Optional[int] = None
@@ -1161,9 +1270,13 @@ def score_evidence(events: Sequence[ToolEvent], gold: Sequence[GoldRecord], mani
             for match in regex.finditer(event.text):
                 if match.group(1) not in alias:
                     mentions.append((match.start(1), "id:" + match.group(1)))
-        # A gold record read here is placed where it is first named, else after everything named.
+        # A gold record is read once the responses so far show `needed` of its units; it is placed
+        # where this response first names it, else after everything this response names.
         for g in targets:
-            if g.node_id not in read and _read_in(g, norm, grams):
+            if g.node_id in read:
+                continue
+            shown[g.node_id] |= _units_in(g, norm, grams)
+            if g.units and len(shown[g.node_id]) >= g.needed:
                 read.add(g.node_id)
                 mentions.append((gold_at.get(g.node_id, len(event.text)), "gold:" + g.node_id))
         for _, identity in sorted(mentions):
@@ -1274,9 +1387,22 @@ class AgentReport:
     def answer_keys(self) -> int:
         return sum(1 for q in self.questions if q.answer)
 
+    def paired(self) -> set[tuple[str, int]]:
+        """The (question, try) pairs every arm ran to the end: a spend stop or an abort can leave
+        one arm a try ahead, and recall and MRR compare the arms on these pairs only."""
+        out = set()
+        for qid, per_arm in self.tries.items():
+            for attempt in range(1, self.plan.tries + 1):
+                if all(any(t.attempt == attempt and t.status != STOPPED for t in per_arm.get(arm, []))
+                       for arm in self.plan.arms):
+                    out.add((qid, attempt))
+        return out
+
     def summary(self, arm: str) -> dict[str, Any]:
         rows = [t for per_arm in self.tries.values() for t in per_arm.get(arm, [])]
-        scored = [t for t in rows if t.scored]
+        paired = self.paired()
+        unpaired = [t for t in rows if t.scored and (t.question, t.attempt) not in paired]
+        scored = [t for t in rows if t.scored and (t.question, t.attempt) in paired]
         recalls = [t.evidence.recall for t in scored]
         rrs = [t.evidence.reciprocal_rank for t in scored]
         completed = [t for t in rows if t.status != STOPPED]
@@ -1291,6 +1417,7 @@ class AgentReport:
         return {
             "tries": len(rows),
             "tries_scored": len(scored),
+            "tries_unpaired": len(unpaired),
             "evidence_recall": round(sum(recalls) / len(recalls), 4) if recalls else None,
             "mrr": round(sum(rrs) / len(rrs), 4) if rrs else None,
             "listed_not_read_per_try": round(sum(listed) / len(listed), 2) if listed else None,
@@ -1337,7 +1464,9 @@ class AgentReport:
             "prompt": {arm: build_prompt(arm, plan.caps, folders=_folders(plan.corpus),
                                          tools=plan.sandbox.tools if plan.sandbox else ()) for arm in plan.arms},
             "sandbox": None if plan.sandbox is None else {"bwrap": plan.sandbox.bwrap, "tools": plan.sandbox.tools,
-                                                         "missing_tools": [t for t in TOOLS if t not in plan.sandbox.tools]},
+                                                         "missing_tools": [t for t in TOOLS if t not in plan.sandbox.tools],
+                                                         "limit_scope": plan.sandbox.limit_scope,
+                                                         "limit_scope_note": plan.sandbox.scope_note or None},
             "corpus": {"path": str(plan.corpus.path), "digest": plan.corpus.digest,
                        "generation": corpus_generation, "evaluated_generations": evaluated,
                        "generation_warning": warning,
@@ -1377,9 +1506,10 @@ def _folders(corpus: Any) -> list[str]:
 async def run_agent_arms(questions: Sequence[Any], plan: AgentPlan, mcp: Any, gold: GoldMap, *,
                          manifest: frozenset[str], evaluated_generations: Sequence[str] = (),
                          progress: Optional[Callable[[TryResult, int, int], None]] = None) -> AgentReport:
-    """Every scored question, `plan.tries` times, in each arm (arms interleaved per question so a
-    spend stop leaves both arms with the same questions done). A FatalModelError aborts the run;
-    the report says so and keeps what completed."""
+    """Every scored question, `plan.tries` times, in each arm. The arms take turns per (question,
+    try), and which arm goes first alternates, so neither arm is always the one a spend stop cuts
+    short; the summary scores only the pairs every arm finished (`AgentReport.paired`). A
+    FatalModelError aborts the run; the report says so and keeps what completed."""
     ledger = plan.model.ledger
     report = AgentReport(plan, gold, questions=list(questions), started_at=_now(),
                          evaluated_generations=list(evaluated_generations), spent_before=ledger.spent,
@@ -1400,11 +1530,14 @@ async def run_agent_arms(questions: Sequence[Any], plan: AgentPlan, mcp: Any, go
     todo = [q for q in questions if any(g.available for g in gold.records.get(q.id, []))]
     report.planned = len(todo) * plan.tries * len(plan.arms)
     done = 0
+    turn = 0
     try:
         for question in todo:
             per_arm = report.tries.setdefault(question.id, {})
             for attempt in range(1, plan.tries + 1):
-                for arm in plan.arms:
+                first = turn % len(plan.arms)
+                turn += 1
+                for arm in plan.arms[first:] + plan.arms[:first]:
                     if ledger.stopped:
                         report.stopped = ledger.stopped
                         break
@@ -1480,7 +1613,8 @@ def render_agent_markdown(agents: Mapping[str, Any], data: Mapping[str, Any]) ->
     for name, s in agents["arms"].items():
         cost = "none" if s["cost_per_try_usd"] is None else f"${s['cost_per_try_usd']:.4f}"
         failures = f"{s['failures']} errors, {s['capped']} capped" + (
-            f", {s['stopped_at_cap']} stopped at the spend cap" if s["stopped_at_cap"] else "")
+            f", {s['stopped_at_cap']} stopped at the spend cap" if s["stopped_at_cap"] else "") + (
+            f", {s['tries_unpaired']} unpaired (not scored)" if s.get("tries_unpaired") else "")
         lines.append(f"| {name} | {what.get(name, 'agent')} | {_fmt(s['evidence_recall'])} | {_fmt(s['mrr'])} "
                      f"| {_fmt(s['listed_not_read_per_try'], 2)} per try "
                      f"| {_fmt(s['answer_score'])} | {cost} | {_fmt(s['tool_calls_per_try'], 1)} | {failures} |")
@@ -1517,6 +1651,9 @@ def render_agent_markdown(agents: Mapping[str, Any], data: Mapping[str, Any]) ->
         lines.append(f"- spend warning: {warning}")
     if agents.get("sandbox") and agents["sandbox"]["missing_tools"]:
         lines.append(f"- not installed on this host, so not in the sandbox: {', '.join(agents['sandbox']['missing_tools'])}")
+    if agents.get("sandbox") and agents["sandbox"].get("limit_scope") == SCOPE_PROCESS:
+        lines.append("- sandbox memory and process limits held per process, not per command: "
+                     f"{agents['sandbox']['limit_scope_note']}")
     live = agents.get("live_only_atoms") or {}
     if live:
         lines.append("- atoms only a live system answers (left out of evidence recall in both arms): " + "; ".join(

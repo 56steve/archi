@@ -111,9 +111,9 @@ def add_parser(sub, roots) -> None:
     a.add_argument("--max-turns", type=int, default=30, help="model turns per try (default 30)")
     a.add_argument("--max-tool-calls", type=int, default=200, help="tool calls per try (default 200)")
     a.add_argument("--try-seconds", type=float, default=900.0, help="wall time per try (default 900)")
-    a.add_argument("--cap", type=float, default=10.0,
-                   help="spend cap in dollars for the run, judge included (default 10); the run stops before a "
-                        "call that could cross it")
+    a.add_argument("--cap", type=float, metavar="DOLLARS",
+                   help="spend cap in dollars for the run, judge included (required: there is no default); the "
+                        "run stops before a call that could cross it")
     a.add_argument("--judge", action="store_true",
                    help="grade answers against the question file's answer keys with a judge model (off by default)")
     a.add_argument("--judge-model", help="the judge model")
@@ -474,8 +474,9 @@ def _prepare_agents(args: argparse.Namespace) -> "_AgentSetup | str":
         return ("--tries, --max-turns, --max-tool-calls, --try-seconds, --max-output-tokens and "
                 "--judge-max-output-tokens must be positive")
     try:
-        if not args.cap or args.cap <= 0:
-            raise raw_arm.SpendError(f"the agent arms refuse to start without a spend cap (--cap {args.cap!r})")
+        if args.cap is None or args.cap <= 0:
+            raise raw_arm.SpendError("the agent arms refuse to start without a positive spend cap: pass --cap DOLLARS"
+                                     + ("" if args.cap is None else f" (got {args.cap!r})"))
         if not args.model_price:
             raise raw_arm.SpendError("the agent arms need --model-price IN/OUT[/CACHED] to keep the spend ledger")
         price = raw_arm.Price.parse(args.model_price)
@@ -534,6 +535,9 @@ def _context_with_agents(args: argparse.Namespace, instance, cset, mcp_url: str,
                    if raw_arm.AGENT_BASH in setup.arms else None)
     except (raw_arm.SandboxError, CorpusError) as exc:
         return _fail(str(exc))
+    if sandbox is not None and sandbox.limit_scope != raw_arm.SCOPE_COMMAND:
+        print(f"note: the sandbox's memory and process limits hold per process, not per command: "
+              f"{sandbox.scope_note}", file=sys.stderr)
     if args.judge and not any(q.answer for q in cset.scored):
         print("note: --judge: the question file has no answer keys, so nothing is judged (the report says "
               f"\"{raw_arm.NO_ANSWER_KEYS}\")", file=sys.stderr)

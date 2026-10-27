@@ -149,11 +149,13 @@ tasks:
     paragraph on where knowledge lives, caps of 30 turns, 200 tool calls and 900 s per try, k tries.
     Every model call, answered or not, is written to <data root>/eval/context/<bundle>/<stamp>/ledger.jsonl
     (a call that failed after it was sent, or a reply without usage, is charged at its bound); one
-    ledger and one cap per invocation; the run refuses to start without a cap, a plausible price, a
+    ledger and one cap per invocation; the run refuses to start without a cap (--cap has no default), a plausible price, a
     sandbox that runs (bwrap present, `true` and a pipeline pass) or a corpus that matches its digest,
     prints the one-call bound before the first call, starts no call with under 60 s of the try left,
-    and stops before a call that could cross the cap. Sandbox limits per command: 256 processes (in
-    bwrap''s user namespace), 4 GiB address space, 256 MiB per file, CPU time. 429 and 5xx retried at
+    and stops before a call that could cross the cap. Sandbox limits per process: 256 processes (in
+    bwrap''s user namespace), 4 GiB address space, 256 MiB per file, CPU time; where the user''s systemd
+    manager runs, a systemd-run --user scope per command also caps the whole command (tmpfs included) at
+    4 GiB, no swap and 256 tasks, and the report records limit_scope (command or process, with why). 429 and 5xx retried at
     most three times; another 4xx aborts the run (exit 2); error tries are listed and left out of the
     averages; no temperature or seed to a remote endpoint.
 
@@ -182,9 +184,12 @@ tasks:
   verification: 'Gold ids resolved to corpus files through MCP inspect (source and node id against
     keys.json) or a question''s gold_sources; an id that does not resolve refuses the run by name and
     is never a 0; a gold record from a source left out of the corpus is unavailable in both arms.
-    A gold record is credited only when part of its content (a six-word run from a field value or line,
-    or a whole distinctive value) appears in a tool response the model saw, the visible part of cut
-    output and non-zero exits included; its path, key or id alone lists it, uncredited and counted.
+    A gold record is credited only when the tool responses the model saw show two of its field values or
+    lines, or its only one (a six-word run, or a whole value of four or five words; shorter values never
+    count), after dropping every fingerprint a second corpus file also holds (a record left with none is
+    unavailable); recall and MRR compare the arms only on the (question, try) pairs every arm finished,
+    and the arms alternate going first. Responses include the visible part of cut
+    output and non-zero exits; its path, key or id alone lists it, uncredited and counted.
     Evidence recall per try over the available gold (never tool inputs or the answer), MRR from the
     first gold record read among the records met, the same scorer for both arms; an answer judge
     behind --judge (off by default, reasoning high, max_completion_tokens) that runs only where answer

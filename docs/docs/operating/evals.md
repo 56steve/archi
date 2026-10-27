@@ -291,7 +291,7 @@ caps; they differ only in where the knowledge is.
 
 | Arm | What the agent has |
 |---|---|
-| `agent-bash` | One tool, `bash`, over the raw corpus. Each command runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: no network, the corpus mounted read-only at `/corpus`, a fresh in-memory `HOME`, an empty environment, and `rg`, `jq` and `python3` on `PATH` when the host has them. Limits per command: 120 s of wall time and 64 KiB of output (a command over either is stopped), 256 processes, 4 GiB of address space, 256 MiB per file written, and CPU time equal to the wall limit. |
+| `agent-bash` | One tool, `bash`, over the raw corpus. Each command runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: no network, the corpus mounted read-only at `/corpus`, a fresh in-memory `HOME`, an empty environment, and `rg`, `jq` and `python3` on `PATH` when the host has them. Limits: 120 s of wall time and 64 KiB of output per command (a command over either is stopped), and per process 256 processes, 4 GiB of address space, 256 MiB per file written, and CPU time equal to the wall limit. Where the user's systemd manager runs, each command also runs in its own `systemd-run --user --scope`, which caps the whole command, in-memory files included, at 4 GiB of memory, no swap, and 256 tasks. Where it does not, the run prints a note and the report records `limit_scope: process`: the per-process limits then hold, but several processes of one command, or its in-memory files, can together use more. |
 | `agent-graph` | The instance's MCP tools. |
 
 The prompt is the same text for both, except the one paragraph that says where
@@ -388,7 +388,7 @@ archi eval --context --questions /path/to/operator-questions.yaml \
 | `--reasoning-effort E` | Sent with each agent call. |
 | `--max-turns`, `--max-tool-calls`, `--try-seconds` | Caps per try: 30 model turns, 200 tool calls, 900 s by default. A call is not started with under 60 s of the try left. |
 | `--max-output-tokens N` | `max_completion_tokens` per agent call (default 16000); also the spend guard's bound. |
-| `--cap DOLLARS` | The spend cap for the invocation, judge included and every question set together (default 10). |
+| `--cap DOLLARS` | The spend cap for the invocation, judge included and every question set together. **Required:** there is no default. |
 | `--judge` | Grade answers with a judge model. **Off by default.** |
 | `--judge-model`, `--judge-url`, `--judge-reasoning-effort`, `--judge-key-env`, `--judge-price`, `--judge-max-output-tokens` | The judge: any OpenAI-compatible endpoint (default `https://api.openai.com/v1`, reasoning `high`, key file path in `ARCHI_EVAL_JUDGE_KEY_FILE`, at most 16000 output tokens per call). |
 | `--judge-passes 1\|2` | Judge each answer once or twice; the score is the mean. |
@@ -443,6 +443,8 @@ and is listed, when:
 
 - its source is left out of the corpus (ops-record, a live source);
 - its record has no field value or line distinctive enough to recognise;
+- every value or line of its record long enough to recognise also appears in
+  another corpus record;
 - the only atoms that carry it are answered by a live system alone
   (`answer_source` of `live_rucio`, `live_dbs` or `monitoring`). An atom like
   that is listed in the report, separately. A mixed atom (`ticket+live_rucio`,
@@ -491,16 +493,26 @@ saw, including the visible part of a response that was cut and the output of a
 bash command that exited non-zero. What the agent typed (tool inputs) and its
 final answer never count.
 
-- A gold record is **read** when part of its content appears in a response: a
-  run of six words from one of its field values or lines, or a whole value of
-  four words or more (or of sixteen characters or more). Words are compared
-  lower-cased, ignoring punctuation and JSON escapes, so a `cat` of the file
-  and an MCP excerpt of the same text both count.
+- A gold record is **read** when the responses show two of its field values
+  or lines (or its only one). A value or line shows when a run of six of its
+  words appears, or, for a value of four or five words, the whole value. A
+  value under four words never counts. Words are compared lower-cased,
+  ignoring punctuation and JSON escapes, so a `cat` of the file and an MCP
+  excerpt of the same text both count. A search row's title, or one line a
+  grep matched, therefore only lists a record that has more to read.
+- Text another corpus record also holds never counts: before the run, one pass
+  over the corpus drops every gold fingerprint found in a second file (a
+  `from __future__` line, a TWiki `%META` line, a licence header). A gold
+  record left with nothing is unavailable, and the report counts what was
+  dropped per record.
 - A record named only by its path, natural key or node id is **listed**, not
   read. The report counts listed records per try, and they earn no credit. A
   natural key shorter than six characters does not even list a record.
 - **Evidence recall**, per try: the share of the question's available gold
-  records read.
+  records read. The arms take turns going first, and recall and MRR
+  compare them only on the (question, try) pairs every arm finished: a spend
+  stop can leave one arm a try ahead, and that try is counted under
+  `tries_unpaired`, not scored.
 - **MRR**: 1 / the rank of the first gold record read among the distinct
   records the agent met, in order. Other records count as met when their path
   or node id appears.

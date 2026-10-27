@@ -110,6 +110,19 @@ def test_a_fork_bomb_is_stopped(corpus):
 
 
 @needs_bwrap
+def test_a_command_scope_bounds_memory_across_processes_and_tmpfs(corpus):
+    """Three writers of 200 MiB to the tmpfs /tmp, each under the per-process limits, hold 600 MiB
+    together: a 384 MiB command scope stops them; per-process limits alone would not."""
+    box = sandbox(corpus, memory_bytes=384 * 1024 ** 2, file_bytes=256 * 1024 ** 2, command_seconds=60)
+    if box.limit_scope != raw_arm.SCOPE_COMMAND:
+        assert box.scope_note  # the run says why, and the CLI prints it
+        pytest.skip(f"no per-command scope on this host: {box.scope_note}")
+    assert box.argv("true")[:3] == [shutil.which("systemd-run"), "--user", "--scope"]
+    result = box.run("for f in a b c; do head -c 200M /dev/zero > /tmp/$f || exit 9; done; echo WROTE-ALL")
+    assert "WROTE-ALL" not in result.text and not result.ok, result.text
+
+
+@needs_bwrap
 def test_a_file_past_the_size_limit_is_stopped(corpus):
     box = sandbox(corpus, file_bytes=1024 ** 2)
     result = box.run("head -c 5000000 /dev/zero > /tmp/big; ls -l /tmp/big | awk '{print $5}'")
