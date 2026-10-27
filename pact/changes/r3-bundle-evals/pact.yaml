@@ -158,8 +158,8 @@ decisions:
 - digest: sha256:b2ed40f44679e1e42388f5e2337eeb46121fbfc035ea7623df60145f21f540d2
   reviewer: Jason Mohoney
   at: '2026-10-27'
-  note: 'Board d380 Q6, Jason: "Record it; drop #748 from 3.0". cms-comp-ops ships no smoke set in
-    3.0. The instruction came from Jason in the archi lane session on 2026-10-27 ("let''s exclude
-    cms-comp ops from the bundle"), read narrowly as excluding it from the eval work; the bundle itself
-    stays in 3.0 (merged in #849). cluster-manager''s set is added by this change, on a fixture corpus
-    with no CERN or CMS content, because the bundle is for any cluster operator.'
+  note: 'Jason, board d380 Q6: ''Record it; drop #748 from 3.0''. #748 (the four-week comp-ops
+    shadow) leaves 3.0; the comp-ops bundle itself merged in #849 and stays. Jason, in the archi
+    lane session on 2026-10-27: ''let''s exclude cms-comp ops from the bundle''; cms-comp-ops ships
+    no smoke set in 3.0. cluster-manager''s set is added by this change, on a fixture corpus with no
+    CERN or CMS content, because the bundle is for any cluster operator.'
