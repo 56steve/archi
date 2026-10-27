@@ -152,6 +152,23 @@ def test_jira_reporter_and_assignee_edges_and_no_address_reaches_a_node(tmp_path
     assert "@" not in json.dumps([f.attrs for f in facts if isinstance(f, NodeFact)])
 
 
+def test_a_missing_jira_cache_names_the_jira_token_not_the_redmine_key(tmp_path):
+    source = TicketSource(base=str(tmp_path), system="jira")
+    assert source.preflight().credential_refs == ("JIRA_API_TOKEN",)
+    run = source.run("run-1", mode="scope_complete")
+    assert run.health.status == "cache_missing" and run.health.credential_refs == ("JIRA_API_TOKEN",)
+    assert TicketSource(base=str(tmp_path)).run("r", mode="scope_complete").health.credential_refs == ("REDMINE_API_KEY",)
+    assert TicketSource(base=str(tmp_path), system="other", credential_ref="").credential_refs == ()
+
+
+def test_restricted_comments_and_mentions_never_reach_a_node(tmp_path):
+    write_jira_tickets_cache(tmp_path)
+    _, facts = _run(tmp_path, system="jira")
+    attrs = json.dumps([f.attrs for f in facts if isinstance(f, NodeFact)])
+    assert "Admins only" not in attrs and "[~mhamilton]" not in attrs and "[~user]" in attrs
+    assert _tickets(facts)["tracker_ticket:jira:OPS-3"].attrs["note_count"] == 0
+
+
 def test_a_jira_ticket_without_a_usable_link_of_its_own_links_under_browse(tmp_path):
     (tmp_path / "tickets").mkdir()
     rows = [{"system": "jira", "key": "OPS-1", "subject": "a"},

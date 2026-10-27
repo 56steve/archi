@@ -5,11 +5,13 @@ The tickets pack's downloader. Run it from an operator environment::
     python -m archi.downloaders.tickets --redmine-url https://redmine.example.org --redmine-project ops
     JIRA_API_TOKEN=... python -m archi.downloaders.tickets --jira-url https://jira.example.org --jira-project OPS
     JIRA_API_TOKEN=... python -m archi.downloaders.tickets --jira-url https://jira.example.org \\
-        --jql 'project = OPS AND component = batch'
+        --jql 'project = OPS AND component = batch ORDER BY key ASC'
 
 Give ``--redmine-url``, ``--jira-url`` or both; with both, one cache holds the
 tickets of the two trackers. Each record carries ``system`` (``redmine`` or
-``jira``), so ticket ids of the two never collide, and its own ``url``.
+``jira``), so ticket ids of the two never collide, and its own ``url``. A key
+that arrives twice is written once, so ``meta.json``'s count is the count of
+distinct tickets.
 
 Redmine is read exactly as ``archi.downloaders.redmine`` reads it:
 ``REDMINE_API_KEY`` is optional, and without it only public projects are visible.
@@ -19,9 +21,22 @@ paged with ``startAt``) of any JIRA Server or Data Center. It needs a personal
 access token in ``JIRA_API_TOKEN``, sent as ``Authorization: Bearer``; the run
 stops before any request when it is unset, and ``--jira-url`` must be
 ``https://`` because the token travels in its requests. ``--jira-project``
-(repeatable) or ``--jql`` chooses the issues. Each issue is written in the
-flat shape the reader reads, with people as display names only: a JIRA user's
-login and email address are never written.
+(repeatable) or ``--jql`` chooses the issues. The default order is
+``ORDER BY key ASC``: paging over an order that changes during the download
+(``updated DESC``) repeats or skips issues. A ``--jql`` of your own should keep
+a stable order for the same reason.
+
+What is written about people and private text:
+
+- People (reporter, assignee, comment author) are written as display names
+  only; a JIRA user's login and email address fields are not written.
+- ``[~login]`` mentions in descriptions and comments become ``[~user]``.
+- A comment with a ``visibility`` restriction (a group or role) is skipped
+  unless ``--include-restricted-comments`` is given.
+- Email addresses inside free text (descriptions, comments) are written as
+  JIRA sends them and removed when the reader reads the cache
+  (``archi.sources._cluster_cache.clean``), as on the Redmine path, so none
+  reaches a node.
 
 No credential is printed or written. ``records.json`` and ``meta.json`` are
 written atomically under ``--output-dir`` (default ``tickets`` under
@@ -49,10 +64,13 @@ JIRA_FIELDS = (
     "created,updated,resolutiondate,comment"
 )
 PROJECT_KEY = re.compile(r"[A-Z][A-Z0-9_]*")
+# [~jdoe] and Cloud's [~accountid:...]: a user's login in wiki markup.
+MENTION = re.compile(r"\[~[^\]\s]*\]")
+MENTION_PLACEHOLDER = "[~user]"
 
 
 def jira_jql(projects: Sequence[str] = (), jql: str = "") -> str:
-    """The search: ``--jql`` as given, else the projects, newest change first."""
+    """The search: ``--jql`` as given, else the projects in key order (stable while paging)."""
     if jql and projects:
         raise DownloadError("give --jira-project or --jql, not both")
     if jql:
@@ -61,7 +79,7 @@ def jira_jql(projects: Sequence[str] = (), jql: str = "") -> str:
     if bad:
         raise DownloadError(f"not a JIRA project key: {bad} (expected e.g. OPS)")
     where = f"project in ({', '.join(projects)}) " if projects else ""
-    return f"{where}ORDER BY updated DESC"
+    return f"{where}ORDER BY key ASC"
 
 
 def _display_name(user: Any) -> str:
@@ -79,7 +97,12 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
-def jira_record(issue: Mapping[str, Any], base_url: str) -> dict[str, Any]:
+def _prose(value: Any) -> str:
+    """Free text with ``[~login]`` mentions replaced by a placeholder."""
+    return MENTION.sub(MENTION_PLACEHOLDER, _text(value))
+
+
+def jira_record(issue: Mapping[str, Any], base_url: str, *, include_restricted_comments: bool = False) -> dict[str, Any]:
     """One REST v2 issue in the flat shape ``archi.sources.tickets`` reads."""
     fields = issue.get("fields") or {}
     key = str(issue.get("key") or "")
@@ -88,7 +111,7 @@ def jira_record(issue: Mapping[str, Any], base_url: str) -> dict[str, Any]:
         "system": "jira",
         "key": key,
         "subject": _text(fields.get("summary")),
-        "description": _text(fields.get("description")),
+        "description": _prose(fields.get("description")),
         "project": _name(fields.get("project")),
         "tracker": _name(fields.get("issuetype")),
         "status": _name(fields.get("status")),
@@ -99,11 +122,18 @@ def jira_record(issue: Mapping[str, Any], base_url: str) -> dict[str, Any]:
         "updated": _text(fields.get("updated")),
         "closed": _text(fields.get("resolutiondate")),
         "notes": [
-            {"author": _display_name(c.get("author")), "created": _text(c.get("created")), "body": _text(c.get("body"))}
-            for c in comments if isinstance(c, dict)
+            {"author": _display_name(c.get("author")), "created": _text(c.get("created")), "body": _prose(c.get("body"))}
+            for c in comments
+            # A comment restricted to a group or role is not for everyone who reads the graph.
+            if isinstance(c, dict) and (include_restricted_comments or not c.get("visibility"))
         ],
         "url": f"{base_url}/browse/{key}" if key else "",
     }
+
+
+def _total(body: Mapping[str, Any]) -> Optional[int]:
+    value = body.get("total")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def fetch_jira_issues(
@@ -114,8 +144,14 @@ def fetch_jira_issues(
     jql: str,
     page_size: int = 100,
     max_issues: int = 0,
+    include_restricted_comments: bool = False,
 ) -> list[dict[str, Any]]:
-    """Every issue the search matches, paged by ``startAt`` until JIRA's ``total``."""
+    """Every issue the search matches, paged by ``startAt``.
+
+    Paging stops at JIRA's ``total``, or, when the answer carries no usable
+    ``total``, at the first empty page; never on a short page, since JIRA may
+    cap the page size below what was asked.
+    """
     headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
     records: list[dict[str, Any]] = []
     start = 0
@@ -134,15 +170,44 @@ def fetch_jira_issues(
             raise DownloadError(
                 f"JIRA search could not be read (HTTP {response.status_code})" + (f": {hint}" if hint else "")
             )
-        body = response.json() or {}
-        page = body.get("issues") or []
-        records.extend(jira_record(issue, base_url) for issue in page if isinstance(issue, dict))
-        # JIRA may return fewer than maxResults per page (it caps the page size), so
-        # stop on `total` or an empty page, never on a short page.
+        try:
+            body = response.json()
+        except ValueError:
+            raise DownloadError(
+                "JIRA search answered HTTP 200 with something that is not JSON (a login page in front of "
+                "the server?); check --jira-url"
+            ) from None
+        if not isinstance(body, dict):
+            raise DownloadError("JIRA search answered with JSON that is not a search result")
+        page = body.get("issues")
+        if page is None:
+            page = []
+        if not isinstance(page, list):
+            raise DownloadError("JIRA search answered with an 'issues' field that is not a list")
+        # Never more than asked for, so --max-issues holds whatever the server sends.
+        page = page[:size]
+        records.extend(
+            jira_record(issue, base_url, include_restricted_comments=include_restricted_comments)
+            for issue in page if isinstance(issue, dict)
+        )
         start += len(page)
-        if not page or start >= int(body.get("total", start)):
+        total = _total(body)
+        if not page or (total is not None and start >= total):
             break
     return records
+
+
+def _distinct(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The first record of each (system, key); a page boundary can repeat one."""
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for record in records:
+        ident = (str(record.get("system") or ""), str(record.get("key") or record.get("id") or ""))
+        if ident in seen:
+            continue
+        seen.add(ident)
+        out.append(record)
+    return out
 
 
 def _https(url: str, flag: str) -> str:
@@ -163,6 +228,7 @@ def download(
     jql: str = "",
     page_size: int = 100,
     max_issues: int = 0,
+    include_restricted_comments: bool = False,
 ) -> dict[str, Any]:
     """Fetch each tracker given and write one cache. ``max_issues`` caps each tracker."""
     if not redmine_url and not jira_url:
@@ -189,12 +255,15 @@ def download(
                         "authenticated": bool(env.get(redmine.KEY_ENV))})
     if jira_url:
         issues = fetch_jira_issues(
-            session, jira_url, token=env[JIRA_TOKEN_ENV], jql=query, page_size=page_size, max_issues=max_issues
+            session, jira_url, token=env[JIRA_TOKEN_ENV], jql=query, page_size=page_size, max_issues=max_issues,
+            include_restricted_comments=include_restricted_comments,
         )
         if not issues:
             raise DownloadError("JIRA returned no issues; not writing an empty cache")
         records.extend(issues)
-        sources.append({"system": "jira", "base_url": jira_url, "jql": query, "authenticated": True})
+        sources.append({"system": "jira", "base_url": jira_url, "jql": query, "authenticated": True,
+                        "restricted_comments": include_restricted_comments})
+    records = _distinct(records)
     return write_cache(output_dir, records, len(records), sources=sources)
 
 
@@ -209,7 +278,9 @@ def main(argv: Optional[Sequence[str]] = None, *, session: Optional[Session] = N
     parser.add_argument("--redmine-project", dest="redmine_projects", action="append", help="repeatable")
     parser.add_argument("--jira-url", default="", help="the JIRA root, e.g. https://jira.example.org")
     parser.add_argument("--jira-project", dest="jira_projects", action="append", help="project key; repeatable")
-    parser.add_argument("--jql", default="", help="a JQL search, instead of --jira-project")
+    parser.add_argument("--jql", default="", help="a JQL search, instead of --jira-project; keep a stable order")
+    parser.add_argument("--include-restricted-comments", action="store_true",
+                        help="also write JIRA comments restricted to a group or role (default: skipped)")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--page-size", type=int, default=100)
     parser.add_argument("--max-issues", type=int, default=0, help="cap per tracker, for probes; 0 means no cap")
@@ -228,6 +299,7 @@ def main(argv: Optional[Sequence[str]] = None, *, session: Optional[Session] = N
             redmine_url=args.redmine_url, redmine_projects=tuple(args.redmine_projects or ()),
             jira_url=args.jira_url, jira_projects=tuple(args.jira_projects or ()), jql=args.jql,
             page_size=args.page_size, max_issues=args.max_issues,
+            include_restricted_comments=args.include_restricted_comments,
         )
     except DownloadError as exc:
         print(f"tickets download stopped: {exc}", file=sys.stderr)

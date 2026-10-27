@@ -20,12 +20,19 @@ or a Redmine REST issue (``id``, ``subject``, ``project: {name}``,
 ``author: {name}``, ``assigned_to: {name}``, ``created_on``, ``journals``).
 Both read the same. ``system`` defaults to the ``system`` parameter; the node
 id is ``tracker_ticket:<system>:<key>``, so a JIRA ``OPS-7`` and a Redmine
-``7`` never meet. ``url``, when present, is the ticket's link; otherwise the
+``7`` never meet. A JIRA issue moved to another project gets a new key, so
+its node id changes: the next complete download retracts the old node and
+publishes a new one. ``url``, when present, is the ticket's link; otherwise the
 link is built from ``base_url`` (``/issues/<id>`` for Redmine,
 ``/browse/<key>`` for JIRA).
 
 The credentials, when a tracker needs one, are named by environment variable
-(``REDMINE_API_KEY``, ``JIRA_API_TOKEN``) and used only by the downloader.
+(``REDMINE_API_KEY``, ``JIRA_API_TOKEN``) and used only by the downloader. A
+failed fetch names the one for the ``system`` parameter (``JIRA_API_TOKEN``
+for ``jira``, else ``REDMINE_API_KEY``).
+
+Email addresses in any text field are removed here, as each record is read
+(``clean``), for Redmine and JIRA alike.
 
 Registry entry: ``bundles/packs/tickets/sources/tickets.yaml``.
 """
@@ -63,6 +70,9 @@ class TicketRecord:
         return f"tracker_ticket:{self.system}:{self.key}"
 
 
+CREDENTIAL_BY_SYSTEM = {"redmine": "REDMINE_API_KEY", "jira": "JIRA_API_TOKEN"}
+
+
 class TicketSource(CacheSource):
     """Load tracker tickets from the downloader's cache."""
 
@@ -79,11 +89,14 @@ class TicketSource(CacheSource):
         meta_path: str = "tickets/meta.json",
         system: str = "redmine",
         base_url: str = "",
-        credential_ref: str = "REDMINE_API_KEY",
+        credential_ref: str | None = None,
         base: str | None = None,
     ) -> None:
         if not system or not system.replace("-", "").replace("_", "").isalnum() or system != system.lower():
             raise ValueError(f"system must be a lowercase word, got {system!r}")
+        if credential_ref is None:
+            # The variable the downloader for this system reads, so a failed fetch names the right one.
+            credential_ref = CREDENTIAL_BY_SYSTEM.get(system, "REDMINE_API_KEY")
         self.system = system
         self.base_url = base_url.rstrip("/")
         super().__init__(

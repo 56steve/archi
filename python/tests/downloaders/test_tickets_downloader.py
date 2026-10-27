@@ -29,10 +29,11 @@ def test_jira_pages_by_start_at_until_the_total_even_when_jira_shortens_the_page
     assert [r[1] for r in session.requests] == [f"{JIRA}/rest/api/2/search"] * 2
     params = [r[2]["params"] for r in session.requests]
     assert [p["startAt"] for p in params] == [0, 2] and params[0]["maxResults"] == 50
-    assert params[0]["jql"] == "project in (OPS) ORDER BY updated DESC"
+    assert params[0]["jql"] == "project in (OPS) ORDER BY key ASC"
     assert "comment" in params[0]["fields"].split(",")
     assert all(r[2]["headers"]["Authorization"] == "Bearer token-fixture" for r in session.requests)
-    assert info["sources"] == [{"system": "jira", "base_url": JIRA, "jql": params[0]["jql"], "authenticated": True}]
+    assert info["sources"] == [{"system": "jira", "base_url": JIRA, "jql": params[0]["jql"], "authenticated": True,
+                                "restricted_comments": False}]
 
 
 def test_an_empty_page_ends_the_paging(tmp_path):
@@ -40,6 +41,101 @@ def test_an_empty_page_ends_the_paging(tmp_path):
     session = FakeSession(gets=[lambda url, kw: FakeResponse(200, next(pages))])
     assert tickets.download(session, TOKEN, tmp_path, jira_url=JIRA)["record_count"] == 2
     assert len(session.requests) == 2
+
+
+def test_the_default_order_is_by_key_so_paging_is_stable():
+    assert tickets.jira_jql(["OPS", "ADM"]) == "project in (OPS, ADM) ORDER BY key ASC"
+    assert tickets.jira_jql() == "ORDER BY key ASC"
+
+
+def test_an_issue_repeated_across_pages_is_written_once_and_counted_once(tmp_path):
+    # An issue that moves during the download can appear on two pages.
+    first, second = load("jira_search_page1.json"), load("jira_search_page2.json")
+    second["issues"].append(first["issues"][1])
+    second["total"] = 4
+    session = FakeSession(gets=[lambda url, kw: FakeResponse(200, first if kw["params"]["startAt"] == 0 else second)])
+    info = tickets.download(session, TOKEN, tmp_path, jira_url=JIRA)
+    keys = [r["key"] for r in _records(tmp_path)]
+    assert sorted(keys) == ["OPS-12", "OPS-3", "OPS-9"]
+    assert info["record_count"] == 3 == json.loads((tmp_path / "meta.json").read_text())["record_count"]
+
+
+def _pages(*bodies):
+    """A session answering each search with the next body, by startAt order."""
+    answers = iter(bodies)
+    return FakeSession(gets=[lambda url, kw: FakeResponse(200, next(answers))])
+
+
+def _issues(*keys):
+    return [{"key": k, "fields": {"summary": k}} for k in keys]
+
+
+@pytest.mark.parametrize("total", ["missing", None, "3", 2.5, True])
+def test_without_a_usable_total_paging_runs_to_an_empty_page(tmp_path, total):
+    pages = [{"issues": _issues("OPS-1", "OPS-2")}, {"issues": _issues("OPS-3")}, {"issues": []}]
+    if total != "missing":
+        for page in pages:
+            page["total"] = total
+    session = _pages(*pages)
+    info = tickets.download(session, TOKEN, tmp_path, jira_url=JIRA, page_size=2)
+    assert info["record_count"] == 3
+    assert [r[2]["params"]["startAt"] for r in session.requests] == [0, 2, 3]
+
+
+def test_without_a_total_the_cap_still_stops_the_paging(tmp_path):
+    # The second answer holds more than the one issue asked for; the cap still holds.
+    session = _pages({"issues": _issues("OPS-1", "OPS-2")}, {"issues": _issues("OPS-3", "OPS-4")})
+    info = tickets.download(session, TOKEN, tmp_path, jira_url=JIRA, page_size=2, max_issues=3)
+    assert info["record_count"] == 3
+    assert [r[2]["params"]["maxResults"] for r in session.requests] == [2, 1]
+
+
+@pytest.mark.parametrize("body", [{"issues": {"OPS-1": {}}, "total": 1}, {"issues": "OPS-1"}, ["OPS-1"]])
+def test_a_page_that_is_not_a_list_of_issues_stops_the_run(tmp_path, body):
+    with pytest.raises(tickets.DownloadError, match="not a list|not a search result"):
+        tickets.download(_pages(body), TOKEN, tmp_path, jira_url=JIRA)
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_200_that_is_not_json_says_so_without_a_traceback(tmp_path, capsys):
+    class HtmlResponse(FakeResponse):
+        def json(self):
+            raise json.JSONDecodeError("Expecting value", "<html>", 0)
+
+    session = FakeSession(gets=[lambda url, kw: HtmlResponse(200, None, "<html>Sign in</html>")])
+    code = tickets.main(["--jira-url", JIRA, "--output-dir", str(tmp_path / "t")], session=session, env=TOKEN)
+    err = capsys.readouterr().err
+    assert code == 1 and "not JSON" in err and "Traceback" not in err
+    assert not (tmp_path / "t").exists()
+
+
+def test_restricted_comments_are_skipped_unless_asked_for(tmp_path):
+    tickets.download(jira_session(), TOKEN, tmp_path / "a", jira_url=JIRA)
+    by_key = {r["key"]: r for r in _records(tmp_path / "a")}
+    assert by_key["OPS-3"]["notes"] == [] and "Admins only" not in (tmp_path / "a" / "records.json").read_text()
+
+    info = tickets.download(jira_session(), TOKEN, tmp_path / "b", jira_url=JIRA, include_restricted_comments=True)
+    by_key = {r["key"]: r for r in _records(tmp_path / "b")}
+    assert [n["body"] for n in by_key["OPS-3"]["notes"]] == ["Admins only: the theory group is over budget, see [~user]."]
+    assert info["sources"][0]["restricted_comments"] is True
+
+
+def test_the_restricted_comment_option_is_off_on_the_command_line_unless_given(tmp_path):
+    tickets.main(["--jira-url", JIRA, "--output-dir", str(tmp_path / "a")], session=jira_session(), env=TOKEN)
+    tickets.main(["--jira-url", JIRA, "--output-dir", str(tmp_path / "b"), "--include-restricted-comments"],
+                 session=jira_session(), env=TOKEN)
+    assert "Admins only" not in (tmp_path / "a" / "records.json").read_text()
+    assert "Admins only" in (tmp_path / "b" / "records.json").read_text()
+
+
+def test_login_mentions_become_a_placeholder(tmp_path):
+    assert tickets.jira_record(
+        {"key": "OPS-1", "fields": {"description": "ping [~jdoe] and [~accountid:5b10a2844c20165700ede21g]",
+                                     "comment": {"comments": [{"body": "thanks [~ada.l]"}]}}}, JIRA,
+    )["description"] == "ping [~user] and [~user]"
+    tickets.download(jira_session(), TOKEN, tmp_path, jira_url=JIRA)
+    by_key = {r["key"]: r for r in _records(tmp_path)}
+    assert by_key["OPS-3"]["description"] == "Please raise the default home quota to 50 GB, as [~user] asked."
 
 
 def test_jira_issues_map_onto_the_flat_ticket_shape(tmp_path):
