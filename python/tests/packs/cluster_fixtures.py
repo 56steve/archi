@@ -1,7 +1,7 @@
 """Recorded inputs and a fake runner for the cluster-manager packs (imported by module name).
 
 The files under `tests/fixtures/cluster/` are recorded shapes: ServiceNow Table
-API rows, Redmine `issues.json` pages, and the text `sinfo`, `scontrol`,
+API rows, Redmine `issues.json` pages, JIRA REST v2 `search` pages, and the text `sinfo`, `scontrol`,
 `sacct`, `squeue`, `condor_status` and `condor_q` print. Nothing here starts a
 process: `FakeRunner` answers a command from a table and refuses one it was
 not given.
@@ -150,6 +150,29 @@ def write_tickets_cache(data: Path) -> list:
     (out / "records.json").write_text(json.dumps(issues), encoding="utf-8")
     (out / "meta.json").write_text(json.dumps({"record_count": len(issues)}), encoding="utf-8")
     return issues
+
+
+JIRA = "https://jira.example.org"
+
+
+def jira_session(base: str = JIRA) -> FakeSession:
+    """Serve the recorded JIRA search pages: two issues, then one (``total`` 3), whatever page size is asked."""
+
+    def search(url, kwargs):
+        if url != f"{base}/rest/api/2/search":
+            return None
+        return FakeResponse(200, load("jira_search_page1.json" if kwargs["params"]["startAt"] == 0 else "jira_search_page2.json"))
+
+    return FakeSession(gets=[search])
+
+
+def write_jira_tickets_cache(data: Path) -> list:
+    """Run the tickets downloader's JIRA reader on the recorded pages and write its cache under `data/tickets`."""
+    from archi.downloaders import tickets
+
+    tickets.download(jira_session(), {"JIRA_API_TOKEN": "token-fixture"}, data / "tickets",
+                     jira_url=JIRA, jira_projects=["OPS"])
+    return json.loads((data / "tickets" / "records.json").read_text(encoding="utf-8"))
 
 
 def write_node_health_cache(data: Path) -> list:

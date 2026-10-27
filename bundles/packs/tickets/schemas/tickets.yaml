@@ -1,4 +1,4 @@
-# Tracker tickets (Redmine and any tracker with the same export shape).
+# Tracker tickets (Redmine, JIRA, and any tracker with the same export shape).
 #
 # Owned by the tickets pack. Classes live in this file; their edge narrowings
 # are in bridges/tickets.yaml (okg's composer honours narrowings only under
@@ -21,7 +21,7 @@ imports:
 classes:
   TrackerTicket:
     description: >-
-      A ticket from a tracker such as Redmine, mirrored from the records cache.
+      A ticket from a tracker such as Redmine or JIRA, mirrored from the records cache.
     class_uri: archi:TrackerTicket
     attributes:
       ticket_id:

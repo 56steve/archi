@@ -1,8 +1,10 @@
 # Generic tickets connector (cache-backed). Reads the records + meta cache that
+# `python -m archi.downloaders.tickets` (Redmine, JIRA or both) or
 # `python -m archi.downloaders.redmine` writes under ${archi_data_root}/tickets/ (any
-# tracker can fill the same cache). The download is anonymous unless REDMINE_API_KEY
-# is set; the key is read by environment-variable name only (credential_refs), by the
-# downloader, never by the source.
+# tracker can fill the same cache). A Redmine download is anonymous unless
+# REDMINE_API_KEY is set; a JIRA download needs JIRA_API_TOKEN. Both are named by
+# environment variable only (credential_refs) and read by the downloader, never by
+# the source.
 #
 # The parsed record count is cross-checked against meta.json's record_count; a
 # mismatch withholds the completed-scope claim.
@@ -37,7 +39,7 @@ tickets:
   source_revision_kind: updated_at
   deletion_semantics: missing_from_completed_scope
   publication_mode: published_generation
-  credential_refs: [REDMINE_API_KEY]
+  credential_refs: [REDMINE_API_KEY, JIRA_API_TOKEN]
   required_for_baseline: true
   params:
     records_path: ${archi_data_root}/tickets/records.json
