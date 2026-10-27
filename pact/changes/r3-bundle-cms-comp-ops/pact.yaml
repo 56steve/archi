@@ -89,12 +89,8 @@ decisions:
 - digest: sha256:a173ac394caa47c8ccd6025a46760c8ec2d1b3c60056526a48f5a5678474a91b
   reviewer: Jason Mohoney
   at: '2026-10-27'
-  note: 'Board d380 Q6, Jason: "Record it; drop #748 from 3.0". The cms-comp-ops bundle has no
-    smoke-eval set in 3.0 (Jason, 2026-10-27: "let''s exclude cms-comp ops from the bundle",
-    read as excluding it from the eval work: our reading of Jason''s words; the bundle itself
-    stays in 3.0 (merged in #849)), so the bundle requirement now says it has no smoke eval in
-    3.0 and the smoke acceptance is gone. The four-week comp-ops
-    shadow (#748) is out of 3.0. Q6 changes nothing else in this PACT.'
+  note: 'Jason, board d380 Q6: ''Record it; drop #748 from 3.0''. #748 (the four-week comp-ops
+    shadow) leaves 3.0; the comp-ops bundle itself merged in #849 and stays.'
 - digest: sha256:a173ac394caa47c8ccd6025a46760c8ec2d1b3c60056526a48f5a5678474a91b
   reviewer: Jason Mohoney
   at: '2026-10-27'
