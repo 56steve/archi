@@ -180,7 +180,7 @@ decisions:
     threshold, so a smaller CPU model cannot be expected to clear it and a failing gate would say
     nothing about the bundle. The CPU model''s timing and score are untested (not measured).
     acc.r3-bundle-evals.sets is NOT met as written: the lab model did not reach the threshold.'
-- digest: sha256:b2ed40f44679e1e42388f5e2337eeb46121fbfc035ea7623df60145f21f540d2
+- digest: sha256:f4cc651908609934281f3278b994ae1c7a1bcba84ff4a57d961d69a8d222faed
   reviewer: Jason Mohoney
   at: '2026-10-27'
   note: 'Jason, board d380 Q6: ''Record it; drop #748 from 3.0''. #748 (the four-week comp-ops
