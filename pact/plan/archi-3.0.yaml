@@ -180,7 +180,7 @@ pacts:
     tasks:
       task.r3-auto-ticket-triage.build: "ticket-triage automation pack (Redmine, JIRA, ServiceNow)"
       task.r3-auto-ticket-triage.shadow-submit: "ticket-triage: four-week shadow at SubMIT, with report"
-      task.r3-auto-ticket-triage.shadow-compops: "ticket-triage: four-week shadow on the comp-ops queue, with report"
+      # task.r3-auto-ticket-triage.shadow-compops (#748) left 3.0: board d380 Q6, 2026-10-27
 
 
   r3-mcp-clients:
