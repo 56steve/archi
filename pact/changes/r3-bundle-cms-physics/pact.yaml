@@ -6,8 +6,8 @@ why: Physics knowledge (analysis notes, publications, physics TWikis, analysis c
   different audience from operations. archi-physics/cms-kb has run this as a prototype, with
   archi's twiki (physics filter), cds and cmssw-releases sources plus its own analysis-note,
   physics-vocabulary, physics-entity and cross-link code. r3-bundle-cms-kb decided that cms-kb
-  is this bundle, not a second one, so this PACT lifts that code into archi packs and rebuilds
-  the cms-kb deployment from the bundle. ADR 0002 §5.
+  is this bundle, not a second one, so this PACT lifts that code into archi packs and validates
+  the bundle on a cms-physics instance built from it as shipped (board d380 Q5). ADR 0002 §5.
 affected_code:
 - bundles/cms-physics/
 - bundles/packs/cms-analyses/
@@ -45,16 +45,21 @@ requirements:
 
     Acceptance:
 
-    - acc.r3-bundle-cms-physics.install: bundle CI job green. [evidence: executed_test]'
+    - acc.r3-bundle-cms-physics.install: an install-and-publish test (test_pack_isolation)
+    plus a lab smoke run, in place of a bundle CI job (board d380 Q7; the CI gate is deferred
+    to #619 by d332). [evidence: executed_test]'
 - id: req.r3-bundle-cms-physics.instance
-  statement: 'The cms-kb deployment, the validation instance of cms-physics, is rebuilt from
-    the bundle with no local copy of an archi connector and no cms_kb source package.
+  statement: 'The cms-physics instance on submit75 (/work/submit/mohoney/archi/cms-physics),
+    the validation instance of cms-physics, is built from the cms-physics bundle as shipped,
+    docsite and indico included, with no local copy of an archi connector and no cms_kb source
+    package. It replaces the earlier target, a rebuild of the cms-kb deployment (board d369 D,
+    d380 Q5).
 
 
     Acceptance:
 
-    - acc.r3-bundle-cms-physics.rebuild: cms-kb deployment rebuilt from the bundle; its page
-    and note floors pass. [evidence: executed_test]'
+    - acc.r3-bundle-cms-physics.rebuild: the cms-physics instance is built from the bundle as
+    shipped and publishes; its page and note floors pass. [evidence: executed_test]'
 tasks:
 - id: task.r3-bundle-cms-physics.analyses-pack
   requirement: req.r3-bundle-cms-physics.pack
@@ -79,15 +84,16 @@ tasks:
 
     Test plan:
 
-    - bundle CI job [evidence: executed_test]'
+    - python/tests/packs/test_pack_isolation.py (cms-physics case) and a lab smoke run [evidence:
+    executed_test]'
 - id: task.r3-bundle-cms-physics.instance
   requirement: req.r3-bundle-cms-physics.instance
-  verification: 'Rebuild the cms-kb deployment from the bundle.
+  verification: 'Build the cms-physics instance on submit75 from the bundle as shipped.
 
 
     Test plan:
 
-    - rebuild run [evidence: executed_test]'
+    - first sync and publish of that instance [evidence: executed_test]'
 evidence:
 - kind: executed_test
   requirement: req.r3-bundle-cms-physics.pack
@@ -117,4 +123,19 @@ evidence:
     match-cache tests are ported with synthetic fixtures. The note floor is an init question enforced at
     preflight (default 1; cms-physics sets 2500 through the new bundle answers key). The mirror fetch
     needs CERN credentials and is documented in the pack README.'
-decisions: []
+decisions:
+- digest: sha256:aeb27fbe2530fdf747f9e5900cf0c676c7689a5538ff382f68d95fa948faa77e
+  reviewer: Jason Mohoney
+  at: '2026-10-27'
+  note: 'req.r3-bundle-cms-physics.instance retargeted. Board d369, Jason: D. Board d380 Q5,
+    Jason: "Yes". The validation instance is now the cms-physics instance on submit75
+    (/work/submit/mohoney/archi/cms-physics), built from the cms-physics bundle as shipped,
+    docsite and indico included, in place of a rebuild of the cms-kb deployment. No evidence is
+    recorded for it yet: that instance''s first sync is still running.'
+- digest: sha256:aeb27fbe2530fdf747f9e5900cf0c676c7689a5538ff382f68d95fa948faa77e
+  reviewer: Jason Mohoney
+  at: '2026-10-27'
+  note: 'acc.r3-bundle-cms-physics.install reworded. Board d380 Q7, Jason: "Yes". "Bundle CI
+    job green" becomes an install-and-publish test (test_pack_isolation) plus a lab smoke run.
+    No bundle CI job exists because board d332 deferred the CI gate on bundle changes to the
+    #619 eval framework.'

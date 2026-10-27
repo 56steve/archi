@@ -18,10 +18,14 @@ requirements:
 
     Acceptance:
 
-    - acc.r3-bundle-cms-comp-ops.install: bundle installs green with fixture caches. [evidence:
-    executed_test]
+    - acc.r3-bundle-cms-comp-ops.install: an install-and-publish test (test_pack_isolation)
+    installs the bundle green with fixture caches, in place of a bundle CI job (board d380 Q7;
+    the CI gate is deferred to #619 by d332). The lab smoke run Q7 pairs with it is moot here:
+    under d380 Q6 this bundle has no smoke-eval set in 3.0. [evidence: executed_test]
 
-    - acc.r3-bundle-cms-comp-ops.smoke: smoke eval passes. [evidence: executed_test]'
+    - acc.r3-bundle-cms-comp-ops.smoke: not in 3.0. The bundle ships no smoke-eval set in 3.0
+    (board d380 Q6), so no smoke eval runs for it; this line records the exclusion and is not
+    met by a run. [evidence: manual]'
 - id: req.r3-bundle-cms-comp-ops.instance
   statement: 'The cms-compops instance is regenerated from `archi init --bundle cms-comp-ops`
     plus instance-local config, with the parity auditor green.
@@ -39,7 +43,7 @@ tasks:
 
     Test plan:
 
-    - bundle CI job [evidence: executed_test]'
+    - python/tests/packs/test_pack_isolation.py (cms-comp-ops case) [evidence: executed_test]'
 - id: task.r3-bundle-cms-comp-ops.playbooks
   requirement: req.r3-bundle-cms-comp-ops.bundle
   verification: 'Assign playbooks and triggers to packs.
@@ -57,4 +61,20 @@ tasks:
 
     - parity run on the instance [evidence: executed_test]'
 evidence: []
-decisions: []
+decisions:
+- digest: sha256:0338685c79c09175409b872e92ae25f972abb6c926e523a74a3d30e3700ec88b
+  reviewer: Jason Mohoney
+  at: '2026-10-27'
+  note: 'Board d380 Q6, Jason: "Record it; drop #748 from 3.0". The cms-comp-ops bundle has no
+    smoke-eval set in 3.0 (Jason, 2026-10-27: "let''s exclude cms-comp ops from the bundle",
+    read narrowly as excluding it from the eval work, not from the bundle catalog), so
+    acc.r3-bundle-cms-comp-ops.smoke now records that exclusion. The four-week comp-ops
+    shadow (#748) is out of 3.0. Nothing else in this PACT changes.'
+- digest: sha256:0338685c79c09175409b872e92ae25f972abb6c926e523a74a3d30e3700ec88b
+  reviewer: Jason Mohoney
+  at: '2026-10-27'
+  note: 'acc.r3-bundle-cms-comp-ops.install reworded (#724). Board d380 Q7, Jason: "Yes". A
+    bundle CI job becomes an install-and-publish test (test_pack_isolation) plus a lab smoke
+    run. No bundle CI job exists because board d332 deferred the CI gate on bundle changes to
+    the #619 eval framework. The lab smoke run is moot for this bundle under d380 Q6, which
+    leaves it no smoke-eval set in 3.0, so the install-and-publish test alone applies.'
