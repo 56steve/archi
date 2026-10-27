@@ -557,6 +557,21 @@ class BashSandbox:
                  "--", self.shell, "--noprofile", "--norc", "-c", self.limits(), self.shell, command]
         return args
 
+    def _confirm_broken(self, text: str) -> None:
+        """A command whose output starts like systemd-run's own failure: raise SandboxBroken only
+        if `true` cannot start in a scope either (else the command printed that text itself, as a
+        `cat` of an ops log can)."""
+        try:
+            check = subprocess.run(self.argv("true"), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, env=dict(self._scope_env), timeout=30)
+            if check.returncode == 0:
+                return
+            why = check.stdout.decode("utf-8", "replace").strip() or f"exit {check.returncode}"
+        except subprocess.TimeoutExpired:
+            why = "`true` did not finish in 30 s"
+        raise SandboxBroken(f"systemd-run could not start the command's scope: {text.strip()[:200]}; "
+                            f"a check with `true` also failed: {why[:200]}")
+
     def run(self, command: str, *, seconds: Optional[float] = None) -> BashResult:
         limit = self.command_seconds if seconds is None else max(0.1, min(seconds, self.command_seconds))
         proc = subprocess.Popen(self.argv(command), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -590,7 +605,7 @@ class BashSandbox:
         reader.join(timeout=5)
         text = b"".join(chunks).decode("utf-8", "replace")
         if self._scope and proc.returncode and not timed_out and _SCOPE_FAILED.match(text):
-            raise SandboxBroken(f"systemd-run could not start the command's scope: {text.strip()[:300]}")
+            self._confirm_broken(text)
         produced = bool(text.strip())
         notes = []
         if state["cut"]:
@@ -965,7 +980,8 @@ MAX_SHINGLES = 20000
 READ_UNITS = 2
 #: Fields that name a record rather than hold its content: a search row shows them beside every
 #: hit, as `ls` shows a file name, so, like the key, they never count toward reading a record.
-TITLE_FIELDS = frozenset({"summary", "title", "subject", "topic", "headline", "name", "displayName"})
+TITLE_FIELDS = frozenset({"summary", "title", "subject", "short_description", "topic", "headline", "label", "name",
+                          "displayName"})
 _WORDS = re.compile(r"[a-z0-9]+")
 #: JSON string escapes, as both a `cat` of a corpus file and an MCP JSON reply show them
 _UNICODE_ESCAPE = re.compile(r"\\u[0-9a-fA-F]{4}")
@@ -1514,9 +1530,21 @@ class AgentReport:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "gold": self.gold.to_dict(),
+            "gold_unavailable_by_reason": _count_reasons(self.gold),
             "questions": [{"id": qid, "arms": {arm: [t.to_dict() for t in ts] for arm, ts in per.items()}}
                           for qid, per in self.tries.items()],
         }
+
+
+def _count_reasons(gold: GoldMap) -> dict[str, int]:
+    """How many gold records each reason made unavailable (a record with nothing but a title, one
+    whose text other records share, one from a left-out source), so a shrinking denominator shows."""
+    counts: dict[str, int] = {}
+    for golds in gold.records.values():
+        for g in golds:
+            if not g.available:
+                counts[g.reason] = counts.get(g.reason, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
 
 def _folders(corpus: Any) -> list[str]:
@@ -1686,6 +1714,8 @@ def render_agent_markdown(agents: Mapping[str, Any], data: Mapping[str, Any]) ->
     unavailable = sorted({gid for per in agents["gold"].values() for gid, g in per.items() if g["status"] == UNAVAILABLE})
     if unavailable:
         lines.append(f"- gold records unavailable to the agent arms (not counted as misses): {', '.join(unavailable)}")
+        for reason, count in (agents.get("gold_unavailable_by_reason") or {}).items():
+            lines.append(f"  - {count}: {reason}")
     for name, s in agents["arms"].items():
         for row in s["error_tries"]:
             lines.append(f"- error try, {name}: {row['question']} try {row['try']}: {row['reason']}")

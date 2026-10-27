@@ -705,6 +705,27 @@ def test_a_scope_that_stops_starting_mid_run_aborts_the_run_instead_of_feeding_t
     assert report.aborted and "sandbox stopped working" in report.aborted
 
 
+def test_a_command_that_prints_systemds_failure_text_itself_is_only_output():
+    box = broken_scope_box()
+    box.argv = lambda command: (["/bin/sh", "-c", "true"] if command == "true" else
+                                ["/bin/sh", "-c", "echo 'Failed to start transient scope unit: in an ops log'; exit 1"])
+    result = box.run("cat ops.log; false")
+    assert "in an ops log" in result.text and result.exit_code == 1
+
+
+def test_a_servicenow_title_never_fingerprints():
+    record = (b'{"number": "INC0012345", "short_description": "Storage element rejects writes after upgrade", '
+              b'"description": "Restarted the gridftp doors on every storage node"}')
+    assert content_fingerprints(record, exclude=("INC0012345",)) == (
+        ("restarted the gridftp doors on every", "the gridftp doors on every storage", "gridftp doors on every storage node"),)
+
+
+def test_the_report_counts_unavailable_gold_by_reason(tmp_path):
+    _, data, _ = run_plan(tmp_path)
+    assert sum(data["gold_unavailable_by_reason"].values()) == 2  # q2's and q3's ops record
+    assert all("ops-record" in reason for reason in data["gold_unavailable_by_reason"])
+
+
 def test_recall_and_mrr_compare_the_arms_only_on_pairs_both_finished():
     def done(arm, qid, recall_hit):
         ev_ = raw_arm.Evidence(found=["g"] if recall_hit else [], missed=[] if recall_hit else ["g"],

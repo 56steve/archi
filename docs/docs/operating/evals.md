@@ -497,8 +497,10 @@ final answer never count.
   or lines (or its only one). A value or line shows when a run of six of its
   words appears, or, for a value of four or five words, the whole value. A
   value under four words never counts, and neither does a title field
-  (`summary`, `title`, `subject`, `topic`, `headline`, `name`): like a file
-  name, a search row shows it beside every hit. Words are compared
+  (`summary`, `title`, `subject`, `short_description`, `topic`, `headline`,
+  `label`, `name`, `displayName`): like a file name, a search row shows it
+  beside every hit. A record whose only long text is a title is unavailable,
+  and the report counts unavailable gold records by reason. Words are compared
   lower-cased, ignoring punctuation and JSON escapes, so a `cat` of the file
   and an MCP excerpt of the same text both count. A search row with one
   excerpt, or one line a grep matched, therefore only lists a record that has
@@ -517,7 +519,8 @@ final answer never count.
   compare them only on the (question, try) pairs every arm finished without an
   error: a spend stop or an error try can leave one arm with a try the other
   lacks, and that try is counted under `tries_unpaired`, not scored. The
-  answer score is paired the same way.
+  answer score is paired the same way. With one arm, an error try is left out
+  of its averages too (it is listed under failures), not scored as recall 0.
 - **MRR**: 1 / the rank of the first gold record read among the distinct
   records the agent met, in order. Other records count as met when their path
   or node id appears.
