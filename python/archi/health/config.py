@@ -19,7 +19,10 @@
           ignore_checks: []             # doctor check ids to leave out (e.g. services)
           include_warnings: false       # doctor `warn` results are problems too
           error_rate: {window_hours: 24, min_decisions: 3, max_rate: 0.5}
-          eval: {min_drop: 0.05}
+          eval:
+            min_drop: 0.1               # a drop in score (passed / total) larger than this is a problem
+            reports_dir: null           # default <data root>/eval, where `archi eval` writes; relative = from the instance
+            max_age_days: 14            # a newest run older than this is noted in the proposal (not an issue)
 
 Only the name of the token variable is written here; a value in this file is refused.
 """
@@ -93,7 +96,13 @@ class HealthConfig:
     window_hours: float = 24.0
     min_decisions: int = 3
     max_error_rate: float = 0.5
-    eval_min_drop: float = 0.05
+    #: a fall in eval score (passed / total, 0..1) larger than this, against the mean of the earlier runs, is a
+    #: problem. 0.1 is one question of a ten-question set: one flip is noise, two are a finding.
+    eval_min_drop: float = 0.1
+    #: where `archi eval` reports are read from; None: `<data root>/eval`, the `archi eval` default
+    eval_reports_dir: Optional[str] = None
+    #: a bundle whose newest eval run is older than this many days gets a note in the proposal, not an issue
+    eval_max_age_days: float = 14.0
 
     @classmethod
     def from_proposer(cls, config: Mapping[str, Any]) -> "HealthConfig":
@@ -103,7 +112,8 @@ class HealthConfig:
             raise TrackerError(f"proposer: unknown keys {unknown}; allowed: {sorted(known)}")
         rate = dict(config.get("error_rate") or {})
         ev = dict(config.get("eval") or {})
-        for name, allowed in (("error_rate", {"window_hours", "min_decisions", "max_rate"}), ("eval", {"min_drop"})):
+        for name, allowed in (("error_rate", {"window_hours", "min_decisions", "max_rate"}),
+                              ("eval", {"min_drop", "reports_dir", "max_age_days"})):
             bad = sorted(set(config.get(name) or {}) - allowed)
             if bad:
                 raise TrackerError(f"proposer.{name}: unknown keys {bad}; allowed: {sorted(allowed)}")
@@ -117,8 +127,38 @@ class HealthConfig:
             window_hours=float(rate.get("window_hours", 24.0)),
             min_decisions=int(rate.get("min_decisions", 3)),
             max_error_rate=float(rate.get("max_rate", 0.5)),
-            eval_min_drop=float(ev.get("min_drop", 0.05)),
+            eval_min_drop=_fraction(ev.get("min_drop", 0.1), "proposer.eval.min_drop"),
+            eval_reports_dir=_optional_text(ev.get("reports_dir"), "proposer.eval.reports_dir"),
+            eval_max_age_days=_positive(ev.get("max_age_days", 14.0), "proposer.eval.max_age_days"),
         )
+
+
+def _fraction(value: Any, label: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise TrackerError(f"{label} must be a number between 0 and 1") from None
+    if not 0 <= number <= 1:
+        raise TrackerError(f"{label} must be between 0 and 1 (a share of the questions), not {number:g}")
+    return number
+
+
+def _positive(value: Any, label: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise TrackerError(f"{label} must be a number of days") from None
+    if not number > 0:
+        raise TrackerError(f"{label} must be more than 0, not {number:g}")
+    return number
+
+
+def _optional_text(value: Any, label: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise TrackerError(f"{label} must be a path")
+    return value
 
 
 def build_tracker(spec: TrackerSpec, *, instance_dir: Optional[str] = None, env: Optional[Mapping[str, str]] = None,
