@@ -96,7 +96,7 @@ name is `archi`.
   instance's MCP endpoint and writes `report.md` and `report.json`. A question
   passes when the answer cites a record of the right source or type and holds
   the required strings; there is no LLM judge. Smoke sets ship for
-  `cern-team`, `cms-physics` and `cluster-manager`. (#851, #852, #857)
+  `cern-team`, `cms-physics` and `cluster-manager`. (#851, #857)
 - `archi eval --context` scores retrieval on its own, with no model: recall@k
   and MRR for the default search against a lexical baseline. The question set
   is named at run time, so private question sets stay out of the repository.
@@ -124,7 +124,7 @@ name is `archi`.
 **Maintenance**
 
 - Regenerated `uv.lock` (#784). Recorded that archi-okg is archived (#783).
-  PACT evidence and approvals: #788, #791, #794, #795, #797, #836, #856.
+  PACT evidence and approvals: #788, #791, #794, #795, #797, #836, #852, #856.
 
 ### Known limits
 
@@ -136,11 +136,6 @@ Open requirements (each is a PACT requirement still unproven at this tag):
   tested on fixtures, but the run on the comp-ops instance with the operator
   question set has not happened. (`r3-context-quality`, requirement
   `context-eval`.)
-- **Smoke sets on a local model.** The smoke sets pass their threshold (7 of
-  10) on GPT-6 Luna, which was accepted for this release (board d366). No local
-  model has reached it. The nightly run reports a small CPU model's score and
-  does not gate. A CI gate on bundle changes waits for the #619 eval framework.
-  `cms-comp-ops` has no smoke set in 3.0. (`r3-bundle-evals`.)
 - **Instances rebuilt from the bundles.** The lab `cms-physics` instance,
   the live comp-ops instance (#726) and SubMIT (#740) have not been rebuilt
   from their bundles yet. (`r3-bundle-cms-physics`, `r3-bundle-cms-comp-ops`,
@@ -154,6 +149,17 @@ Open requirements (each is a PACT requirement still unproven at this tag):
   `r3-release`.)
 
 Also not in 3.0.0:
+
+- **Smoke sets on a local model.** The smoke-set requirement is met on GPT-6
+  Luna, which the maintainers accepted for this release (board d366): the sets
+  pass their threshold (7 of 10) there. No local model has reached it. The
+  nightly run reports a small CPU model's score and does not gate. A CI gate on
+  bundle changes waits for the #619 eval framework. `cms-comp-ops` has no
+  smoke set in 3.0. (`r3-bundle-evals`.)
+- **Adding an automation pack to an existing instance.** `archi add` does not
+  turn on okg's runtime, so an automation added that way does not run. Select
+  automations at `archi init` (`--with instance-health`). No bundle includes
+  `instance-health` by default.
 
 - The v2 Piazza bot, the grader, the A/B tools, the playbook store, document
   upload in the chat UI, and Helm deployment. See

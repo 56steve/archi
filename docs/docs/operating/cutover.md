@@ -98,7 +98,8 @@ go from Jason.
 
 `JASON`. Condition 3 holds only with parity, or with the losses accepted in
 writing. 3.0.0 does not have parity. Write the acceptance and keep it with the
-inventory. It lists, from [the 3.0 limits](../migration-from-v2.md#what-has-no-equivalent-yet):
+inventory. It lists the known limits in the changelog, which are the canonical
+list, and the v2 features in [what has no equivalent yet](../migration-from-v2.md#what-has-no-equivalent-yet). In short:
 
 - `ticket-triage` is not shipped and has no four-week SubMIT shadow report,
   so the v2 queue bots stay on a tagged `v2.x`;
@@ -106,7 +107,8 @@ inventory. It lists, from [the 3.0 limits](../migration-from-v2.md#what-has-no-e
   bundles;
 - the smoke sets pass on GPT-6 Luna, not on a local model, and the
   context-eval acceptance run on a live instance has not happened;
-- no upload, SSO-page or Helm equivalents.
+- no upload, SSO-page, status-board or Helm equivalents, public Indico events
+  only, and one repository per `git-code` pack.
 
 **Check:** the written acceptance is linked from the tracking issue and from
 the `r3-release` PACT evidence.

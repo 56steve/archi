@@ -21,7 +21,7 @@ stays on this site under [v2 (legacy)](v2/index.md).
 | Documents are chunked into a vector store the app owns. | OKG owns retrieval. Every answer cites records from one published generation. |
 | The chat app, uploader and data viewer are Archi's own web apps. | Open WebUI is one built-in client. Any MCP client can read the graph. See [Connecting an agent](connecting-an-agent.md). |
 | You pick a model provider (OpenAI, Anthropic, Gemini, local) in the Archi config. | Archi stores no model. The agent is configured with its own. |
-| Sources are listed under `data_manager.sources` (links, git, Indico, JIRA, Redmine). | Sources come in packs: `docsite`, `indico`, `jira`, `git-code` and more. See the [library](library/index.md). |
+| Sources are listed under `data_manager.sources` (links, git, Indico, JIRA, Redmine). | Sources come in packs: `docsite`, `indico`, `jira`, `tickets` (Redmine and JIRA), `git-code` and more. See the [library](library/index.md). |
 | Queue bots (Redmine, JIRA, Mattermost) draft replies. | Automations under autonomy levels, with a shadow period before going live. See [the operations layer](operations-layer.md). |
 | Quality is checked with `archi evaluate` (Ragas benchmark). | `archi eval` (smoke sets with deterministic checks) and `archi eval --context` (retrieval scored against gold evidence). See [archi eval](operating/evals.md). |
 | Redeploy with `archi restart`. | `archi up`, `archi down`, `archi add`, `archi diff`. See [Operating](operating/index.md). |
@@ -155,7 +155,7 @@ line: put the value in `.env` in the instance, under the name the pack lists.
 | `git` (an MkDocs repository, `git-` prefix) | `git-code` | `archi add git-code --answer git_code_repo_url=<url> --answer git_code_repo_name=<short name>`. It reads every tracked file and the history, not only the Markdown. One repository per instance. |
 | `indico` | `indico` | `archi add indico --answer indico_event_ids='["<id>"]'` or `--answer indico_category_ids='["<id>"]'`. Public events only. With no answer it reads the CERN workshop event 1716863. |
 | `jira` | `jira` | Archi reads a cache that a downloader writes, and `archi add jira` stops if the cache is missing. So download first: `python -m archi.downloaders.jira --output-dir <data root>/jira --project <KEY>` (repeat `--project`; set `CERN_JIRA_TOKEN` in the environment if the projects are not public), then `archi add jira`. `<data root>` is the `data_root:` value in `archi.yaml`. The downloader needs the `jira` Python package (`pip install jira`). See `python -m archi.downloaders.jira --help`. Refreshing the cache is yours to schedule: the pack expects data no older than 24 hours, and `archi doctor` reports it when it is older. |
-| `redmine` | none | No equivalent. |
+| `redmine` | `tickets` | Like `jira`, Archi reads a cache that a downloader writes. Download first: `python -m archi.downloaders.tickets --output-dir <data root>/tickets --redmine-url <url>` (set `REDMINE_API_KEY` in the environment), then `archi add tickets --answer tickets_base_url=<url>`. The same pack reads JIRA Server or Data Center with `--jira-url`. See `python -m archi.downloaders.tickets --help`. |
 | Uploaded files, files copied into the data folder | none | No equivalent. |
 | Mattermost, Piazza, grader, Grafana service board | none | Not ported. See above. |
 

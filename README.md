@@ -16,8 +16,7 @@ knowledge, so the next proposal can see what happened last time.
 
 Today Archi ships the context layer, the automation runtime and one
 automation, `instance-health`, which watches the Archi instance itself. The
-first automation for operations work, `ticket-triage`, is in progress. Archi
-3.0 is in alpha (`3.0.0a1`).
+first automation for operations work, `ticket-triage`, is in progress.
 
 ## How it works
 
