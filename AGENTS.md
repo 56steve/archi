@@ -9,9 +9,9 @@ automation runtime as the pip package `archi-kb` (import name `archi`),
 built from [`python/`](python/). It contains no credentials, no site
 config and no running services. It is installed onto an OKG deployment
 through a bundle; instances live in their own repositories and carry
-the configuration and secrets. Do not describe it as "the HEP
-distribution of OKG": that was the v3 program's first framing (ADR 0001)
-and undersells it.
+the configuration and secrets. Do not describe it as
+"the HEP distribution of OKG": that was the v3 program's first framing
+(ADR 0001) and undersells it.
 
 This is `archi-physics/archi`, branch `archi_v3`. The v3 line was
 developed in `archi-physics/archi-okg` until 2026-10-25, when its `main`

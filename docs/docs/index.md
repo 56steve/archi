@@ -2,10 +2,14 @@
 
 Archi automates operations for scientific computing: experiment computing
 operations, analysis user support, data quality and cluster management.
-Agents watch the system, triage what comes in and propose actions. Once a
-policy or a person approves a proposal, a separate component carries it out.
-Every step is grounded in your facility's own knowledge, and its result is
-written back into that knowledge.
+Agents watch the system and propose actions. Once a person approves a
+proposal, a separate component carries it out; in 3.0 no automation acts on
+its own. Every step is grounded in your facility's own knowledge, and its
+result is written back into that knowledge.
+
+Today Archi ships the context layer, the automation runtime and one
+automation, `instance-health`, which watches the Archi instance itself. The
+first automation for operations work, `ticket-triage`, is in progress.
 
 Archi is built on OKG, a knowledge graph with a publish step, a set of read
 tools and a review ledger. You do not need to know OKG to start. This site
@@ -38,7 +42,7 @@ handle what needs reading and judgment.
 
 You install a [bundle](bundles-and-packs.md): a named selection of packs. A
 pack is the smallest installable piece, such as one source family or one
-automation. 3.0 ships four bundles:
+automation. Four bundles ship today:
 
 | Bundle | For |
 |---|---|

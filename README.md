@@ -9,36 +9,45 @@
 **Archi automates operations for scientific computing.** It serves the teams
 that keep research infrastructure running: experiment computing operations,
 analysis user support, data quality and cluster management. Agents watch the
-system, triage what comes in and propose actions. Once a policy or a person
-approves a proposal, a separate component carries it out. Every step is
-grounded in the facility's own knowledge, and its outcome is written back into
-that knowledge, so the next triage can see what happened last time.
+system and propose actions. Once a person approves a proposal, a separate
+component carries it out; in 3.0 no automation acts on its own. Every step
+cites the facility's own knowledge, and its outcome is written back into that
+knowledge, so the next proposal can see what happened last time.
+
+Today Archi ships the context layer, the automation runtime and one
+automation, `instance-health`, which watches the Archi instance itself. The
+first automation for operations work, `ticket-triage`, is in progress. Archi
+3.0 is in alpha (`3.0.0a1`).
 
 ## How it works
 
 Automation is only as good as what the agent knows, so Archi has two layers.
 
 1. **The context layer** holds what a facility knows: documentation, tickets,
-   catalogs, monitoring, code and the record of past operations. It is kept
-   *solid*: current, complete for the questions the automations depend on,
-   linked across sources, cited on every read, and measured by freshness
-   checks and evals.
+   catalogs, monitoring, code and, for operations bundles, the record of past
+   operations. Archi keeps it *solid* and checks that it is: current, linked
+   across sources, cited on every read, and measured by freshness checks and
+   evals. An automation can refuse to run when the knowledge it depends on is
+   stale.
 2. **The operations layer** runs automations over that context. Each follows
-   the same loop: signal, context, proposal, decision, action, outcome.
-   Actions run under explicit autonomy levels, and anything that changes a
-   system goes through review first.
+   the same loop: signal, context, proposal, decision, action, outcome. Each
+   automation runs at a set level, from "only record what it would do" up to
+   "act after a person approves", and anything that changes a system goes
+   through review first.
 
 The working rule is **algorithmic first, agents for judgment**: fixed checks
 decide everything they can, and agents handle what needs reading and judgment.
 
-Any agent that speaks MCP can use an Archi instance: the built-in chat,
-Claude Code, Codex or your own harness. Every component can be swapped, and
-the defaults work out of the box.
+Any agent that speaks the Model Context Protocol (MCP), the standard way AI
+agents call tools, can use an Archi instance: the built-in chat, Claude Code,
+Codex or your own agent. You can bring your own agent, language model,
+connectors and tools; the defaults work out of the box.
 
 ## What you install
 
 You install a **bundle**: a named selection of packs. A pack is one source
-family (TWiki, Indico, Redmine, Slurm, the CMS catalogs) or one automation.
+family (TWiki, Indico, Redmine, Slurm, the CMS catalogs), one set of tools, or
+one automation.
 
 | Bundle | For |
 |---|---|
@@ -47,23 +56,28 @@ family (TWiki, Indico, Redmine, Slurm, the CMS catalogs) or one automation.
 | `cms-comp-ops` | CMS computing operations: sites, storage, datasets, workflows, site status and past incidents. |
 | `cluster-manager` | Any cluster operator, at any site: documentation, tickets, operational memory, and optionally Slurm, HTCondor, ServiceNow and node health. |
 
-Your own sources and automations can ship as packs from your own package.
+You can also install a bundle with no automations, and get a knowledge base
+your team can query, with citations, from any MCP agent. Your own sources and
+automations can ship as packs from your own package.
 
 ## Start here
+
+Archi is not on PyPI yet; the [quickstart](docs/docs/quickstart.md) gives the
+install command. Then:
 
 ```bash
 archi init myteam && cd myteam && archi up && archi doctor
 ```
 
-The [quickstart](docs/docs/quickstart.md) takes an empty machine to a cited
-answer. The full documentation is published at
+The quickstart takes an empty machine to a cited answer. The full documentation is published at
 <https://archi-physics.github.io/archi/> and built from [`docs/docs/`](docs/docs/).
 
 ## How it is built
 
-Archi runs on [OKG](https://github.com/mitdbg/akmon) (AKMON), a knowledge
-graph with a publish step, a set of read tools and a review ledger. Archi
-supplies everything above it: the connectors and schemas for each source,
+Archi runs on [OKG](https://github.com/mitdbg/akmon), a knowledge graph that
+publishes checked versions of its data, serves them to agents through a set of
+read tools, and records every review decision. (AKMON is the name of the OKG
+project and repository.) Archi supplies everything above it: the connectors and schemas for each source,
 the packs and bundles, the automations and their runtime, and the `archi`
 command (`init`, `up`, `doctor`, `connect`, `eval`, `ops`). It is distributed
 as the Python package `archi-kb` (import name `archi`), built from
