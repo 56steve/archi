@@ -64,10 +64,11 @@ evidence:
 - kind: executed_test
   requirement: req.r3-bundle-cern-team.bundle
   status: pass
-  command: GitHub Actions nightly-e2e run 40413427254 (push, archi_v3 at 36b2825e), step "archi init gp
-    --bundle cern-team"; python -m pytest tests/test_bundle_cern_team.py tests/test_bundle_cms_comp_ops.py
-    -q and tests/packs/test_pack_isolation.py -q -k "cms_physics or cern_team or every_pack_with_sources"
-    (from python/, submit76) at this head
+  command: 'GitHub Actions nightly-e2e run 40413427254 (push, archi_v3 at 36b2825e), step "user
+    command 2: archi init", which runs `archi init gp --bundle cern-team`; python -m pytest
+    tests/test_bundle_cern_team.py tests/test_bundle_cms_comp_ops.py -q and
+    tests/packs/test_pack_isolation.py -q -k "cms_physics or cern_team or every_pack_with_sources"
+    (from python/, submit76) at this head'
   head: 79c60bbbde118748c795b7cc636b339fbdcdb81d
   at: '2026-10-27T03:49:42+00:00'
   note: 'acc.r3-bundle-cern-team.bare: the nightly ran archi init gp --bundle cern-team with no answers
@@ -91,6 +92,7 @@ evidence:
   at: '2026-10-27T03:49:42+00:00'
   note: 'acc.r3-bundle-cern-team.smoke: the cern-team smoke set (10 questions, threshold 7/10) scored
     7/10 at ed895186 and 8/10 at 5105bfdd with GPT-6 Luna, which Jason accepted as the bundle''s
-    smoke proof on board d366. This row cites that run; it is not a new run. Not proven: a pass with a
+    smoke proof on board d366. This row cites that run; it is not a new run. bundles/ and python/archi/
+    are unchanged from 5105bfdd to 79c60bbb; head/at date this citation, not the run. Not proven: a pass with a
     local model (best 4/10), and the nightly''s CPU-model eval is report-only (0/10).'
 decisions: []

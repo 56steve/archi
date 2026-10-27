@@ -49,16 +49,15 @@ requirements:
     plus a lab smoke run, in place of a bundle CI job (board d380 Q7; the CI gate is deferred
     to #619 by d332). [evidence: executed_test]'
 - id: req.r3-bundle-cms-physics.instance
-  statement: 'The cms-physics instance on submit75 (/work/submit/mohoney/archi/cms-physics),
-    the validation instance of cms-physics, is built from the cms-physics bundle as shipped,
-    docsite and indico included, with no local copy of an archi connector and no cms_kb source
-    package. It replaces the earlier target, a rebuild of the cms-kb deployment (board d369 D,
-    d380 Q5).
+  statement: 'A cms-physics lab instance, the validation instance of cms-physics, is built
+    from the cms-physics bundle as shipped (docsite and indico included, board d369 = D), with
+    no local copy of an archi connector and no cms_kb source package. It replaces the earlier
+    target, a rebuild of the cms-kb deployment (board d380 Q5).
 
 
     Acceptance:
 
-    - acc.r3-bundle-cms-physics.rebuild: the cms-physics instance is built from the bundle as
+    - acc.r3-bundle-cms-physics.rebuild: the cms-physics lab instance is built from the bundle as
     shipped and publishes; its page and note floors pass. [evidence: executed_test]'
 tasks:
 - id: task.r3-bundle-cms-physics.analyses-pack
@@ -88,7 +87,7 @@ tasks:
     executed_test]'
 - id: task.r3-bundle-cms-physics.instance
   requirement: req.r3-bundle-cms-physics.instance
-  verification: 'Build the cms-physics instance on submit75 from the bundle as shipped.
+  verification: 'Build a cms-physics lab instance from the bundle as shipped.
 
 
     Test plan:
@@ -139,19 +138,20 @@ evidence:
     inputs differ from a real instance: the TWiki root is the physics fixture dump, and the note floor
     is lowered from 2500 to 1 for the fixture mirror, so the 2500 floor itself is not exercised here.
     Lab smoke run: r3-bundle-evals, acc.r3-bundle-evals.sets row (head 5105bfdd), cms-physics 10/10
-    twice with GPT-6 Luna, accepted by Jason on board d366. Not proven: a bundle CI job, which does not
+    twice with GPT-6 Luna, accepted by Jason on board d366; bundles/ and python/archi/ are unchanged
+    from 5105bfdd to 79c60bbb, and head/at date this citation, not that run. Not proven: a bundle CI job, which does not
     exist (d332 deferred the gate to #619); d380 Q7 replaced that wording, and whether this pair is
     enough was board d379. Not proven either: a real-data install (that is req.instance).'
 decisions:
-- digest: sha256:aeb27fbe2530fdf747f9e5900cf0c676c7689a5538ff382f68d95fa948faa77e
+- digest: sha256:8fb0282d3c208b2080c4862915039377cafd79252e78e59dc4419f101e116920
   reviewer: Jason Mohoney
   at: '2026-10-27'
   note: 'req.r3-bundle-cms-physics.instance retargeted. Board d369, Jason: D. Board d380 Q5,
-    Jason: "Yes". The validation instance is now the cms-physics instance on submit75
-    (/work/submit/mohoney/archi/cms-physics), built from the cms-physics bundle as shipped,
-    docsite and indico included, in place of a rebuild of the cms-kb deployment. No evidence is
+    Jason: "Yes". The validation instance is now a cms-physics lab instance, built from the
+    cms-physics bundle as shipped (docsite and indico included, board d369 = D), in place of a
+    rebuild of the cms-kb deployment. No evidence is
     recorded for it yet: that instance''s first sync is still running.'
-- digest: sha256:aeb27fbe2530fdf747f9e5900cf0c676c7689a5538ff382f68d95fa948faa77e
+- digest: sha256:8fb0282d3c208b2080c4862915039377cafd79252e78e59dc4419f101e116920
   reviewer: Jason Mohoney
   at: '2026-10-27'
   note: 'acc.r3-bundle-cms-physics.install reworded. Board d380 Q7, Jason: "Yes". "Bundle CI
