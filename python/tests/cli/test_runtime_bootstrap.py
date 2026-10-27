@@ -151,3 +151,68 @@ def test_ensure_ops_tables_runs_the_ddl_against_the_instance_database(monkeypatc
     secrets = read_env(instance.env_path)
     init_mod.ensure_ops_tables(instance, secrets)
     assert seen == {"dsn": graph_dsn(instance, secrets), "name": instance.name}
+
+
+def _manifest(path, runtime, postgres=None):
+    import yaml
+
+    data = {"name": "dep", "postgres": postgres or {"dsn": "${OKG_DSN}"}}
+    if runtime is not None:
+        data["runtime"] = {"enabled": runtime}
+    (path / "deployment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+def _read(path):
+    import yaml
+
+    return yaml.safe_load((path / "deployment.yaml").read_text())
+
+
+def test_the_instance_database_is_declared_when_the_runtime_is_enabled(tmp_path):
+    _manifest(tmp_path, runtime=True)
+    assert init_mod.declare_runtime_database(tmp_path, "my_team") is True
+    assert _read(tmp_path)["postgres"] == {"dsn": "${OKG_DSN}", "database": "my_team"}
+    # Idempotent: a second call changes nothing.
+    assert init_mod.declare_runtime_database(tmp_path, "my_team") is False
+
+
+def test_no_runtime_and_no_install_change_nothing(tmp_path):
+    _manifest(tmp_path, runtime=None)
+    assert init_mod.declare_runtime_database(tmp_path, "my_team") is False
+    assert "database" not in _read(tmp_path)["postgres"]
+    _manifest(tmp_path, runtime=False)
+    assert init_mod.declare_runtime_database(tmp_path, "my_team") is False
+    assert init_mod.declare_runtime_database(tmp_path / "missing", "my_team") is False
+
+
+def test_a_different_declared_database_is_refused_not_overwritten(tmp_path):
+    _manifest(tmp_path, runtime=True, postgres={"dsn": "${OKG_DSN}", "database": "other"})
+    with pytest.raises(init_mod.InitError, match="other"):
+        init_mod.declare_runtime_database(tmp_path, "my_team")
+    assert _read(tmp_path)["postgres"]["database"] == "other"
+
+
+def test_install_and_publish_declares_the_database_right_after_the_install(monkeypatch, instance):
+    from archi.stack.instance import DEPLOYMENTS_DIR, read_env
+
+    monkeypatch.setattr(init_mod, "commit_all", lambda d, m: False)
+    monkeypatch.setattr(init_mod.stack_compose, "write_stack_files", lambda i: None)
+    monkeypatch.setattr(init_mod, "role_password", lambda path, role: "pw")
+    monkeypatch.setattr(init_mod, "write_env", lambda path, values: None)
+    monkeypatch.setattr(init_mod, "has_automations", lambda d: True)
+    monkeypatch.setattr(init_mod, "ensure_ops_tables", lambda inst, secrets: None)
+    deployment = instance.dir / DEPLOYMENTS_DIR / instance.name
+    okg = Okg(bootstrapped=True)
+    real_run = okg.run
+
+    def run(*args, **kw):
+        if args[0] == "install":  # what okg install leaves: a runtime-enabled manifest with no database
+            deployment.mkdir(parents=True, exist_ok=True)
+            _manifest(deployment, runtime=True)
+        if args[0] == "provision":
+            assert _read(deployment)["postgres"]["database"] == instance.database
+        return real_run(*args, **kw)
+
+    okg.run = run
+    init_mod.install_and_publish(instance, read_env(instance.env_path), okg, "prof", {}, echo=lambda _: None)
+    assert _read(deployment)["postgres"]["database"] == instance.database
