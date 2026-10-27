@@ -45,5 +45,26 @@ tasks:
     mkdocs build --strict passes; python/tests/test_docs_generated.py and
     the packaging tests pass; the named commands appear in
     docs/docs/reference/cli.md.
-evidence: []
+evidence:
+- kind: executed_test
+  requirement: req.docs-positioning.front-door
+  status: pass
+  command: git grep -n 'HEP distribution' -- ':!pact' ':!docs/adr' (no match, exit 1)
+  head: 1c61d45987b603ccebf83b7caef089de03b0dfc9
+  at: '2026-10-27T12:11:38+00:00'
+  note: 'The README title and introduction, python/pyproject.toml description, python/archi/__init__.py
+    docstring and the AGENTS.md introduction follow ADR 0002 section 1. ADR 0001 keeps its wording as
+    a historical record; AGENTS.md says not to reuse the old phrase.'
+- kind: executed_test
+  requirement: req.docs-positioning.true
+  status: pass
+  command: mkdocs build --config-file docs/mkdocs.yml --strict (mkdocs 1.6.1); python -m pytest
+    python/tests/test_docs_generated.py python/tests/test_packaging.py python/tests/test_docs_quickstart.py
+    on submit75
+  head: 1c61d45987b603ccebf83b7caef089de03b0dfc9
+  at: '2026-10-27T12:11:38+00:00'
+  note: 'The strict build passed; its only messages are INFO notes about anchors in the v2 legacy pages,
+    which predate this change. 20 tests passed. The six archi commands the README names (init, up,
+    doctor, connect, eval, ops) are in docs/docs/reference/cli.md, the archi.packs entry point is in
+    python/pyproject.toml, and the four bundles in the tables are the four under bundles/.'
 decisions: []
