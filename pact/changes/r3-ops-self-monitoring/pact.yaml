@@ -8,6 +8,12 @@ why: 'The workshop''s operations paradigm: algorithmic first, and agents that mo
   work. ADR 0002 §7.5.'
 affected_code:
 - bundles/packs/instance-health/
+- python/archi/health/
+- python/tests/ops/test_health_signals.py
+- python/tests/ops/test_health_runtime.py
+- python/tests/ops/health_eval_reports.py
+- docs/docs/reference/pack-format.md
+- docs/docs/operating/evals.md
 requirements:
 - id: req.r3-ops-self-monitoring.health
   statement: 'An instance-health automation pack (L0/L1) runs on a schedule, reads archi doctor

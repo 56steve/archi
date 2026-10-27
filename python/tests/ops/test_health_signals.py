@@ -7,6 +7,7 @@ import pytest
 from archi.health import signals
 from archi.health.config import HealthConfig
 from archi.health.problems import Problem, ProblemError, make_key, slug
+from health_eval_reports import scored, write_report
 
 NOW = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
 
@@ -121,31 +122,147 @@ def test_too_few_decisions_or_old_ones_do_not_make_a_rate():
 
 
 # --- eval -------------------------------------------------------------------------
+# Fixture report.json files only (health_eval_reports.write_report): no eval runs here.
 
 
-def report_file(tmp_path, name, finished, score):
-    d = tmp_path / "eval" / "reports"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / name).write_text(json.dumps({"finished_at": finished, "score": score}))
+def runs(directory, *passed_counts, bundle="cern-team", model="qwen3:8b", threshold=7):
+    """One run per count (None: execution_failed), a day apart, kept as `archi eval --out <dir>/<bundle>/<date>`."""
+    for day, passed in enumerate(passed_counts, start=1):
+        statuses = ["execution_failed"] * 10 if passed is None else scored(passed)
+        write_report(directory, bundle=bundle, model=model, threshold=threshold, started_at=f"2026-10-{day:02d}T03:00:00Z",
+                     statuses=statuses, error="MCP endpoint not usable: refused" if passed is None else None,
+                     sub=f"2026-10-{day:02d}")
 
 
 def test_with_no_eval_report_the_signal_is_skipped_and_says_so(tmp_path):
-    problems, why = signals.eval_problems(tmp_path)
-    assert problems == [] and "no eval report exists" in why
+    problems, notes = signals.eval_problems(tmp_path / "eval")
+    assert problems == [] and [n["signal"] for n in notes] == ["eval"] and "no eval report exists" in notes[0]["reason"]
 
 
-def test_a_score_well_below_the_recent_mean_is_a_regression(tmp_path):
-    for i, score in enumerate([0.80, 0.82, 0.81, 0.70]):
-        report_file(tmp_path, f"r{i}.json", f"2026-10-0{i + 1}T00:00:00Z", score)
-    (problem,), why = signals.eval_problems(tmp_path)
-    assert why is None and problem.key == "eval/score" and "0.700" in problem.detail
+def test_a_latest_run_below_the_bundle_threshold_is_an_error_even_with_no_history(tmp_path):
+    write_report(tmp_path, started_at="2026-10-26T03:00:00Z", statuses=scored(5))  # the archi eval default place
+    (problem,), notes = signals.eval_problems(tmp_path)
+    assert problem.key == "eval/cern-team" and problem.severity == "error"
+    assert problem.title == "Eval of cern-team is below its threshold"
+    assert "passed 5 of 10" in problem.detail and "threshold of 7" in problem.detail
+    assert "cern-team/report.json" in problem.detail
+    assert [n["signal"] for n in notes] == ["eval-trend"] and "no earlier run" in notes[0]["reason"]
 
 
-def test_a_steady_score_is_not_a_problem_and_one_report_is_no_trend(tmp_path):
-    report_file(tmp_path, "a.json", "2026-10-01T00:00:00Z", 0.8)
-    assert signals.eval_problems(tmp_path)[1] is not None
-    report_file(tmp_path, "b.json", "2026-10-02T00:00:00Z", 0.79)
-    assert signals.eval_problems(tmp_path) == ([], None)
+def test_a_passing_run_with_no_history_is_healthy_and_says_the_trend_was_not_judged(tmp_path):
+    write_report(tmp_path, started_at="2026-10-26T03:00:00Z", statuses=scored(8))
+    problems, notes = signals.eval_problems(tmp_path)
+    assert problems == [] and [n["signal"] for n in notes] == ["eval-trend"]
+
+
+def test_a_drop_beyond_the_margin_is_a_warning_while_the_threshold_still_holds(tmp_path):
+    runs(tmp_path, 9, 9, 8, 7)  # mean of the three before: 0.87; latest 0.70, still at the threshold of 7
+    (problem,), notes = signals.eval_problems(tmp_path)
+    assert notes == [] and problem.key == "eval/cern-team" and problem.severity == "warning"
+    assert problem.title == "Eval score of cern-team dropped"
+    assert "0.17 below the mean score 0.87 of the 3 earlier run(s)" in problem.detail
+
+
+def test_below_threshold_and_dropped_is_one_error_that_says_both(tmp_path):
+    runs(tmp_path, 9, 6)
+    (problem,), _ = signals.eval_problems(tmp_path)
+    assert problem.severity == "error" and "threshold of 7" in problem.detail and "0.30 below" in problem.detail
+
+
+def test_a_one_question_dip_is_within_the_default_margin_and_the_margin_is_a_setting(tmp_path):
+    runs(tmp_path, 8, 7)  # 0.8 -> 0.7: exactly the default 0.1, which is not more than it
+    assert signals.eval_problems(tmp_path) == ([], [])
+    (problem,), _ = signals.eval_problems(tmp_path, min_drop=0.05)
+    assert problem.severity == "warning" and "allowed drop is 0.05" in problem.detail
+
+
+def test_only_the_last_three_earlier_runs_make_the_baseline(tmp_path):
+    runs(tmp_path, 10, 10, 7, 7, 7, 7)  # the two 10s are older than the window
+    assert signals.eval_problems(tmp_path) == ([], [])
+
+
+def test_an_execution_failed_run_is_a_failed_signal_not_a_low_score(tmp_path):
+    runs(tmp_path, 9, None)
+    (problem,), _ = signals.eval_problems(tmp_path)
+    assert problem.key == "eval/cern-team" and problem.severity == "error"
+    assert problem.title == "Eval of cern-team could not run"
+    assert "execution_failed" in problem.detail and "MCP endpoint not usable: refused" in problem.detail
+    assert "failed health signal, not a low score" in problem.detail and "passed" not in problem.detail
+
+
+def test_an_execution_failed_run_is_left_out_of_the_baseline(tmp_path):
+    runs(tmp_path, 9, None, 9)  # the failed run in between is not a 0 that would make the 9 look like a rise
+    assert signals.eval_problems(tmp_path) == ([], [])
+    runs(tmp_path / "b", 9, None, 7)  # nor does it pull the baseline down and hide a real drop
+    (problem,), _ = signals.eval_problems(tmp_path / "b")
+    assert "0.20 below the mean score 0.90 of the 1 earlier run(s)" in problem.detail
+
+
+def test_runs_of_another_model_are_not_compared(tmp_path):
+    runs(tmp_path, 10, model="big-model")
+    write_report(tmp_path, model="qwen3:8b", started_at="2026-10-26T03:00:00Z", statuses=scored(7))
+    problems, notes = signals.eval_problems(tmp_path)
+    assert problems == [] and [n["signal"] for n in notes] == ["eval-trend"] and "qwen3:8b" in notes[0]["reason"]
+
+
+def test_each_bundle_is_its_own_problem(tmp_path):
+    runs(tmp_path, 9, 9, bundle="cern-team")
+    runs(tmp_path, 9, 4, bundle="cms-physics")
+    (problem,), notes = signals.eval_problems(tmp_path)
+    assert problem.key == "eval/cms-physics" and notes == []
+
+
+def test_the_same_report_twice_is_one_run_and_the_text_is_stable(tmp_path):
+    runs(tmp_path, 9, 6)
+    first = signals.eval_problems(tmp_path)
+    write_report(tmp_path, started_at="2026-10-02T03:00:00Z", statuses=scored(6), sub="copy")
+    assert signals.eval_problems(tmp_path) == first  # no new run, no new text, so the issue is not rewritten
+
+
+def test_a_report_json_of_another_kind_is_left_out(tmp_path):
+    (tmp_path / "context").mkdir()
+    (tmp_path / "context" / "report.json").write_text(json.dumps({"schema": "archi-context-report/1", "score": 0.1}))
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "report.json").write_text(json.dumps({"score": 0.1}))
+    assert [n["signal"] for n in signals.eval_problems(tmp_path)[1]] == ["eval"]
+
+
+@pytest.mark.parametrize("mutate, message", [
+    (lambda d: d.update(schema="archi-eval-report/2"), "not one this reader knows"),
+    (lambda d: d.pop("pass_threshold"), "not a usable eval report"),
+    (lambda d: d.update(started_at=""), "started_at must be a non-empty string"),
+    (lambda d: d.update(status="maybe"), "status 'maybe'"),
+])
+def test_an_eval_report_that_cannot_be_read_raises(tmp_path, mutate, message):
+    path = write_report(tmp_path, started_at="2026-10-26T03:00:00Z", statuses=scored(8))
+    data = json.loads(path.read_text())
+    mutate(data)
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match=message):
+        signals.eval_problems(tmp_path)
+
+
+def test_the_reports_are_found_under_the_data_root_or_the_configured_directory(tmp_path):
+    from archi.stack.instance import Instance, Ports
+
+    inst = Instance(dir=tmp_path / "inst", name="demo", bundles=["cern-team"], data_root=tmp_path / "data",
+                    runtime="docker", ports=Ports(graph_db=15432, mcp=18080, webui=13000))
+    inst.dir.mkdir()
+    inst.save()
+    assert signals.eval_reports_dir(inst.dir) == tmp_path / "data" / "eval"
+    assert signals.eval_reports_dir(inst.dir, "evals") == inst.dir / "evals"
+    assert signals.eval_reports_dir(inst.dir, str(tmp_path / "x")) == tmp_path / "x"
+
+
+def test_the_eval_settings_are_read_and_checked():
+    from archi.health.tracker import TrackerError
+
+    assert HealthConfig.from_proposer({}).eval_min_drop == 0.1 and HealthConfig().eval_reports_dir is None
+    cfg = HealthConfig.from_proposer({"eval": {"min_drop": 0.2, "reports_dir": "/srv/evals"}})
+    assert (cfg.eval_min_drop, cfg.eval_reports_dir) == (0.2, "/srv/evals")
+    for bad in ({"min_drop": 2}, {"min_drop": "lots"}, {"reports_dir": ""}, {"history": 3}):
+        with pytest.raises(TrackerError):
+            HealthConfig.from_proposer({"eval": bad})
 
 
 # --- collect --------------------------------------------------------------------------
@@ -158,7 +275,7 @@ def collect(tmp_path, *, doctor_report=None, frontier=None, rows=(), **kw):
         return go
 
     return signals.collect(
-        HealthConfig(), instance_dir=tmp_path, now=NOW,
+        HealthConfig(eval_reports_dir=kw.get("eval_dir", "eval")), instance_dir=tmp_path, now=NOW,
         read_doctor=kw.get("read_doctor") or (lambda: doctor_report or doctor()),
         read_frontier=kw.get("read_frontier") or (lambda: frontier or {"rows": []}),
         read_ops_records=reader(list(rows)),
@@ -183,7 +300,28 @@ def test_a_signal_that_cannot_be_read_becomes_a_monitor_problem_and_leaves_its_s
 
 
 def test_a_malformed_eval_report_is_a_monitor_problem_not_a_skip(tmp_path):
-    (tmp_path / "eval" / "reports").mkdir(parents=True)
-    (tmp_path / "eval" / "reports" / "bad.json").write_text("{not json")
+    (tmp_path / "eval" / "cern-team").mkdir(parents=True)
+    (tmp_path / "eval" / "cern-team" / "report.json").write_text("{not json")
     obs = collect(tmp_path)
     assert [p.key for p in obs.problems] == ["monitor/eval"] and obs.skipped == []
+    assert "eval" not in obs.scope
+
+
+def test_with_no_archi_yaml_the_default_reports_place_is_unknown_and_that_is_a_monitor_problem(tmp_path):
+    obs = collect(tmp_path, eval_dir=None)
+    assert [p.key for p in obs.problems] == ["monitor/eval"] and "archi.yaml" in obs.problems[0].detail
+
+
+def test_an_eval_finding_is_judged_and_a_missing_trend_does_not_take_eval_out_of_scope(tmp_path):
+    write_report(tmp_path / "eval", started_at="2026-10-26T03:00:00Z", statuses=scored(5))
+    write_report(tmp_path / "eval", bundle="cms-physics", started_at="2026-10-26T04:00:00Z", statuses=scored(9))
+    obs = collect(tmp_path)
+    assert [p.key for p in obs.problems] == ["eval/cern-team"]
+    assert obs.scope == ["doctor", "ingest", "automation-errors", "eval", "monitor"]
+    assert [s["signal"] for s in obs.skipped] == ["eval-trend", "eval-trend"]  # each bundle has one run so far
+
+
+def test_a_healthy_eval_run_lets_its_old_issue_close(tmp_path):
+    runs(tmp_path / "eval", 5, 9)
+    obs = collect(tmp_path)
+    assert obs.problems == [] and "eval" in obs.scope and obs.skipped == []

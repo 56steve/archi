@@ -97,6 +97,13 @@ tool schemas, the threshold, and per question the status, the failure reasons,
 the cited node ids with their subtype and source, each tool call, tokens in
 and out, wall time and the answer text. `report.md` is the same for reading.
 
+The [`instance-health`](../library/packs/instance-health.md) automation reads
+every `report.json` under `<data root>/eval/` and raises an issue per bundle
+when the latest run is `execution_failed`, below the threshold, or more than
+`min_drop` below the earlier runs of the same model. Each run overwrites the
+report in the default `--out` directory, so to give it a trend, keep runs
+apart: `archi eval --bundle cern-team --out <data root>/eval/cern-team/$(date +%F)`.
+
 ## The shipped sets
 
 | Bundle | Corpus the questions rely on |
@@ -120,6 +127,4 @@ slow local model or a paid API model.
 compare it with a baseline that reads raw documents. That score feeds the
 [context gate](../context-layer.md#the-context-gate): an automation can
 require a minimum score before it runs live. Until it exists, a gate that asks
-for a context-eval score fails, so the automation stays in shadow. The
-`instance-health` automation reads `eval/reports/*.json` in the instance if it
-exists; that file format is provisional until the context eval exists.
+for a context-eval score fails, so the automation stays in shadow.

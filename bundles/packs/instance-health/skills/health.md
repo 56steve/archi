@@ -7,7 +7,11 @@ The `instance-health` automation watches this instance. It runs on a schedule (h
 - `archi doctor --json`: every failing check. `source-freshness` yields one problem per late source.
 - `okg sync frontier --json`: a source whose newest ingest failed or whose frontier is blocked.
 - The ops records: an automation whose recent decisions are mostly errors.
-- Eval reports under `eval/reports/`, when there are any. None exist yet, so this is skipped, and the proposal says so.
+- The `report.json` files `archi eval` writes under `<data root>/eval/` (or `eval.reports_dir` in `ops.yaml`).
+  Per bundle, the latest run is a problem (`eval/<bundle>`) when it ended `execution_failed` (the run could not
+  ask the instance: a failed signal, not a low score), when it is below the bundle's threshold, or when its
+  score fell more than `eval.min_drop` (default 0.1) below the earlier runs of the same model. With no report,
+  this is skipped, and the proposal says so; a bundle with only one run is judged on its threshold alone.
 
 **What it does**
 

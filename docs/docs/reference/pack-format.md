@@ -601,7 +601,7 @@ automations:
 | doctor | `archi doctor --json`, every failing check (warnings with `include_warnings: true`) | `<check id>/instance`; `source-freshness/<source>` for each late source |
 | ingest | `okg sync frontier --json`: a source whose frontier is `blocked` (failed run, blocked publish) | `ingest/<source>` |
 | automation errors | the ops records, through the reader of `archi.ops.shadow`: an automation with at least `min_decisions` decisions in `window_hours` of which `max_rate` or more are `error`, `invalid_proposal` or `refused` | `automation-errors/<automation>` |
-| eval | `eval/reports/*.json` in the instance, if any: `{"finished_at", "score"}`; the latest score more than `min_drop` below the mean of the three before it. This format is provisional until `archi eval` exists. No report exists today, so the signal is skipped, and the proposal says so | `eval/score` |
+| eval | every `report.json` that [`archi eval`](../operating/evals.md) wrote under `<data root>/eval/` (its default `--out`; `eval.reports_dir` reads elsewhere). Per bundle, the latest run is a problem when it ended `execution_failed` (a failed signal, an error; no score is judged), when it passed fewer questions than the bundle's threshold (an error), or when its score (passed / total) is more than `min_drop` (default 0.1, one question in ten) below the mean of up to three earlier runs of the same model (a warning). With no report at all, the signal is skipped, and the proposal says so. A bundle with one run so far is judged on its threshold only, and the proposal says the trend was skipped (`eval-trend`) | `eval/<bundle>` |
 
 A signal that cannot be read (okg down, `archi doctor` crashing, a malformed eval report) is itself a
 problem, `monitor/<signal>`, and that signal's other issues are left as they are for the run: failing to
@@ -634,4 +634,5 @@ to an instance that raises the pack's `max_level` to L2 (and its own level in `a
 an escalation. A draft pull request for a mechanical fix is not built yet.
 
 `ops.yaml` can also set `ignore_checks: [services]`, `include_warnings`, `error_rate: {window_hours,
-min_decisions, max_rate}` and `eval: {min_drop}` under `proposer`.
+min_decisions, max_rate}` and `eval: {min_drop, reports_dir}` under `proposer`. `archi eval` overwrites the report
+in its default directory, so a trend needs runs kept apart: `archi eval --out <data root>/eval/<bundle>/<date>`.

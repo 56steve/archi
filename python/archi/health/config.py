@@ -19,7 +19,9 @@
           ignore_checks: []             # doctor check ids to leave out (e.g. services)
           include_warnings: false       # doctor `warn` results are problems too
           error_rate: {window_hours: 24, min_decisions: 3, max_rate: 0.5}
-          eval: {min_drop: 0.05}
+          eval:
+            min_drop: 0.1               # a drop in score (passed / total) larger than this is a problem
+            reports_dir: null           # default <data root>/eval, where `archi eval` writes; relative = from the instance
 
 Only the name of the token variable is written here; a value in this file is refused.
 """
@@ -93,7 +95,11 @@ class HealthConfig:
     window_hours: float = 24.0
     min_decisions: int = 3
     max_error_rate: float = 0.5
-    eval_min_drop: float = 0.05
+    #: a fall in eval score (passed / total, 0..1) larger than this, against the mean of the earlier runs, is a
+    #: problem. 0.1 is one question of a ten-question set: one flip is noise, two are a finding.
+    eval_min_drop: float = 0.1
+    #: where `archi eval` reports are read from; None: `<data root>/eval`, the `archi eval` default
+    eval_reports_dir: Optional[str] = None
 
     @classmethod
     def from_proposer(cls, config: Mapping[str, Any]) -> "HealthConfig":
@@ -103,7 +109,7 @@ class HealthConfig:
             raise TrackerError(f"proposer: unknown keys {unknown}; allowed: {sorted(known)}")
         rate = dict(config.get("error_rate") or {})
         ev = dict(config.get("eval") or {})
-        for name, allowed in (("error_rate", {"window_hours", "min_decisions", "max_rate"}), ("eval", {"min_drop"})):
+        for name, allowed in (("error_rate", {"window_hours", "min_decisions", "max_rate"}), ("eval", {"min_drop", "reports_dir"})):
             bad = sorted(set(config.get(name) or {}) - allowed)
             if bad:
                 raise TrackerError(f"proposer.{name}: unknown keys {bad}; allowed: {sorted(allowed)}")
@@ -117,8 +123,27 @@ class HealthConfig:
             window_hours=float(rate.get("window_hours", 24.0)),
             min_decisions=int(rate.get("min_decisions", 3)),
             max_error_rate=float(rate.get("max_rate", 0.5)),
-            eval_min_drop=float(ev.get("min_drop", 0.05)),
+            eval_min_drop=_fraction(ev.get("min_drop", 0.1), "proposer.eval.min_drop"),
+            eval_reports_dir=_optional_text(ev.get("reports_dir"), "proposer.eval.reports_dir"),
         )
+
+
+def _fraction(value: Any, label: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise TrackerError(f"{label} must be a number between 0 and 1") from None
+    if not 0 <= number <= 1:
+        raise TrackerError(f"{label} must be between 0 and 1 (a share of the questions), not {number:g}")
+    return number
+
+
+def _optional_text(value: Any, label: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise TrackerError(f"{label} must be a path")
+    return value
 
 
 def build_tracker(spec: TrackerSpec, *, instance_dir: Optional[str] = None, env: Optional[Mapping[str, str]] = None,

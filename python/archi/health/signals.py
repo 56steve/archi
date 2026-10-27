@@ -5,8 +5,10 @@
     ingest             `okg sync frontier --json`: a source whose newest run failed or whose frontier is blocked
     automation-errors  the ops records (`archi.ops.shadow`'s reader seam): an automation whose recent
                        decisions are mostly errors
-    eval               eval reports under `<instance>/eval/reports/*.json`, if there are any. None exist
-                       yet (`archi eval` is not built), so this signal is skipped, and the skip is reported.
+    eval               the `report.json` files `archi eval` writes, under `<data root>/eval/` (or the
+                       configured `eval.reports_dir`): per bundle, the latest run against the bundle's
+                       threshold and against the earlier runs. With no report, the signal is skipped, and
+                       the skip is reported.
 
 Each collector turns plain data into `Problem`s and reads nothing itself; `collect` runs the readers.
 A reader that fails is not hidden: it becomes the problem `monitor/<signal>` ("could not read it"), and
@@ -29,7 +31,11 @@ from archi.health.problems import Problem, make_key
 
 #: ops decision verdicts that mean the run failed (not a cap or a person's "no")
 ERROR_VERDICTS = frozenset({"error", "invalid_proposal", "refused"})
-EVAL_DIR = "eval/reports"
+#: the file `archi eval` writes per run, and the schema it carries (`archi.evaluation.runner.REPORT_SCHEMA`)
+EVAL_REPORT = "report.json"
+EVAL_SCHEMA_FAMILY = "archi-eval-report/"
+EVAL_SCHEMAS = frozenset({"archi-eval-report/1"})
+EVAL_STATUSES = frozenset({"pass", "fail", "execution_failed"})
 
 
 # --- doctor ---------------------------------------------------------------------
@@ -160,38 +166,158 @@ def automation_error_problems(
 # --- eval -----------------------------------------------------------------------
 
 
-def eval_problems(instance_dir: Path | str, *, min_drop: float = 0.05, history: int = 3
-                  ) -> tuple[list[Problem], Optional[str]]:
-    """(problems, why it was skipped). Reads `<instance>/eval/reports/*.json`.
+def eval_reports_dir(instance_dir: Path | str, configured: Optional[str] = None) -> Path:
+    """Where the instance's eval reports are.
 
-    A report is `{"finished_at": <ISO time>, "score": <0..1>}` (provisional: `archi eval` will define the
-    real one, and this reader follows it). The latest score is a regression when it is more than `min_drop`
-    below the mean of the `history` reports before it. With no report, or one, there is no trend: skipped.
+    `archi eval` writes `report.json` to `<data root>/eval/<bundle>/` by default (`--out` moves it), so the
+    default is `<data root>/eval/`, the data root read from the instance's `archi.yaml`. `configured` (the
+    `eval.reports_dir` setting) replaces it; a relative path is taken from the instance directory.
     """
-    directory = Path(instance_dir) / EVAL_DIR
-    reports = sorted(directory.glob("*.json")) if directory.is_dir() else []
-    if not reports:
-        return [], f"no eval report exists ({EVAL_DIR}/*.json); eval trends are skipped"
-    scored = []
-    for path in reports:
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.is_absolute() else Path(instance_dir) / path
+    from archi.stack.instance import Instance
+
+    return Instance.load(Path(instance_dir)).data_root / "eval"
+
+
+@dataclass(frozen=True)
+class EvalRun:
+    """One `archi eval` run of one bundle, as its `report.json` records it."""
+
+    bundle: str
+    model: str
+    started_at: str
+    status: str
+    passed: int
+    total: int
+    threshold: int
+    error: Optional[str]
+    path: str  # relative to the reports directory
+
+    @property
+    def score(self) -> float:
+        return self.passed / self.total
+
+
+def read_eval_runs(directory: Path) -> list[EvalRun]:
+    """Every `report.json` under `directory` (any depth) that `archi eval` wrote, oldest first.
+
+    A `report.json` with no `archi-eval-report/...` schema is another kind of report and is left out. One that
+    claims the schema but cannot be read, or is a version this reader does not know, raises: a report that
+    cannot be read is not evidence of health.
+    """
+    runs: dict[tuple[str, str, str], EvalRun] = {}
+    for path in sorted(directory.rglob(EVAL_REPORT)) if directory.is_dir() else []:
+        rel = path.relative_to(directory).as_posix()
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            scored.append((str(data.get("finished_at") or path.name), float(data["score"]), path.name))
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise ValueError(f"{path}: not an eval report with a numeric score ({type(exc).__name__}: {exc})") from exc
-    scored.sort()
-    if len(scored) < 2:
-        return [], "only one eval report exists; a trend needs two"
-    latest, earlier = scored[-1], scored[-1 - history:-1]
-    baseline = statistics.fmean(s for _, s, _ in earlier)
-    if baseline - latest[1] <= min_drop:
-        return [], None
-    return [Problem(
-        key=make_key("eval", "score"), family="eval", title="Eval score regressed",
-        detail=(f"The latest eval report ({latest[2]}) scores {latest[1]:.3f}, more than {min_drop:g} below the "
-                f"mean {baseline:.3f} of the {len(earlier)} report(s) before it.\n\nLook: the eval reports in "
-                f"`{EVAL_DIR}/`."),
-    )], None
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{rel} under {directory}: not readable JSON ({type(exc).__name__}: {exc})") from exc
+        schema = data.get("schema") if isinstance(data, dict) else None
+        if not isinstance(schema, str) or not schema.startswith(EVAL_SCHEMA_FAMILY):
+            continue
+        if schema not in EVAL_SCHEMAS:
+            raise ValueError(f"{rel} under {directory}: eval report schema {schema!r} is not one this reader "
+                             f"knows ({sorted(EVAL_SCHEMAS)})")
+        try:
+            run = EvalRun(
+                bundle=_text(data, "bundle"), model=_text(data, "model"), started_at=_text(data, "started_at"),
+                status=_text(data, "status"), passed=_count(data, "passed"), total=_count(data, "total"),
+                threshold=_count(data, "pass_threshold"), error=data.get("error") or None, path=rel,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{rel} under {directory}: not a usable eval report ({exc})") from exc
+        if run.status not in EVAL_STATUSES:
+            raise ValueError(f"{rel} under {directory}: status {run.status!r} is not one of {sorted(EVAL_STATUSES)}")
+        if run.status != "execution_failed" and run.total == 0:
+            raise ValueError(f"{rel} under {directory}: status {run.status} with no questions")
+        runs.setdefault((run.bundle, run.started_at, run.model), run)  # the same run copied twice counts once
+    return sorted(runs.values(), key=lambda r: (r.started_at, r.path))
+
+
+def _text(data: Mapping[str, Any], name: str) -> str:
+    value = data[name]
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _count(data: Mapping[str, Any], name: str) -> int:
+    value = data[name]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a count")
+    return value
+
+
+def eval_problems(directory: Path | str, *, min_drop: float = 0.1, history: int = 3
+                  ) -> tuple[list[Problem], list[dict[str, str]]]:
+    """(problems, skip notes) from the `archi eval` reports under `directory`, one problem per bundle at most.
+
+    For each bundle, the latest run is a problem (`eval/<bundle>`) when:
+
+    - it ended `execution_failed`: the run could not ask the instance, so this is a failed health signal and
+      no score is judged (an error);
+    - it passed fewer questions than the bundle's threshold (an error);
+    - its score (passed / total) is more than `min_drop` below the mean score of up to `history` earlier
+      runs of the same bundle and the same model that did execute (a warning while it still meets the
+      threshold). A different model is a different measurement, so it is not compared.
+
+    Skip notes are `{"signal", "reason"}`. `eval`: there is no report at all, so the signal is not judged.
+    `eval-trend`: a bundle has no earlier run to compare with; its threshold is still judged.
+    """
+    directory = Path(directory)
+    runs = read_eval_runs(directory)
+    if not runs:
+        return [], [{"signal": "eval", "reason": f"no eval report exists under {directory} (run `archi eval`); "
+                                                 "eval trends are skipped"}]
+    by_bundle: dict[str, list[EvalRun]] = {}
+    for run in runs:
+        by_bundle.setdefault(run.bundle, []).append(run)
+    problems: list[Problem] = []
+    notes: list[dict[str, str]] = []
+    for bundle in sorted(by_bundle):
+        *before, latest = by_bundle[bundle]
+        head = (f"The latest `archi eval` run of bundle `{bundle}` (model `{latest.model}`, started "
+                f"{latest.started_at})")
+        look = (f"Look: `{latest.path}` under `{directory}` (and `report.md` beside it); re-run with "
+                f"`archi eval --bundle {bundle}`.")
+        if latest.status == "execution_failed":
+            problems.append(Problem(
+                key=make_key("eval", bundle), family="eval", severity="error",
+                title=f"Eval of {bundle} could not run",
+                detail=(f"{head} ended `execution_failed`: {latest.error or 'no question could be asked'}.\n\n"
+                        "This is a failed health signal, not a low score: the run could not ask the instance "
+                        "(MCP endpoint unreachable or offering no tools, or the model failing), so no score was "
+                        "compared with the threshold or with earlier runs.\n\n"
+                        f"{look} Check `archi doctor`, the MCP endpoint and the model server first."),
+            ))
+            continue
+        earlier = [r for r in before if r.status != "execution_failed" and r.model == latest.model][-history:]
+        below = latest.passed < latest.threshold
+        drop = None
+        if earlier:
+            baseline = statistics.fmean(r.score for r in earlier)
+            # rounded: 0.8 - 0.7 is 0.10000000000000009 in floating point, which is not "more than 0.1"
+            drop = (baseline, round(baseline - latest.score, 9))
+        else:
+            notes.append({"signal": "eval-trend", "reason": (
+                f"bundle {bundle}: no earlier run of model {latest.model} to compare with (archi eval overwrites "
+                f"its report; keep runs apart with `--out <dir>/{bundle}/<date>` under {directory})")})
+        dropped = drop is not None and drop[1] > min_drop
+        if not (below or dropped):
+            continue
+        lines = [f"{head} passed {latest.passed} of {latest.total} questions (score {latest.score:.2f}).", ""]
+        if below:
+            lines.append(f"- That is below the bundle's threshold of {latest.threshold}.")
+        if dropped:
+            lines.append(f"- That is {drop[1]:.2f} below the mean score {drop[0]:.2f} of the {len(earlier)} earlier "
+                         f"run(s) of the same model; the allowed drop is {min_drop:g} (`eval.min_drop`).")
+        lines += ["", look]
+        title = f"Eval of {bundle} is below its threshold" if below else f"Eval score of {bundle} dropped"
+        problems.append(Problem(key=make_key("eval", bundle), family="eval", severity="error" if below else "warning",
+                                title=title, detail="\n".join(lines)))
+    return problems, notes
 
 
 # --- readers (the real ones) -------------------------------------------------------
@@ -238,7 +364,8 @@ class Observation:
     problems: list[Problem] = field(default_factory=list)
     #: the families read successfully in this run: only their issues may be closed
     scope: list[str] = field(default_factory=list)
-    #: `{"signal", "reason"}` for each signal not applicable (no eval report)
+    #: `{"signal", "reason"}` for each signal not applicable: `eval` (no eval report; not judged) or
+    #: `eval-trend` (a bundle with no earlier run to compare; its threshold was still judged)
     skipped: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -270,9 +397,11 @@ def collect(
         min_decisions=config.min_decisions, max_rate=config.max_error_rate))
 
     def eval_signal() -> list[Problem]:
-        found, why = eval_problems(instance_dir, min_drop=config.eval_min_drop)
-        if why:  # nothing to judge: skipped, and its issues (if any) are not closed on that account
-            obs.skipped.append({"signal": "eval", "reason": why})
+        found, notes = eval_problems(eval_reports_dir(instance_dir, config.eval_reports_dir),
+                                     min_drop=config.eval_min_drop)
+        # `eval` skipped: nothing to judge, and its issues (if any) are not closed on that account.
+        # `eval-trend` only says a bundle has no earlier run; its threshold was judged.
+        obs.skipped.extend(notes)
         return found
 
     attempt("eval", "eval", eval_signal)
