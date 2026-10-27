@@ -29,7 +29,7 @@ SECRET = "sk-sandbox-test-0000"
 def corpus(tmp_path):
     root = tmp_path / "records"
     (root / "jira").mkdir(parents=True)
-    (root / "jira" / "DEMO-1.json").write_text('{"key": "DEMO-1", "summary": "Transfer failures at the test site"}\n')
+    (root / "jira" / "DEMO-1.json").write_text('{"key": "DEMO-1", "description": "Transfer failures at the test site"}\n')
     return root
 
 

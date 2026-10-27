@@ -155,7 +155,8 @@ tasks:
     and stops before a call that could cross the cap. Sandbox limits per process: 256 processes (in
     bwrap''s user namespace), 4 GiB address space, 256 MiB per file, CPU time; where the user''s systemd
     manager runs, a systemd-run --user scope per command also caps the whole command (tmpfs included) at
-    4 GiB, no swap and 256 tasks, and the report records limit_scope (command or process, with why). 429 and 5xx retried at
+    4 GiB, no swap and 256 tasks, and the report records limit_scope (command or process, with why); a scope that stops starting
+    mid-run aborts the run. 429 and 5xx retried at
     most three times; another 4xx aborts the run (exit 2); error tries are listed and left out of the
     averages; no temperature or seed to a remote endpoint.
 
@@ -185,10 +186,10 @@ tasks:
     keys.json) or a question''s gold_sources; an id that does not resolve refuses the run by name and
     is never a 0; a gold record from a source left out of the corpus is unavailable in both arms.
     A gold record is credited only when the tool responses the model saw show two of its field values or
-    lines, or its only one (a six-word run, or a whole value of four or five words; shorter values never
-    count), after dropping every fingerprint a second corpus file also holds (a record left with none is
-    unavailable); recall and MRR compare the arms only on the (question, try) pairs every arm finished,
-    and the arms alternate going first. Responses include the visible part of cut
+    lines, or its only one (a six-word run, or a whole value of four or five words; shorter values and
+    title fields such as summary or title never count), after dropping every fingerprint a second corpus file also holds (a record left with none is
+    unavailable); recall, MRR and the answer score compare the arms only on the (question, try) pairs
+    every arm finished without an error, and the arms alternate going first. Responses include the visible part of cut
     output and non-zero exits; its path, key or id alone lists it, uncredited and counted.
     Evidence recall per try over the available gold (never tool inputs or the answer), MRR from the
     first gold record read among the records met, the same scorer for both arms; an answer judge

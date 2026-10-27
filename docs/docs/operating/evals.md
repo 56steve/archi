@@ -291,7 +291,7 @@ caps; they differ only in where the knowledge is.
 
 | Arm | What the agent has |
 |---|---|
-| `agent-bash` | One tool, `bash`, over the raw corpus. Each command runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: no network, the corpus mounted read-only at `/corpus`, a fresh in-memory `HOME`, an empty environment, and `rg`, `jq` and `python3` on `PATH` when the host has them. Limits: 120 s of wall time and 64 KiB of output per command (a command over either is stopped), and per process 256 processes, 4 GiB of address space, 256 MiB per file written, and CPU time equal to the wall limit. Where the user's systemd manager runs, each command also runs in its own `systemd-run --user --scope`, which caps the whole command, in-memory files included, at 4 GiB of memory, no swap, and 256 tasks. Where it does not, the run prints a note and the report records `limit_scope: process`: the per-process limits then hold, but several processes of one command, or its in-memory files, can together use more. |
+| `agent-bash` | One tool, `bash`, over the raw corpus. Each command runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: no network, the corpus mounted read-only at `/corpus`, a fresh in-memory `HOME`, an empty environment, and `rg`, `jq` and `python3` on `PATH` when the host has them. Limits: 120 s of wall time and 64 KiB of output per command (a command over either is stopped), and per process 256 processes, 4 GiB of address space, 256 MiB per file written, and CPU time equal to the wall limit. Where the user's systemd manager runs, each command also runs in its own `systemd-run --user --scope`, which caps the whole command, in-memory files included, at 4 GiB of memory, no swap, and 256 tasks. Where it does not, the run prints a note and the report records `limit_scope: process`: the per-process limits then hold, but several processes of one command, or its in-memory files, can together use more. If the scope stops starting during a run, the run aborts (exit 2) rather than show the model systemd's error. |
 | `agent-graph` | The instance's MCP tools. |
 
 The prompt is the same text for both, except the one paragraph that says where
@@ -496,23 +496,28 @@ final answer never count.
 - A gold record is **read** when the responses show two of its field values
   or lines (or its only one). A value or line shows when a run of six of its
   words appears, or, for a value of four or five words, the whole value. A
-  value under four words never counts. Words are compared lower-cased,
-  ignoring punctuation and JSON escapes, so a `cat` of the file and an MCP
-  excerpt of the same text both count. A search row's title, or one line a
-  grep matched, therefore only lists a record that has more to read.
+  value under four words never counts, and neither does a title field
+  (`summary`, `title`, `subject`, `topic`, `headline`, `name`): like a file
+  name, a search row shows it beside every hit. Words are compared
+  lower-cased, ignoring punctuation and JSON escapes, so a `cat` of the file
+  and an MCP excerpt of the same text both count. A search row with one
+  excerpt, or one line a grep matched, therefore only lists a record that has
+  more to read.
 - Text another corpus record also holds never counts: before the run, one pass
   over the corpus drops every gold fingerprint found in a second file (a
   `from __future__` line, a TWiki `%META` line, a licence header). A gold
   record left with nothing is unavailable, and the report counts what was
-  dropped per record.
+  dropped per record. Text in graph nodes that have no corpus file (a source
+  left out of the corpus) is not checked.
 - A record named only by its path, natural key or node id is **listed**, not
   read. The report counts listed records per try, and they earn no credit. A
   natural key shorter than six characters does not even list a record.
 - **Evidence recall**, per try: the share of the question's available gold
   records read. The arms take turns going first, and recall and MRR
-  compare them only on the (question, try) pairs every arm finished: a spend
-  stop can leave one arm a try ahead, and that try is counted under
-  `tries_unpaired`, not scored.
+  compare them only on the (question, try) pairs every arm finished without an
+  error: a spend stop or an error try can leave one arm with a try the other
+  lacks, and that try is counted under `tries_unpaired`, not scored. The
+  answer score is paired the same way.
 - **MRR**: 1 / the rank of the first gold record read among the distinct
   records the agent met, in order. Other records count as met when their path
   or node id appears.

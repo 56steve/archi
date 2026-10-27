@@ -362,6 +362,11 @@ class SandboxError(RuntimeError):
     """The bash arm cannot run here."""
 
 
+class SandboxBroken(SandboxError):
+    """The sandbox stopped working during the run (its systemd scope can no longer start): the run
+    aborts rather than hand the model the wrapper's error as a command's output."""
+
+
 TOOLS = ("rg", "jq", "python3")
 #: Where tools are found inside the sandbox without binding anything: /usr is mounted whole.
 _SYSTEM_DIRS = ("/usr/local/bin", "/usr/bin", "/bin")
@@ -391,6 +396,9 @@ SCOPE_COMMAND, SCOPE_PROCESS = "command", "process"
 #: What systemd-run --user needs to find the user's manager; nothing else reaches it, and
 #: bubblewrap clears the environment before the command starts.
 _SCOPE_ENV = ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+#: How systemd-run reports, before the command starts, that it could not make the scope
+_SCOPE_FAILED = re.compile(r"\A(Failed to (connect to bus|create bus connection|start transient scope unit)"
+                           r"|Job for run-\S+\.scope failed)")
 
 
 def find_bwrap() -> Optional[str]:
@@ -503,13 +511,16 @@ class BashSandbox:
                        "-p", f"MemoryMax={self.memory_bytes}", "-p", "MemorySwapMax=0",
                        "-p", f"TasksMax={self.max_procs}", "--"]
         self._scope_env = {k: os.environ[k] for k in _SCOPE_ENV if os.environ.get(k)}
-        probe = self.run("/usr/bin/env true | cat", seconds=seconds)
-        if probe.ok:
+        try:
+            probe = self.run("/usr/bin/env true | cat", seconds=seconds)
+            why = "" if probe.ok else f"exit {probe.exit_code}: {probe.text.strip()[:200]}"
+        except SandboxBroken as exc:
+            why = str(exc)
+        if not why:
             self.limit_scope = SCOPE_COMMAND
             return
         self._scope, self._scope_env = [], {}
-        self.scope_note = (f"systemd-run --user --scope did not run a command (exit {probe.exit_code}: "
-                           f"{probe.text.strip()[:200]})")
+        self.scope_note = f"systemd-run --user --scope did not run a command ({why})"
 
     def limits(self) -> str:
         procs = self.max_procs + (_user_tasks() if self.nproc_mode == "host" else 0)
@@ -578,6 +589,8 @@ class BashSandbox:
             proc.wait()
         reader.join(timeout=5)
         text = b"".join(chunks).decode("utf-8", "replace")
+        if self._scope and proc.returncode and not timed_out and _SCOPE_FAILED.match(text):
+            raise SandboxBroken(f"systemd-run could not start the command's scope: {text.strip()[:300]}")
         produced = bool(text.strip())
         notes = []
         if state["cut"]:
@@ -755,6 +768,8 @@ async def run_try(model: Metered, tools: Any, specs: list[ToolSpec], *, arm: str
                                                                     timeout=remaining)
                     except asyncio.TimeoutError:
                         text, is_error = f"error: the call did not finish in the {remaining:.0f} s the try had left", True
+                    except SandboxError:
+                        raise
                     except Exception as exc:  # noqa: BLE001 - a failing tool is data for the model
                         text, is_error = f"error: {_describe(exc)}", True
                 shown = _cut(text, caps.output_bytes)
@@ -945,9 +960,12 @@ def _left_out(keys: Mapping[str, Any], names: Sequence[str]) -> Optional[str]:
 SHINGLE_WORDS = 6
 MIN_VALUE_WORDS = 4
 MAX_SHINGLES = 20000
-#: A record counts as read once a response shows two of its values or lines (or its only one): a
-#: search row's title, or one line a grep matched, alone only lists it.
+#: A record counts as read once the responses show two of its values or lines (or its only one):
+#: one line a grep matched, or one excerpt, alone only lists it.
 READ_UNITS = 2
+#: Fields that name a record rather than hold its content: a search row shows them beside every
+#: hit, as `ls` shows a file name, so, like the key, they never count toward reading a record.
+TITLE_FIELDS = frozenset({"summary", "title", "subject", "topic", "headline", "name", "displayName"})
 _WORDS = re.compile(r"[a-z0-9]+")
 #: JSON string escapes, as both a `cat` of a corpus file and an MCP JSON reply show them
 _UNICODE_ESCAPE = re.compile(r"\\u[0-9a-fA-F]{4}")
@@ -955,12 +973,12 @@ _ESCAPE = re.compile(r"\\[nrtbf\"/\\]")
 
 
 def words(text: str) -> list[str]:
-    return _WORDS.findall(_ESCAPE.sub(" ", _UNICODE_ESCAPE.sub("", text)).lower())
+    return _WORDS.findall(_ESCAPE.sub(" ", _UNICODE_ESCAPE.sub(" ", text)).lower())
 
 
 def _leaves(value: Any) -> list[str]:
     if isinstance(value, Mapping):
-        return [s for v in value.values() for s in _leaves(v)]
+        return [s for k, v in value.items() if k not in TITLE_FIELDS for s in _leaves(v)]
     if isinstance(value, list):
         return [s for v in value for s in _leaves(v)]
     if isinstance(value, str):
@@ -970,13 +988,13 @@ def _leaves(value: Any) -> list[str]:
 
 def content_fingerprints(data: bytes, *, exclude: Sequence[str] = ()) -> tuple[tuple[str, ...], ...]:
     """The units that identify a record's content, one per string value of a JSON record (field
-    names never) or per line of a text record, each as the word runs that show it: a value of six
+    names and `TITLE_FIELDS` values never) or per line of a text record, each as the word runs that show it: a value of six
     words or more as its six-word runs, one of four or five words whole. Shorter values carry no
     unit. The record's own key, id and path are excluded: naming a record is listing it, not
     reading it."""
     text = data.decode("utf-8", "replace")
     try:
-        parts = _leaves(json.loads(text))
+        parts = _leaves(json.loads(text))  # its title fields left out (`TITLE_FIELDS`)
     except ValueError:
         parts = text.splitlines()
     skip = {" ".join(words(x)) for x in exclude if x}
@@ -1096,10 +1114,13 @@ def record_for(info: NodeInfo, keys: Mapping[str, Any]) -> "GoldRecord | str":
 
 
 async def resolve_gold(tools: Any, questions: Sequence[Any], keys: Mapping[str, Any],
-                       manifest: frozenset[str], records_dir: Optional[Path] = None) -> GoldMap:
+                       manifest: frozenset[str], records_dir: Optional[Path] = None, *,
+                       drop_shared_text: bool = True) -> GoldMap:
     """Resolve every gold id, or raise GoldError naming each one that does not resolve. With
     `records_dir`, each record's content fingerprints are read from its file, less those another
-    corpus record also holds (`drop_shared`)."""
+    corpus record also holds (`drop_shared`). A caller that holds an MCP session open passes
+    `drop_shared_text=False` and runs `drop_shared` itself once the session is closed: the pass
+    reads the whole corpus."""
     sources = keys.get("sources") or {}
     by_normal = {normal_source(name): name for name in sources}
     out: dict[str, list[GoldRecord]] = {}
@@ -1161,7 +1182,7 @@ async def resolve_gold(tools: Any, questions: Sequence[Any], keys: Mapping[str, 
         out[question.id] = golds
     if problems:
         raise GoldError(problems)
-    if records_dir is not None:
+    if records_dir is not None and drop_shared_text:
         out = drop_shared(out, records_dir, manifest)
     return GoldMap(out, generations, live_atoms)
 
@@ -1388,12 +1409,13 @@ class AgentReport:
         return sum(1 for q in self.questions if q.answer)
 
     def paired(self) -> set[tuple[str, int]]:
-        """The (question, try) pairs every arm ran to the end: a spend stop or an abort can leave
-        one arm a try ahead, and recall and MRR compare the arms on these pairs only."""
+        """The (question, try) pairs every arm ran to the end without an error: a spend stop, an
+        abort or an error try can leave one arm with a try the other lacks, and recall, MRR and the
+        answer score compare the arms on these pairs only."""
         out = set()
         for qid, per_arm in self.tries.items():
             for attempt in range(1, self.plan.tries + 1):
-                if all(any(t.attempt == attempt and t.status != STOPPED for t in per_arm.get(arm, []))
+                if all(any(t.attempt == attempt and t.status not in (STOPPED, ERROR) for t in per_arm.get(arm, []))
                        for arm in self.plan.arms):
                     out.add((qid, attempt))
         return out
@@ -1411,7 +1433,8 @@ class AgentReport:
         elif self.plan.judge is None:
             answer = JUDGE_OFF
         else:
-            graded = [t.judge["score"] for t in completed if t.judge and t.judge.get("score") is not None]
+            graded = [t.judge["score"] for t in completed if (t.question, t.attempt) in paired
+                      and t.judge and t.judge.get("score") is not None]
             answer = round(sum(graded) / len(graded), 4) if graded else None
         listed = [len(t.evidence.listed) for t in scored]
         return {
@@ -1563,6 +1586,8 @@ async def run_agent_arms(questions: Sequence[Any], plan: AgentPlan, mcp: Any, go
     except FatalModelError as exc:
         report.aborted = (f"the model endpoint refused a request in a way a retry cannot fix (HTTP {exc.status}): "
                           f"{str(exc)[:300]}")
+    except SandboxBroken as exc:
+        report.aborted = f"the bash sandbox stopped working during the run: {exc}"
     if ledger.stopped and report.stopped is None:
         report.stopped = ledger.stopped
     report.finished_at = _now()

@@ -291,7 +291,7 @@ def test_gold_ids_resolve_through_inspect_to_corpus_files(tmp_path):
     gold = resolve(tools, cset, keys, manifest, corpus).records["q1"]
     by_id = {g.node_id: g for g in gold}
     assert by_id["jira:DEMO-1"].path == "jira/DEMO-1.json" and by_id["jira:DEMO-1"].key == "DEMO-1"
-    assert by_id["jira:DEMO-1"].units  # its summary is six words
+    assert by_id["jira:DEMO-1"].units  # its description is six words
     assert by_id["documentation_page:abc123"].source == "docsite"  # found by its url, the subtype's key field
     # {"name": "gpu"} holds nothing distinctive: unavailable, never a miss
     assert by_id["slurm_partition:submit:gpu"].status == "unavailable"
@@ -417,8 +417,8 @@ def test_bad_agent_keys_in_a_question_are_refused(row, message):
 
 # --- scoring ---------------------------------------------------------------------------------
 
-DEMO1_FILE = b'{"key": "DEMO-1", "summary": "Transfer failures at the test site", "status": "Open"}\n'
-DEMO2_FILE = b'{"key": "DEMO-2", "summary": "Upgrade the storage servers"}\n'
+DEMO1_FILE = b'{"key": "DEMO-1", "description": "Transfer failures at the test site", "status": "Open"}\n'
+DEMO2_FILE = b'{"key": "DEMO-2", "description": "Upgrade the storage servers"}\n'
 
 
 def gold_record(node_id, key, path, data):
@@ -486,17 +486,36 @@ def test_a_record_whose_every_fingerprint_is_shared_is_unavailable_not_a_miss(tm
 
 TWO_PART = gold_record("jira:DEMO-5", "DEMO-5", "jira/DEMO-5.json",
                        b'{"key": "DEMO-5", "summary": "Transfers stuck at the test site", '
-                       b'"description": "The storage element rejected writes after the upgrade"}')
+                       b'"description": "The storage element rejected writes after the upgrade", '
+                       b'"resolution": "Restarted the gridftp doors on every storage node"}')
+TWO_PART_MANIFEST = MANIFEST | {"jira/DEMO-5.json"}
 
 
-def test_a_search_row_title_alone_only_lists_a_record_with_more_to_read():
-    row = "[1] jira:DEMO-5 (jira_issue) · source demo.jira\n    Transfers stuck at the test site"
-    evidence = score_evidence([ev(row)], [TWO_PART], MANIFEST | {"jira/DEMO-5.json"})
+def test_a_title_field_never_fingerprints():
+    assert content_fingerprints(b'{"summary": "Transfers stuck at the test site", '
+                                b'"fields": {"title": "Storage element rejected writes after upgrade"}}') == ()
+    assert len(TWO_PART.units) == 2  # description and resolution; the summary is a title
+
+
+def test_a_search_row_with_its_title_and_one_excerpt_only_lists_a_record_with_more_to_read():
+    row = ("[1] jira:DEMO-5 (jira_issue) · source demo.jira\n    Transfers stuck at the test site\n"
+           "    The storage element rejected writes after the upgrade")
+    evidence = score_evidence([ev(row)], [TWO_PART], TWO_PART_MANIFEST)
     assert evidence.found == [] and evidence.listed == ["jira:DEMO-5"]
-    # its title, then its description in a later response: read
-    later = score_evidence([ev(row), ev("The storage element rejected writes after the upgrade")], [TWO_PART],
-                           MANIFEST | {"jira/DEMO-5.json"})
+    # one grep hit is the same: one line of the record
+    grep = '/corpus/jira/DEMO-5.json:  "description": "The storage element rejected writes after the upgrade",'
+    assert score_evidence([ev(grep)], [TWO_PART], TWO_PART_MANIFEST).found == []
+    # a second part of it in a later response: read, in either arm
+    later = score_evidence([ev(row), ev("Restarted the gridftp doors on every storage node")], [TWO_PART],
+                           TWO_PART_MANIFEST)
     assert later.found == ["jira:DEMO-5"]
+
+
+def test_a_unicode_escape_and_the_character_it_stands_for_read_the_same():
+    gold = gold_record("jira:DEMO-6", "DEMO-6", "jira/DEMO-6.json",
+                       '{"key": "DEMO-6", "description": "The site’s storage element rejects writes"}'.encode())
+    escaped = '{"description": "The site\\u2019s storage element rejects writes"}'  # json.dumps(ensure_ascii=True)
+    assert score_evidence([ev(escaped)], [gold], MANIFEST).found == ["jira:DEMO-6"]
 
 
 def test_gold_only_in_a_tool_input_never_counts():
@@ -520,8 +539,8 @@ def test_gold_in_a_response_the_scorer_does_not_read_never_counts():
 
 
 @pytest.mark.parametrize("text", [
-    '/corpus/jira/DEMO-1.json:2:  "summary": "Transfer failures at the test site",',   # rg output
-    '{\n  "key": "DEMO-1",\n  "summary": "Transfer failures at the test site"\n}',      # cat
+    '/corpus/jira/DEMO-1.json:2:  "description": "Transfer failures at the test site",',   # rg output
+    '{\n  "key": "DEMO-1",\n  "description": "Transfer failures at the test site"\n}',      # cat
     '{"results": [{"node_id": "jira:DEMO-1", "excerpt": "Transfer failures at the test site"}]}',  # MCP JSON
     "[1] jira:DEMO-1 (jira_issue) · source demo.jira\n    TRANSFER failures — at the test-site.",   # reflowed
 ])
@@ -663,6 +682,29 @@ def test_the_arms_take_turns_going_first(tmp_path, monkeypatch):
     assert order == [("q1", AGENT_BASH), ("q1", AGENT_GRAPH), ("q2", AGENT_GRAPH), ("q2", AGENT_BASH)]
 
 
+def broken_scope_box():
+    """A sandbox whose systemd scope stopped starting mid-run: systemd-run fails before bwrap."""
+    box = object.__new__(raw_arm.BashSandbox)
+    box.command_seconds, box.output_bytes, box.tools = 10.0, 64 * 1024, []
+    box._scope, box._scope_env = ["systemd-run"], {}
+    box.argv = lambda command: ["/bin/sh", "-c", "echo 'Failed to connect to bus: No such file or directory' >&2; "
+                                                 "exit 1"]
+    return box
+
+
+def test_a_scope_that_stops_starting_mid_run_aborts_the_run_instead_of_feeding_the_model(tmp_path):
+    with pytest.raises(raw_arm.SandboxBroken, match="Failed to connect to bus"):
+        broken_scope_box().run("ls")
+    corpus, keys, manifest = corpus_and_keys(tmp_path)
+    cset = context_set(QUESTIONS[:1])
+    tools = FakeMcp()
+    model = metered(tmp_path, lambda m, t: reply("", ("bash", {"command": "ls /corpus"})) if t == 1 else reply("x"))
+    plan = AgentPlan((AGENT_BASH,), model, NO_WAIT, 1, corpus, sandbox=broken_scope_box())
+    report = asyncio.run(run_agent_arms(cset.scored, plan, tools, resolve(tools, cset, keys, manifest, corpus),
+                                        manifest=manifest))
+    assert report.aborted and "sandbox stopped working" in report.aborted
+
+
 def test_recall_and_mrr_compare_the_arms_only_on_pairs_both_finished():
     def done(arm, qid, recall_hit):
         ev_ = raw_arm.Evidence(found=["g"] if recall_hit else [], missed=[] if recall_hit else ["g"],
@@ -674,10 +716,13 @@ def test_recall_and_mrr_compare_the_arms_only_on_pairs_both_finished():
     report.tries = {"q1": {AGENT_BASH: [done(AGENT_BASH, "q1", True)], AGENT_GRAPH: [done(AGENT_GRAPH, "q1", True)]},
                     # the spend stop cut q2 short in the graph arm: bash's q2 miss is left out of both
                     "q2": {AGENT_BASH: [done(AGENT_BASH, "q2", False)],
-                           AGENT_GRAPH: [raw_arm.TryResult(AGENT_GRAPH, "q2", 1, status=STOPPED)]}}
+                           AGENT_GRAPH: [raw_arm.TryResult(AGENT_GRAPH, "q2", 1, status=STOPPED)]},
+                    # an error try (a context-length 400, say) unpairs its question too
+                    "q3": {AGENT_BASH: [done(AGENT_BASH, "q3", False)],
+                           AGENT_GRAPH: [raw_arm.TryResult(AGENT_GRAPH, "q3", 1, status=ERROR)]}}
     assert report.paired() == {("q1", 1)}
     bash = report.summary(AGENT_BASH)
-    assert bash["tries_scored"] == 1 and bash["tries_unpaired"] == 1 and bash["evidence_recall"] == 1.0
+    assert bash["tries_scored"] == 1 and bash["tries_unpaired"] == 2 and bash["evidence_recall"] == 1.0
     assert report.summary(AGENT_GRAPH)["tries_scored"] == 1
 
 

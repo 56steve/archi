@@ -17,9 +17,9 @@ INSPECT = ToolSpec("inspect", "Read one named thing", {"type": "object"})
 #: The fixture corpus: source -> natural key -> (file under records/, content, node id).
 RECORDS = {
     "jira": {
-        "DEMO-1": ("jira/DEMO-1.json", '{"key": "DEMO-1", "summary": "Transfer failures at the test site"}\n',
+        "DEMO-1": ("jira/DEMO-1.json", '{"key": "DEMO-1", "description": "Transfer failures at the test site"}\n',
                    "jira:DEMO-1"),
-        "DEMO-2": ("jira/DEMO-2.json", '{"key": "DEMO-2", "summary": "Upgrade the storage servers"}\n',
+        "DEMO-2": ("jira/DEMO-2.json", '{"key": "DEMO-2", "description": "Upgrade the storage servers"}\n',
                    "jira:DEMO-2"),
     },
     "docsite": {

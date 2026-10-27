@@ -597,7 +597,13 @@ def _context_with_agents(args: argparse.Namespace, instance, cset, mcp_url: str,
 
     async def go():
         async with agent_mod.McpToolBox(mcp_url, token) as tools:
-            gold = await raw_arm.resolve_gold(tools, cset.scored, corpus.keys(), manifest, corpus.records)
+            gold = await raw_arm.resolve_gold(tools, cset.scored, corpus.keys(), manifest, corpus.records,
+                                              drop_shared_text=False)
+        print(f"gold: checking {len(manifest)} corpus files for text the gold records share with others", flush=True)
+        started = time.monotonic()
+        gold.records = await asyncio.to_thread(raw_arm.drop_shared, gold.records, corpus.records, manifest)
+        dropped = sum(g.shared for golds in gold.records.values() for g in golds)
+        print(f"gold: dropped {dropped} shared fingerprints in {time.monotonic() - started:.0f} s", flush=True)
         report = await run_context(cset, lambda: agent_mod.McpToolBox(mcp_url, token), mcp_url=mcp_url,
                                    progress=context_progress)
         print_bounds()
