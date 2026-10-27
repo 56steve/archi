@@ -66,6 +66,9 @@ class NodeInfo:
     id: str
     subtype: Optional[str] = None
     source: Optional[str] = None
+    #: the tool returned this node as a result (a row or the record inspect read), not
+    #: only as an id mentioned inside another record's text
+    listed: bool = False
 
 
 def _strings(path: str, raw: Any) -> tuple[str, ...]:
@@ -154,14 +157,18 @@ def smoke_path(bundle_dir: Path) -> Path:
 
 #: `[3] chunk:ab12 (document_chunk) · source docsite ...`, the row shape of the read tools
 ROW = re.compile(r"^\s*\[(\d+)\]\s+(\S+:\S+)\s+\(([^)]+)\)(?:.*? · source (\S+))?.*$", re.M)
+#: the same row when the model selected fields that leave out subtype and source
+#: (`filter` with `select: [node_id, attrs]` prints `[1] ops_incident:inc-1`)
+BARE_ROW = re.compile(r"^\s*\[\d+\]\s+(\S+:\S+)\s*$", re.M)
 HEADER_SOURCE = re.compile(r"^\w+ ok · .*? · source (\S+)", re.M)
 #: `inspect ok · an:X (analysis_note) · complete`, the header of one record read with inspect;
 #: its source is on a line of its own below (`source px.cmssw-releases`, or
 #: `trust=untrusted · source px.analysis-notes`), before the first `--- field` block
 INSPECT_HEAD = re.compile(r"^inspect ok · (\S+:\S+) \(([^)]+)\)", re.M)
 SOURCE_LINE = re.compile(r"^(?:\S+ · )*source (\S+)\s*$", re.M)
-#: any `<kind>:<rest>` that looks like a node id (no URL schemes, no times)
-BARE_ID = re.compile(r"(?<![\w/:.-])([A-Za-z][A-Za-z0-9_]*:[A-Za-z0-9_.+/=-]*[A-Za-z0-9_=-])")
+#: any `<kind>:<rest>` that looks like a node id (no URL schemes, no times); the rest may
+#: hold more colons (`tracker_ticket:redmine:4812`)
+BARE_ID = re.compile(r"(?<![\w/:.-])([A-Za-z][A-Za-z0-9_]*:[A-Za-z0-9_.+/=:-]*[A-Za-z0-9_=-])")
 NOT_KINDS = {"http", "https", "ftp", "mailto", "file", "ssh", "git", "ok", "error", "trust", "source", "type"}
 
 
@@ -171,12 +178,15 @@ def nodes_in(text: str) -> dict[str, NodeInfo]:
     header = HEADER_SOURCE.search(text)
     default_source = header.group(1) if header else None
     for _, nid, subtype, source in ROW.findall(text):
-        found[nid] = NodeInfo(nid, subtype, source or default_source)
+        found[nid] = NodeInfo(nid, subtype, source or default_source, listed=True)
+    for nid in BARE_ROW.findall(text):
+        if nid not in found:
+            found[nid] = NodeInfo(nid, listed=True)
     head = INSPECT_HEAD.search(text)
     if head and head.group(1) not in found:
         end = text.find("\n---", head.end())
         line = SOURCE_LINE.search(text, head.end(), end if end >= 0 else len(text))
-        found[head.group(1)] = NodeInfo(head.group(1), head.group(2), line.group(1) if line else None)
+        found[head.group(1)] = NodeInfo(head.group(1), head.group(2), line.group(1) if line else None, listed=True)
     for nid in BARE_ID.findall(text):
         if nid.split(":", 1)[0].lower() in NOT_KINDS or nid in found:
             continue
@@ -191,7 +201,8 @@ def merge_nodes(into: dict[str, NodeInfo], more: Mapping[str, NodeInfo]) -> None
         if old is None:
             into[nid] = info
         else:
-            into[nid] = NodeInfo(nid, old.subtype or info.subtype, old.source or info.source)
+            into[nid] = NodeInfo(nid, old.subtype or info.subtype, old.source or info.source,
+                                 old.listed or info.listed)
 
 
 # --- the checks -----------------------------------------------------------------------
@@ -240,6 +251,23 @@ _DASHES = re.compile(r"[-‐‑‒–—]")
 def _plain(text: str) -> str:
     """For `must_contain`: case, hyphens between words and runs of spaces do not count."""
     return " ".join(_DASHES.sub(" ", text.lower()).split())
+
+
+def unresolved(question: Question, answer: str, seen: Mapping[str, NodeInfo]) -> list[str]:
+    """Cited ids whose subtype or source the question checks but no tool result said.
+
+    A read tool leaves them out when the model selects only some fields
+    (`filter` with `select: [node_id, attrs]`), so the runner looks them up. Only
+    nodes a tool returned as a result qualify, never an id the model saw only inside
+    another record's text, and none at all once the check is already met.
+    """
+    cited = cited_nodes(answer, seen)
+    need_subtype = bool(question.subtypes) and not any(n.subtype in question.subtypes for n in cited)
+    need_source = bool(question.sources) and not any(_from_source(n.source, question.sources) for n in cited)
+    return [
+        n.id for n in cited
+        if n.listed and ((need_subtype and n.subtype is None) or (need_source and n.source is None))
+    ]
 
 
 def check_answer(question: Question, answer: str, seen: Mapping[str, NodeInfo]) -> Verdict:

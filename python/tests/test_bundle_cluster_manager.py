@@ -120,7 +120,8 @@ def test_nothing_in_the_new_packs_or_the_bundle_manifest_names_cern():
 
 
 def test_the_bundle_is_a_manifest_and_a_readme():
-    assert sorted(p.name for p in BUNDLE.iterdir()) == ["README.md", "bundle.yaml"]
+    # eval/ holds the smoke questions (PACT r3-bundle-evals), not profile files.
+    assert sorted(p.name for p in BUNDLE.iterdir()) == ["README.md", "bundle.yaml", "eval"]
 
 
 def test_the_bundle_sets_the_documentation_to_the_schedulers_own_manuals():

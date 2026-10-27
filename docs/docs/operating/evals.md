@@ -92,6 +92,14 @@ errored). If the MCP endpoint has zero tools, the whole run is
 
 ## The report
 
+When a question checks a cited node's subtype or source and no tool result
+said it (a model that asks `filter` for only some fields gets rows without
+them), the runner reads that node once with `inspect` after the answer, with no
+model involved, and lists it under `lookups` in the report with whether the read
+worked. Only a node a tool returned as a result is read, never an id the model
+saw only inside another record's text, and only while the question's check is
+not yet met. Only what that read says about the cited node counts.
+
 `report.json` records the model, the MCP tools it saw, a hash of the prompt and
 tool schemas, the threshold, and per question the status, the failure reasons,
 the cited node ids with their subtype and source, each tool call, tokens in
@@ -109,9 +117,10 @@ apart: `archi eval --bundle cern-team --out <data root>/eval/cern-team/$(date +%
 | Bundle | Corpus the questions rely on |
 |---|---|
 | `cern-team` | The bare defaults: the FTS3 and Rucio documentation pages and Indico event 1716863. Run it on an instance made with `archi init <name> --bundle cern-team` and no changes. |
-| `cms-physics` | An invented fixture corpus: two analysis notes, three TWiki topics, two CDS records and the CMSSW 15_0 release map. `python/tests/evaluation/physics_lab.py` installs it into a scratch database. On a real CMS instance, this set checks only that the corpus is there. |
+| `cms-physics` | An invented fixture corpus: two analysis notes, three TWiki topics, two CDS records and the CMSSW 15_0 release map. `python/tests/evaluation/bundle_lab.py` installs it into a scratch database. On a real CMS instance, this set checks only that the corpus is there. |
+| `cluster-manager` | An invented cluster: four documentation pages (draining a node, scratch space, GPU jobs, maintenance windows), three Redmine tickets, and the ops records of two incidents. Nothing in it names a particular lab or experiment. `python/tests/evaluation/bundle_lab.py --bundle cluster-manager` installs it into a scratch database. |
 
-`cms-comp-ops` and `cluster-manager` have no set yet.
+`cms-comp-ops` has no set.
 
 ## In CI
 

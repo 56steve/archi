@@ -199,8 +199,9 @@ def test_the_report_is_written_as_markdown_and_json(tmp_path):
     assert data["tools"] == ["search"] and data["prompt_hash"] == report.prompt_hash
     assert "#619" in data["note"]
     first = data["questions"][0]
-    assert set(first) == {"id", "question", "status", "reasons", "cited", "tool_calls", "prompt_tokens",
-                          "completion_tokens", "seconds", "answer", "error"}
+    assert set(first) == {"id", "question", "status", "reasons", "cited", "lookups", "tool_calls",
+                          "prompt_tokens", "completion_tokens", "seconds", "answer", "error"}
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["report.json", "report.md"]
     assert first["cited"][0]["id"] == "documentation_page:22"
     text = md.read_text()
     assert "# archi eval: demo" in text and "**fail**: 1 of 2" in text and "| a | pass |" in text
@@ -315,3 +316,108 @@ def test_a_reply_whose_message_is_not_a_mapping_is_a_model_error(monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **kw: Response())
     with pytest.raises(ModelError, match="unreadable reply"):
         agent_mod.OpenAIChat("http://127.0.0.1:1/v1", "m").complete([], [])
+
+
+FILTER = ToolSpec("filter", "Filter the graph", {"type": "object", "properties": {"where": {"type": "object"}}})
+INSPECT = ToolSpec("inspect", "Read one record", {"type": "object", "properties": {"target": {"type": "object"}}})
+#: what `filter` returns when the model selects only `node_id` and `attrs`: no subtype, no source
+FILTER_BARE = "filter ok · 1-1 of 1 · complete\n[1] ops_incident:inc-1\n  title: GPU errors on gpu03\n"
+INSPECT_INCIDENT = (
+    "inspect ok · ops_incident:inc-1 (ops_incident) · complete\n"
+    "source workflow:archi-ops\n"
+    "  --- text\nGPU errors on gpu03, see ticket:9\n"
+)
+
+
+class ScriptedTools(FakeTools):
+    """Answers `filter` with a bare row and `inspect` with the full record."""
+
+    def __init__(self, specs=(FILTER, INSPECT), inspect_fails=False):
+        super().__init__(specs=specs)
+        self.inspect_fails = inspect_fails
+
+    async def call(self, name, arguments):
+        self.calls.append((name, dict(arguments)))
+        if name == "inspect":
+            if self.inspect_fails:
+                raise RuntimeError("server went away")
+            return INSPECT_INCIDENT, False
+        return FILTER_BARE, False
+
+
+def filters():
+    return ChatReply("", (ToolCall("c1", "filter", {"where": {"type": "ops_incident"}}),), 10, 2)
+
+
+def incident_smoke():
+    rows = [{"id": "q", "question": "Any open incident on gpu03?", "must_cite": {"subtypes": ["ops_incident"]}}]
+    return parse_smoke({"bundle": "demo", "pass_threshold": 1, "questions": rows})
+
+
+def test_a_cited_node_whose_subtype_no_tool_said_is_looked_up_with_inspect():
+    tools = ScriptedTools()
+    report = run(incident_smoke(), FakeModel(filters(), answers("Yes. Sources: ops_incident:inc-1")), tools)
+    q = report.questions[0]
+    assert (q.status, q.lookups) == (PASS, [{"id": "ops_incident:inc-1", "ok": True}])
+    assert q.cited == [{"id": "ops_incident:inc-1", "subtype": "ops_incident", "source": "workflow:archi-ops"}]
+    assert tools.calls[-1] == ("inspect", {"target": {"kind": "node", "node_id": "ops_incident:inc-1"}})
+    assert report.to_dict()["questions"][0]["lookups"] == [{"id": "ops_incident:inc-1", "ok": True}]
+
+
+def test_a_lookup_does_not_credit_ids_the_model_was_never_given():
+    # ticket:9 appears only in the lookup's text, never in a result the model saw.
+    tools = ScriptedTools()
+    rows = [{"id": "q", "question": "x?", "must_cite": {"ids": ["ticket:9"]}}]
+    smoke = parse_smoke({"bundle": "demo", "pass_threshold": 1, "questions": rows})
+    report = run(smoke, FakeModel(filters(), answers("See ops_incident:inc-1 and ticket:9")), tools)
+    assert report.questions[0].status == FAIL
+
+
+def test_no_lookup_without_an_inspect_tool_and_no_lookup_when_the_row_said_enough():
+    tools = ScriptedTools(specs=(FILTER,))
+    report = run(incident_smoke(), FakeModel(filters(), answers("Sources: ops_incident:inc-1")), tools)
+    assert report.questions[0].status == FAIL and report.questions[0].lookups == []
+    assert [c[0] for c in tools.calls] == ["filter"]
+    report = run(smoke_of("a"), FakeModel(searches(), answers("Sources: documentation_page:22")), FakeTools())
+    assert report.questions[0].lookups == []
+
+
+def test_a_failed_lookup_fails_the_question_not_the_run():
+    tools = ScriptedTools(inspect_fails=True)
+    report = run(incident_smoke(), FakeModel(filters(), answers("Sources: ops_incident:inc-1")), tools)
+    q = report.questions[0]
+    assert q.status == FAIL and "cited no node of subtype ops_incident" in q.reasons[0]
+    assert q.lookups == [{"id": "ops_incident:inc-1", "ok": False, "error": "RuntimeError: server went away"}]
+    assert report.error is None
+
+
+#: an incident whose text mentions a ticket the model never read
+FILTER_MENTION = (
+    "filter ok · 1-1 of 1 · complete\n[1] ops_incident:inc-1 (ops_incident) · source workflow:archi-ops\n"
+    "  ticket: tracker_ticket:redmine:4690\n"
+)
+
+
+class MentionTools(ScriptedTools):
+    async def call(self, name, arguments):
+        self.calls.append((name, dict(arguments)))
+        if name == "inspect":
+            return ("inspect ok · tracker_ticket:redmine:4690 (ticket) · complete\nsource px.tickets\n"), False
+        return FILTER_MENTION, False
+
+
+def test_an_id_seen_only_inside_another_record_is_never_looked_up():
+    tools = MentionTools()
+    rows = [{"id": "q", "question": "Which ticket?", "must_cite": {"sources": ["tickets"]}}]
+    smoke = parse_smoke({"bundle": "demo", "pass_threshold": 1, "questions": rows})
+    report = run(smoke, FakeModel(filters(), answers("Sources: tracker_ticket:redmine:4690")), tools)
+    q = report.questions[0]
+    assert q.status == FAIL and q.lookups == []
+    assert [c[0] for c in tools.calls] == ["filter"]
+
+
+def test_no_lookup_once_the_check_is_already_met():
+    tools = MentionTools()
+    report = run(incident_smoke(), FakeModel(filters(), answers("ops_incident:inc-1, see tracker_ticket:redmine:4690")),
+                 tools)
+    assert report.questions[0].status == PASS and report.questions[0].lookups == []

@@ -5,7 +5,7 @@
 # analysis notes (AN-2099-001, HIG-99-001), three invented TWiki topics and two
 # invented CDS records (CMS-PAS-HIG-99-001, CMS-PAS-TOP-99-777), and
 # python/tests/fixtures/cmssw the CMSSW 15_0 release map.
-# python/tests/evaluation/physics_lab.py installs that corpus into a scratch
+# python/tests/evaluation/bundle_lab.py installs that corpus into a scratch
 # database and writes a script that serves its MCP endpoint; then
 # `archi eval --bundle cms-physics --mcp-url <that endpoint> --model <m>` runs
 # this file. On a real instance the set passes only to the extent that instance
