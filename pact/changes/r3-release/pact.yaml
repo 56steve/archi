@@ -61,7 +61,7 @@ evidence:
   status: pass
   command: read-only ps, podman ps and ss on two SubMIT hosts; gh api forks and environments
     of archi-physics/archi; v2 configs on main; confirmed by Jason on board d384
-  head: e0fd121e0d81b7af7398ef748c9ab8d0f68cd5d9
+  head: 3d29c58beb9aa1cac801373032f7c6275794c617
   at: '2026-10-27T01:58:57+00:00'
   note: 'acc.r3-release.r1 only: the inventory is in docs/docs/operating/cutover.md step 1 and on
     #758. Two live 2.x deployments, both moving to 3.0 (Jason, d384, 2026-10-27 01:56Z): SubMIT
