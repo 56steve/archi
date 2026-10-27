@@ -134,7 +134,32 @@ def test_cms_comp_ops_installs_from_packs_and_publishes(tmp_path):
     _install_and_publish(tmp_path, resolution, "cms-comp-ops")
 
 
-def _install_and_publish(tmp_path: Path, resolution, name: str) -> None:
+@needs_db
+def test_cms_physics_installs_from_packs_and_publishes(tmp_path):
+    """The cms-physics bundle (PACT r3-bundle-cms-physics): its default packs,
+    from fixture inputs, with the bundle's physics filter on.
+
+    Two inputs differ from the per-pack fixtures. The bundle fixes a note
+    floor of 2500 for a real mirror; the fixture mirror holds a handful, so
+    the floor is lowered the way an operator overrides it, with the flag on
+    `okg install`. And the generic TWiki fixture has no physics topic, so
+    the filter would leave the source empty; the TWiki root points at the
+    physics dump the cms-analyses tests use instead."""
+    from packs.pack_support import shipped_catalog
+    from packs.physics_fixtures import write_twiki_dump
+
+    catalog = shipped_catalog()
+    bundle = catalog.bundles["cms-physics"]
+    resolution = resolve(catalog, ["cms-physics"])
+    assert set(bundle.default_packs) <= set(resolution.pack_names)
+    physics_twiki = write_twiki_dump(tmp_path / "physics-twiki")
+    _install_and_publish(tmp_path, resolution, "cms-physics", overrides={
+        "analysis_notes_min_notes": "1",
+        "twiki_eos_root": str(physics_twiki),
+    })
+
+
+def _install_and_publish(tmp_path: Path, resolution, name: str, overrides: dict | None = None) -> None:
     """Render, install with okg, commit, ingest and publish; then check lint
     and that each selected pack's invariants were installed."""
     _recreate_database(DSN)
@@ -154,6 +179,7 @@ def _install_and_publish(tmp_path: Path, resolution, name: str) -> None:
         for pack in resolution.pack_names:
             for local, value in FIXTURES.get(pack, lambda d, s: {})(data, server).items():
                 answers[pack.replace("-", "_") + "_" + local] = value
+        answers.update(overrides or {})
         known = {q["id"] for q in rendered.composition.questions}
         assert set(answers) <= known, sorted(set(answers) - known)
 
