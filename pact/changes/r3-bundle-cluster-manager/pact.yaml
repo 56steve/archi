@@ -48,8 +48,8 @@ requirements:
     executed_test]'
 - id: req.r3-bundle-cluster-manager.bundle
   statement: 'bundles/cluster-manager depends on no CERN pack, defaults to docsite, tickets
-    and ops-record, ships ticket-triage as an automation pack, offers servicenow, slurm, htcondor,
-    git-code and node-health, and SubMIT is rebuilt from it.
+    and ops-record, offers servicenow, slurm, htcondor, git-code and node-health, and SubMIT is
+    rebuilt from it. The ticket-triage automation pack ships after 3.0 (board d405).
 
 
     Acceptance:
@@ -174,6 +174,12 @@ evidence:
     Redmine fixture here; its JIRA path is covered by the unit run above, not by this install. The lab smoke run is
     evidenced in r3-bundle-evals, not here.'
 decisions:
+- digest: sha256:d4376f5386610ca8fde5023cf45f0f1aa3b7e30632d0609cb25c1141851626d6
+  reviewer: Jason Mohoney
+  at: '2026-10-27'
+  note: 'Board d405, Jason (2026-10-27 17:19Z): "Drop ticket-triage from 3.0: amend both requirements, ship it later". The bundle requirement no longer says it ships
+    ticket-triage; the pack (#746, branch claude/r3-ticket-triage, parked with its review findings on
+    #746) ships after 3.0.'
 - digest: sha256:a778c39f69df6d9a84a392d384691758b953294523aa51396742c8e12f2966fe
   reviewer: Jason Mohoney
   at: '2026-10-27'

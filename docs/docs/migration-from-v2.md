@@ -31,8 +31,8 @@ stays on this site under [v2 (legacy)](v2/index.md).
 Check this list before you plan a move. Each item is a v2 feature that 3.0.0
 does not have.
 
-- **Queue bots in live mode.** The 3.0 reference automation, `ticket-triage`,
-  is not in 3.0.0. When it ships it runs in shadow first. Promotion to live is
+- **Queue bots in live mode.** The reference automation, `ticket-triage`,
+  comes after 3.0. When it ships it runs in shadow first. Promotion to live is
   a later goal. The v2 bots (Redmine, JIRA ticket responder, Mattermost) keep
   serving until then, on a tagged `v2.x`.
 - **The Ragas benchmark.** `archi evaluate` scored answers with an LLM judge.

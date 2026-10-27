@@ -12,8 +12,8 @@ requirements:
 - id: req.r3-release.cutover
   statement: 'Every live v2 deployment is listed with an owner and is migrated or pinned to
     a tagged v2.x; the v3 line becomes main, v2 is kept as branch v2; w10-v2-teardown''s cutover
-    clause is evidenced; the ticket-triage four-week shadow report is published with the release
-    (ADR 0002 §7.4).
+    clause is evidenced. The ticket-triage automation and its four-week shadow report (ADR 0002
+    §7.4) come after 3.0 (board d405), so the v2 queue bots stay on a tagged v2.x until then.
 
 
     Acceptance:
@@ -70,4 +70,9 @@ evidence:
     CMS comp-ops bot at CERN, WisDQM, CRAB and course deployments do not run 2.x. Not yet done: the
     v2 version of each, read in its owner''s environment, and the migration itself (condition 2);
     acc.r3-release.main is not evidenced.'
-decisions: []
+decisions:
+- digest: sha256:ab0ea327f3ec0229a02316d9b50e0a5079533885d4edd4bbe429a7cbc9d5d1b5
+  reviewer: Jason Mohoney
+  at: '2026-10-27'
+  note: 'Board d405, Jason (2026-10-27 17:19Z): "Drop ticket-triage from 3.0: amend both requirements, ship it later". The cutover requirement no longer requires the
+    ticket-triage shadow report with the release; ticket-triage ships after 3.0.'

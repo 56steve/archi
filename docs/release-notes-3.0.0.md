@@ -43,8 +43,8 @@ and its `v2.x` tags.
 
 ## What is not in 3.0.0
 
-- The `ticket-triage` automation and its shadow report. The v2 queue bots
-  keep serving on a tagged `v2.x`.
+- The `ticket-triage` automation and its shadow report: planned after 3.0.
+  The v2 queue bots keep serving on a tagged `v2.x` until then.
 - Instances rebuilt from the bundles: the live comp-ops instance and SubMIT.
 - The context-eval acceptance run on a live instance, and a smoke-set pass on
   a local model (the sets pass on GPT-6 Luna).
