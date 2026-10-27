@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,10 +22,14 @@ from archi.evaluation.agent import (
     prompt_hash,
     sha,
 )
-from archi.evaluation.smoke import NodeInfo, SmokeSet, check_answer, merge_nodes, nodes_in
+from archi.evaluation.smoke import NodeInfo, SmokeSet, check_answer, merge_nodes, nodes_in, unresolved
 
 REPORT_SCHEMA = "archi-eval-report/1"
 PASS, FAIL, EXECUTION_FAILED = "pass", "fail", "execution_failed"
+#: the read tool the runner uses to learn a cited node's subtype and source, and how
+#: many cited nodes per question it looks up
+INSPECT = "inspect"
+MAX_LOOKUPS = 5
 
 STOP_GAP_NOTE = (
     "This is the $0 smoke harness (PACT r3-bundle-evals). The eval framework tracked in "
@@ -45,6 +50,9 @@ class QuestionResult:
     seconds: float = 0.0
     answer: str = ""
     error: Optional[str] = None
+    #: cited nodes the runner inspected itself (no model) to learn their subtype or
+    #: source: {"id", "ok"} and, when the lookup failed, "error"
+    lookups: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -113,6 +121,7 @@ class Report:
                     "status": q.status,
                     "reasons": q.reasons,
                     "cited": q.cited,
+                    "lookups": q.lookups,
                     "tool_calls": q.tool_calls,
                     "prompt_tokens": q.prompt_tokens,
                     "completion_tokens": q.completion_tokens,
@@ -218,6 +227,22 @@ async def _one(question, model, tools: ToolBox, specs, system, max_steps, max_to
     seen: dict[str, NodeInfo] = {}
     for text in trace.results:
         merge_nodes(seen, nodes_in(text))
+    if any(spec.name == INSPECT for spec in specs):
+        for nid in unresolved(question, trace.answer, seen)[:MAX_LOOKUPS]:
+            # Only what the lookup says about this node counts: the ids it mentions
+            # in passing were never returned to the model.
+            try:
+                text, is_error = await tools.call(INSPECT, {"target": {"kind": "node", "node_id": nid}})
+            except Exception as exc:  # the node stays as the model's tools left it; the report says why
+                result.lookups.append({"id": nid, "ok": False, "error": _describe(exc)})
+                continue
+            info = None if is_error else nodes_in(text).get(nid)
+            if info is None:
+                result.lookups.append({"id": nid, "ok": False,
+                                       "error": text[:200] if is_error else "the reply did not describe the node"})
+                continue
+            merge_nodes(seen, {nid: info})
+            result.lookups.append({"id": nid, "ok": True})
     verdict = check_answer(question, trace.answer, seen)
     result.cited = [{"id": n.id, "subtype": n.subtype, "source": n.source} for n in verdict.cited]
     result.reasons = verdict.reasons
@@ -274,6 +299,13 @@ def write_report(report: Report, out: Path) -> tuple[Path, Path]:
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     md, js = out / "report.md", out / "report.json"
-    md.write_text(render_markdown(report), encoding="utf-8")
-    js.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+    _write_atomic(md, render_markdown(report))
+    _write_atomic(js, json.dumps(report.to_dict(), indent=2) + "\n")
     return md, js
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write next to `path`, then rename: a reader (instance-health) never sees half a report."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)

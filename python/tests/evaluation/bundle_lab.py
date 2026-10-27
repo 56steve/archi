@@ -1,19 +1,28 @@
-"""Install the cms-physics bundle on the synthetic fixture corpus and publish it.
+"""Install a bundle on its synthetic fixture corpus and publish it.
 
-The lab setup behind `bundles/cms-physics/eval/smoke.yaml`: every smoke
-question is answerable from what this script feeds the bundle. Nothing here
-is real: the analysis notes, TWiki pages and CDS records are the invented ones
-in `packs/physics_fixtures.py` (note ids in the 2099 and 99 year ranges); the
-documentation, Indico and CMSSW fixtures are the ones the pack-isolation tests
-use. Run it on a host with the AKMON Postgres image (the isolation tests'
-setup), then serve MCP over the result:
+The lab setup behind `bundles/<bundle>/eval/smoke.yaml` for the bundles whose
+smoke set runs on fixtures (cms-physics, cluster-manager): every
+smoke question is answerable from what this script feeds the bundle. Nothing
+here is real.
 
-    python physics_lab.py --dsn postgresql://postgres:okg@127.0.0.1:55640/evals --work /path/to/scratch
+- cms-physics: the analysis notes, TWiki pages and CDS records are the
+  invented ones in `packs/physics_fixtures.py` (note ids in the 2099 and 99
+  year ranges).
+- cluster-manager: documentation pages, Redmine tickets and ops records about
+  an invented cluster (`fixtures/cluster/`). None of it is CERN- or
+  CMS-specific, because the bundle is for any cluster operator.
+
+Every other pack gets the input the pack-isolation tests give it. Run it on a
+host with the AKMON Postgres image (the isolation tests' setup), then serve
+MCP over the result:
+
+    python bundle_lab.py --bundle cluster-manager --dsn postgresql://postgres:okg@127.0.0.1:55640/evals --work /path/to/scratch
 
 It recreates the database named in the DSN, installs the bundle with okg,
-ingests from a local fixture server, publishes, sets the read role's
-password, and writes `<work>/serve.sh`, which starts `okg mcp-serve` on a
-port with a bearer token. `archi eval --bundle cms-physics --mcp-url
+ingests from a local fixture server, publishes, admits the bundle's ops
+records (when it has the ops-record pack) and publishes again, sets the read
+role's password, and writes `<work>/serve.sh`, which starts `okg mcp-serve`
+on a port with a bearer token. `archi eval --bundle <bundle> --mcp-url
 http://127.0.0.1:<port>/mcp` then runs the smoke set against it.
 """
 from __future__ import annotations
@@ -23,6 +32,7 @@ import json
 import os
 import secrets
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,14 +40,19 @@ TESTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TESTS))
 
 from packs import pack_support as ps  # noqa: E402
+from packs.cluster_fixtures import CLUSTER  # noqa: E402
 from packs.physics_fixtures import (  # noqa: E402
     synthetic_cds_records,
-    write_note_mirror,
     write_twiki_dump,
 )
 
-BUNDLE = "cms-physics"
+BUNDLES = ("cms-physics", "cluster-manager")
 DEPLOYMENT = "px"
+
+#: The ops records each bundle's lab admits (JSONL, one record per line).
+OPS_RECORDS = {
+    "cluster-manager": CLUSTER / "ops_records.jsonl",
+}
 
 _OAI = (
     '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -71,22 +86,33 @@ def synthetic_oai_page() -> bytes:
     return _OAI.format(records="".join(rows)).encode("utf-8")
 
 
-def fixture_answers(pack_names, data: Path, server) -> dict:
-    """The install answers, from the isolation fixtures with the physics inputs swapped in."""
+def _cluster_docsite(data: Path) -> dict:
+    """The invented cluster's documentation pages, in place of the isolation fixture's one page."""
+    out = data / "docsite" / "records.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text((CLUSTER / "docsite_records.json").read_text(encoding="utf-8"), encoding="utf-8")
+    return {}
+
+
+def fixture_answers(bundle: str, pack_names, data: Path, server) -> dict:
+    """The install answers, from the isolation fixtures with the bundle's own inputs swapped in."""
     answers = {}
     for pack in pack_names:
-        if pack == "twiki":
+        if bundle == "cms-physics" and pack == "twiki":
             local = {"eos_root": str(write_twiki_dump(data / "twiki-snapshot"))}
-        elif pack == "cds":
+        elif bundle == "cms-physics" and pack == "cds":
             server.add("/oai2d", synthetic_oai_page(), ctype="text/xml")
             local = {"base_url": server.url + "/oai2d", "sets": '["cerncds:cms-pas"]'}
+        elif bundle == "cluster-manager" and pack == "docsite":
+            local = _cluster_docsite(data)
         else:
             local = ps.FIXTURES.get(pack, lambda d, s: {})(data, server)
         for key, value in local.items():
             answers[pack.replace("-", "_") + "_" + key] = value
-    # The bundle fixes a note floor calibrated on a real mirror build (2500);
-    # the fixture mirror holds two invented notes.
-    answers["analysis_notes_min_notes"] = 1
+    if bundle == "cms-physics":
+        # The bundle fixes a note floor calibrated on a real mirror build (2500);
+        # the fixture mirror holds two invented notes.
+        answers["analysis_notes_min_notes"] = 1
     return answers
 
 
@@ -99,7 +125,7 @@ def _must(result, what: str) -> None:
         raise SystemExit(f"{what} failed (exit {result.returncode})\n{result.stdout[-3000:]}\n{result.stderr[-3000:]}")
 
 
-def build(dsn: str, work: Path, port: int) -> dict:
+def build(bundle: str, dsn: str, work: Path, port: int) -> dict:
     from archi.bundles.render import render
     from archi.bundles.resolve import resolve
 
@@ -122,12 +148,12 @@ def build(dsn: str, work: Path, port: int) -> dict:
     ps.git(["commit", "-q", "--allow-empty", "-m", "baseline"], deployments)
 
     catalog = ps.shipped_catalog()
-    resolution = resolve(catalog, [BUNDLE])
-    rendered = render(resolution, instance, name=BUNDLE)
+    resolution = resolve(catalog, [bundle])
+    rendered = render(resolution, instance, name=bundle)
     server = ps.FixtureServer()
     try:
         answers = {"postgres_dsn": dsn, "archi_data_root": str(data)}
-        answers.update(fixture_answers(resolution.pack_names, data, server))
+        answers.update(fixture_answers(bundle, resolution.pack_names, data, server))
         known = {q["id"] for q in rendered.composition.questions}
         unknown = sorted(set(answers) - known)
         if unknown:
@@ -156,6 +182,16 @@ def build(dsn: str, work: Path, port: int) -> dict:
         ps.git(["commit", "-q", "-m", "px deployment config"], deployments)
         _must(okg("ingest", "--deployment", DEPLOYMENT, "--json"), "okg ingest")
         _must(okg("run", "--once", "--deployment", DEPLOYMENT, "--apply", "--json"), "okg run (publish)")
+        records = OPS_RECORDS.get(bundle)
+        if records and "ops-record" in resolution.pack_names:
+            # Admitted ops records join the graph in the next published generation.
+            submit = subprocess.run(
+                [sys.executable, "-m", "archi.ops.record", "submit", "--deployment", DEPLOYMENT,
+                 "--records", str(records)],
+                cwd=instance, env=env, capture_output=True, text=True, timeout=900,
+            )
+            _must(submit, "archi.ops.record submit")
+            _must(okg("run", "--once", "--deployment", DEPLOYMENT, "--apply", "--json"), "okg run (publish ops records)")
         status = okg("status", "--deployment", DEPLOYMENT, "--json")
         _must(status, "okg status")
         published = json.loads(status.stdout)["publishing"]["latest_published_status"]
@@ -192,11 +228,12 @@ def build(dsn: str, work: Path, port: int) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--bundle", choices=BUNDLES, default="cms-physics", help="the bundle to install (default cms-physics)")
     parser.add_argument("--dsn", required=True, help="superuser DSN of a scratch AKMON Postgres; its database is recreated")
     parser.add_argument("--work", type=Path, required=True, help="scratch directory for the instance, data and serve.sh")
     parser.add_argument("--port", type=int, default=11601, help="port serve.sh gives okg mcp-serve")
     args = parser.parse_args(argv)
-    print(json.dumps(build(args.dsn, args.work, args.port), indent=2))
+    print(json.dumps(build(args.bundle, args.dsn, args.work, args.port), indent=2))
     return 0
 
 

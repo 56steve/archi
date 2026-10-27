@@ -1,4 +1,5 @@
 """The smoke file format and the deterministic answer checks (no model, no network)."""
+import re
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,7 @@ def q(**kw):
 
 def test_nodes_in_reads_rows_with_subtype_and_source():
     nodes = nodes_in(SEARCH_TEXT)
-    assert nodes["meeting_minutes:1716863"] == NodeInfo("meeting_minutes:1716863", "meeting_minutes", "gp.indico-live")
+    assert nodes["meeting_minutes:1716863"] == NodeInfo("meeting_minutes:1716863", "meeting_minutes", "gp.indico-live", listed=True)
     assert nodes["documentation_page:22"].source == "gp.docsite"
 
 
@@ -66,12 +67,24 @@ INSPECT_UNTRUSTED = (
 )
 
 
+def test_a_row_without_subtype_is_listed_and_a_mention_is_not():
+    text = "filter ok\n[1] ops_incident:inc-1\n  ticket: tracker_ticket:redmine:4690\n"
+    nodes = nodes_in(text)
+    assert nodes["ops_incident:inc-1"] == NodeInfo("ops_incident:inc-1", listed=True)
+    assert nodes["tracker_ticket:redmine:4690"] == NodeInfo("tracker_ticket:redmine:4690")
+
+
+def test_an_id_with_more_than_one_colon_is_read_whole():
+    text = "see tracker_ticket:redmine:4812 and okg:fixture:gen:20260915T061500Z at 09:40:11Z"
+    assert set(nodes_in(text)) == {"tracker_ticket:redmine:4812", "okg:fixture:gen:20260915T061500Z"}
+
+
 def test_nodes_in_reads_the_record_inspect_returns_with_its_source():
     assert nodes_in(INSPECT_TEXT)["cmssw_release:CMSSW_15_0_0"] == NodeInfo(
-        "cmssw_release:CMSSW_15_0_0", "cmssw_release", "px.cmssw-releases")
+        "cmssw_release:CMSSW_15_0_0", "cmssw_release", "px.cmssw-releases", listed=True)
     note = nodes_in(INSPECT_UNTRUSTED)["an:HIG-99-001"]
     # The source line above the field blocks counts; one inside the record text does not.
-    assert note == NodeInfo("an:HIG-99-001", "analysis_note", "px.analysis-notes")
+    assert note == NodeInfo("an:HIG-99-001", "analysis_note", "px.analysis-notes", listed=True)
 
 
 def test_a_source_check_passes_on_a_node_read_with_inspect():
@@ -193,9 +206,29 @@ def test_a_bad_smoke_file_is_refused(bad, message):
 SHIPPED = sorted((REPO / "bundles").glob("*/eval/smoke.yaml"))
 
 
-def test_the_shipped_smoke_sets_exist_for_cern_team_and_cms_physics():
+def test_the_shipped_smoke_sets_exist():
     names = {p.parent.parent.name for p in SHIPPED}
-    assert {"cern-team", "cms-physics"} <= names
+    assert {"cern-team", "cms-physics", "cluster-manager"} <= names
+
+
+def test_the_cluster_manager_set_and_corpus_name_nothing_from_cern_or_cms():
+    """cluster-manager is for any cluster operator, so its smoke set and the
+    fixture corpus behind it hold no CERN or CMS name."""
+    cluster = REPO / "python" / "tests" / "fixtures" / "cluster"
+    files = [
+        REPO / "bundles" / "cluster-manager" / "eval" / "smoke.yaml",
+        cluster / "docsite_records.json",
+        cluster / "ops_records.jsonl",
+        cluster / "redmine_issues_page1.json",
+        cluster / "redmine_issues_page2.json",
+    ]
+    banned = re.compile(
+        r"\bcern\b|cms|wlcg|rucio|lxplus|\blhc\b|\batlas\b|\bindico\b|\btwiki\b|\bT[0-3]_[A-Z]{2}_",
+        re.IGNORECASE,
+    )
+    for path in files:
+        hits = banned.findall(path.read_text(encoding="utf-8"))
+        assert not hits, (path.name, hits)
 
 
 @pytest.mark.parametrize("path", SHIPPED, ids=lambda p: p.parent.parent.name)

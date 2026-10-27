@@ -28,6 +28,9 @@ affected_code:
 - python/archi/cli/__init__.py
 - python/archi/bundles/cli.py
 - python/tests/test_bundle_cern_team.py
+- python/tests/test_bundle_cluster_manager.py
+- python/tests/fixtures/cluster/docsite_records.json
+- python/tests/fixtures/cluster/ops_records.jsonl
 requirements:
 - id: req.r3-bundle-evals.harness
   statement: '`archi eval [--bundle X] [--instance DIR] [--model M] [--model-url URL] [--out DIR]`
@@ -48,8 +51,8 @@ requirements:
     - acc.r3-bundle-evals.run: an eval run on a scratch instance on submit76 with a local
     model produces report.md and report.json. [evidence: executed_test]'
 - id: req.r3-bundle-evals.ci
-  statement: 'Each shipped bundle with a smoke set (cern-team and cms-physics now; cms-comp-ops
-    and cluster-manager when their sets are written) has at least 10 questions answerable
+  statement: 'Each shipped bundle with a smoke set (cern-team, cms-physics and cluster-manager;
+    cms-comp-ops has no set in 3.0, board d380 Q6) has at least 10 questions answerable
     from its fixture corpus. Each question lists the evidence it must cite (node ids, subtypes
     or sources) and any strings the answer must hold, so no LLM judge is needed. A local-model
     run passes at least the bundle''s pass threshold, which starts at 7 of 10. The nightly
@@ -59,7 +62,7 @@ requirements:
 
     Acceptance:
 
-    - acc.r3-bundle-evals.sets: cern-team and cms-physics each ship a smoke set of at least
+    - acc.r3-bundle-evals.sets: cern-team, cms-physics and cluster-manager each ship a smoke set of at least
     10 questions and a local-model run on the fixture instance passes at least the threshold.
     [evidence: executed_test]
 
@@ -76,8 +79,8 @@ tasks:
     - python/tests/evaluation/ [evidence: pytest]'
 - id: task.r3-bundle-evals.sets
   requirement: req.r3-bundle-evals.ci
-  verification: 'Write the smoke sets (cern-team, cms-physics) over their fixture corpora and
-    run them on submit76 with a local model.
+  verification: 'Write the smoke sets (cern-team, cms-physics, cluster-manager) over their fixture corpora and
+    run them on a lab host with a local model (or GPT-6 Luna, d366).
 
 
     Test plan:
@@ -152,3 +155,11 @@ decisions:
     threshold, so a smaller CPU model cannot be expected to clear it and a failing gate would say
     nothing about the bundle. The CPU model''s timing and score are untested (not measured).
     acc.r3-bundle-evals.sets is NOT met as written: the lab model did not reach the threshold.'
+- digest: sha256:b2ed40f44679e1e42388f5e2337eeb46121fbfc035ea7623df60145f21f540d2
+  reviewer: Jason Mohoney
+  at: '2026-10-27'
+  note: 'Board d380 Q6, Jason: "Record it; drop #748 from 3.0". cms-comp-ops ships no smoke set in
+    3.0. The instruction came from Jason in the archi lane session on 2026-10-27 ("let''s exclude
+    cms-comp ops from the bundle"), read narrowly as excluding it from the eval work; the bundle itself
+    stays in 3.0 (merged in #849). cluster-manager''s set is added by this change, on a fixture corpus
+    with no CERN or CMS content, because the bundle is for any cluster operator.'
