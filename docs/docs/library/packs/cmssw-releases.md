@@ -14,7 +14,7 @@ The CMSSW release catalog, from the public cms-bot releases.map.
 
 ## In which bundles
 
-- Default in: [`cms-physics`](../bundles/cms-physics.md)
+- Default in: [`cms-comp-ops`](../bundles/cms-comp-ops.md), [`cms-physics`](../bundles/cms-physics.md)
 - Optional in: none
 
 Add it to an instance with `archi add cmssw-releases`.

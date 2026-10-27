@@ -52,7 +52,8 @@ def test_the_packs_are_the_adr_selection():
 def test_the_bundle_is_only_a_manifest():
     """The old profile files are gone: sources, schemas, invariants and
     playbooks now come from the packs, so a dropped pack leaves no trace."""
-    assert sorted(p.name for p in BUNDLE.iterdir()) == ["README.md", "bundle.yaml"]
+    # eval/ holds the smoke questions (PACT r3-bundle-evals), not profile files.
+    assert sorted(p.name for p in BUNDLE.iterdir()) == ["README.md", "bundle.yaml", "eval"]
 
 
 def test_the_bundle_validates_with_a_credential_free_default(catalog):

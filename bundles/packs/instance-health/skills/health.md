@@ -7,7 +7,20 @@ The `instance-health` automation watches this instance. It runs on a schedule (h
 - `archi doctor --json`: every failing check. `source-freshness` yields one problem per late source.
 - `okg sync frontier --json`: a source whose newest ingest failed or whose frontier is blocked.
 - The ops records: an automation whose recent decisions are mostly errors.
-- Eval reports under `eval/reports/`, when there are any. None exist yet, so this is skipped, and the proposal says so.
+- The `report.json` files `archi eval` writes under `<data root>/eval/` (or `eval.reports_dir` in `ops.yaml`),
+  for the bundles `archi.yaml` lists; reports of other bundles are left out, and the proposal says so.
+  Per bundle, the latest run is a problem (`eval/<bundle>`) when it ended `execution_failed` (the run could not
+  ask the instance: a failed signal, not a low score), when it is below the bundle's threshold, or when its
+  score fell more than `eval.min_drop` (default 0.1) below the mean of up to three earlier runs of the same
+  model and the same question set. An earlier run that ended `execution_failed`, or in which any question did,
+  is left out of that mean. Questions of the latest run that could not be asked are named in the issue: they
+  are a model or endpoint failure, not wrong answers.
+- With no report, eval is skipped, and the proposal says so. When the latest run has no earlier run to compare
+  with (only one run, or none of the same model and question set), it is judged on its threshold only.
+- A newest run older than `eval.max_age_days` (default 14) is a note in the proposal, not an issue.
+- `archi eval` overwrites `report.json` in its default directory, so by default there is only ever one run per
+  bundle and no trend. To keep a history, run it as
+  `archi eval --bundle <bundle> --out <data root>/eval/<bundle>/<date>`.
 
 **What it does**
 

@@ -14,7 +14,7 @@ Documentation sites, read from the records cache the static-docs downloader writ
 
 ## In which bundles
 
-- Default in: [`cern-team`](../bundles/cern-team.md)
+- Default in: [`cern-team`](../bundles/cern-team.md), [`cluster-manager`](../bundles/cluster-manager.md)
 - Optional in: none
 
 Add it to an instance with `archi add docsite`.

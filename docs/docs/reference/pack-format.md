@@ -43,7 +43,7 @@ not leave that directory (`..`, absolute paths and `~` are refused).
 | `search_subtypes` | | Subtypes added to the `content` search profile. |
 | `search_profiles` | | Named okg search profiles, `{<name>: {description, subtypes}}`, added to the instance's `search.profiles`. Not `content`. |
 | `live_tools` | | `archi.tools.*` entries for the MCP server. |
-| `action_classes` | | File holding an `action_classes:` mapping keyed by id (automation packs). |
+| `action_classes` | | File holding an `action_classes:` mapping keyed by id. Automation packs declare theirs here; a pack that ships the live tools those classes use may declare them too (`slurm` does), so every instance that installs the pack gets the same payload schemas. |
 | `automation` | automation packs | The automation: trigger, context gate, playbook, action classes, proposal schema, budget, levels. See [Automation packs](#automation-packs). |
 | `files` | | Files installed at the same path in the deployment root (okg's `files:` allow-list applies). |
 | `prompt_fragment` | | Markdown appended to the chat system prompt. |
@@ -269,8 +269,8 @@ added outside archi).
 ## Context quality
 
 ADR 0002 section 6.1 asks that the context layer be measured, not assumed.
-Packs carry three of the measures; the fourth, the context eval, is a separate
-change.
+Packs carry three of the measures; the fourth, the context eval, is a question
+set run by `archi eval --context` (see [archi eval](../operating/evals.md#context-evals-archi-eval-context)).
 
 **Freshness.** Every source of a context pack declares `max_staleness` in
 `freshness:`. No source template sets a schedule (their triggers are `manual`
@@ -350,7 +350,8 @@ automation:
   context_gate:                       # the keys of archi.ops.context_gate.GateSpec
     sources: [redmine.tickets]
     max_staleness: 24h
-    min_context_eval_score: 0.8
+    min_context_eval_score: 0.8       # the newest `archi eval --context` run's graph recall@k
+    max_age_days: 14                  # optional; that run may be at most this old (default 14)
     invariants: [redmine_link_ticket_site]
   playbook: triage.md                 # under playbooks/
   action_classes: [draft_reply, set_ticket_status]
@@ -601,7 +602,7 @@ automations:
 | doctor | `archi doctor --json`, every failing check (warnings with `include_warnings: true`) | `<check id>/instance`; `source-freshness/<source>` for each late source |
 | ingest | `okg sync frontier --json`: a source whose frontier is `blocked` (failed run, blocked publish) | `ingest/<source>` |
 | automation errors | the ops records, through the reader of `archi.ops.shadow`: an automation with at least `min_decisions` decisions in `window_hours` of which `max_rate` or more are `error`, `invalid_proposal` or `refused` | `automation-errors/<automation>` |
-| eval | `eval/reports/*.json` in the instance, if any: `{"finished_at", "score"}`; the latest score more than `min_drop` below the mean of the three before it. This format is provisional until `archi eval` exists. No report exists today, so the signal is skipped, and the proposal says so | `eval/score` |
+| eval | every `report.json` that [`archi eval`](../operating/evals.md) wrote under `<data root>/eval/` (its default `--out`; `eval.reports_dir` reads elsewhere), for the bundles `archi.yaml` lists (others are left out, and the proposal says so). Per bundle, the latest run is a problem when it ended `execution_failed` (a failed signal, an error; no score is judged), when it passed fewer questions than the bundle's threshold (an error), or when its score (passed / total) is more than `min_drop` (default 0.1, one question in ten) below the mean of up to three earlier runs of the same model and question set (a warning). Earlier runs that ended `execution_failed`, or in which any question did, are left out of that mean; such questions in the latest run are named in the issue as a model or endpoint failure. With no report at all, the signal is skipped, and the proposal says so. When the latest run has no earlier run to compare with (one run so far, or none of the same model and question set), it is judged on its threshold only, and the proposal says the trend was skipped (`eval-trend`). A newest run older than `max_age_days` (default 14) is a note in the proposal (`eval-stale`), not an issue | `eval/<bundle>` |
 
 A signal that cannot be read (okg down, `archi doctor` crashing, a malformed eval report) is itself a
 problem, `monitor/<signal>`, and that signal's other issues are left as they are for the run: failing to
@@ -634,4 +635,5 @@ to an instance that raises the pack's `max_level` to L2 (and its own level in `a
 an escalation. A draft pull request for a mechanical fix is not built yet.
 
 `ops.yaml` can also set `ignore_checks: [services]`, `include_warnings`, `error_rate: {window_hours,
-min_decisions, max_rate}` and `eval: {min_drop}` under `proposer`.
+min_decisions, max_rate}` and `eval: {min_drop, reports_dir, max_age_days}` under `proposer`. `archi eval` overwrites the report
+in its default directory, so a trend needs runs kept apart: `archi eval --out <data root>/eval/<bundle>/<date>`.

@@ -8,6 +8,12 @@ why: 'The workshop''s operations paradigm: algorithmic first, and agents that mo
   work. ADR 0002 §7.5.'
 affected_code:
 - bundles/packs/instance-health/
+- python/archi/health/
+- python/tests/ops/test_health_signals.py
+- python/tests/ops/test_health_runtime.py
+- python/tests/ops/health_eval_reports.py
+- docs/docs/reference/pack-format.md
+- docs/docs/operating/evals.md
 requirements:
 - id: req.r3-ops-self-monitoring.health
   statement: 'An instance-health automation pack (L0/L1) runs on a schedule, reads archi doctor
@@ -57,4 +63,26 @@ evidence:
     explicit pack opt-in (evidence: own_signals). Full suite 2828 passed, 29 skipped, network off. Two
     independent reviews; findings fixed. Turning it on for cms-compops and SubMIT (task rollout) is not
     done and needs a go.'
+- kind: executed_test
+  requirement: req.r3-ops-self-monitoring.health
+  status: pass
+  command: python -m pytest python/tests/ops/test_health_signals.py python/tests/ops/test_health_runtime.py
+    python/tests/ops/test_health_forge.py python/tests/ops/test_health_tracker.py python/tests/test_docs_generated.py
+    -q; python -m pytest python/tests -q
+  head: c20ee8d6ce3431e5e05a011e4f55fd608c925140
+  at: '2026-10-27T02:58:52+00:00'
+  note: 'Run on submit76 from a clean clone of the head, with the okg 0.2.0 wheel and Python 3.12. Eval trends
+    are now read. The instance-health eval signal reads every report.json that archi eval wrote under
+    <data root>/eval/ (or eval.reports_dir), for the bundles archi.yaml lists, and raises one issue per bundle
+    (eval/<bundle>) when the latest run ended execution_failed (reported as a failed health signal, not a low
+    score), passed fewer questions than the bundle threshold, or scored more than eval.min_drop (default 0.1)
+    below the mean of up to three earlier runs of the same model and question set. Earlier runs in which the
+    run or any question ended execution_failed are left out of that mean, and such questions in the latest run
+    are named in the issue. A newest run older than eval.max_age_days (default 14) is a note, not an issue. No
+    report: the signal is still skipped and said so. Proven with fixture report.json files built from
+    archi.evaluation.runner.Report.to_dict (no eval runs): threshold, drop, margin setting, execution_failed
+    runs and questions, grown question set and changed prompt hash, baseline window, model and bundle
+    separation, unlisted bundles, the age note, duplicate, foreign and malformed reports, the data-root and
+    archi.yaml defaults, and a proposal from a real archi.yaml that validates against the pack schema. Health
+    tests 141 passed; full suite 3481 passed, 27 skipped. A context-eval report, once #698 lands, is not read.'
 decisions: []

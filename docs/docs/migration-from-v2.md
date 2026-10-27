@@ -23,7 +23,7 @@ stays on this site under [v2 (legacy)](v2/index.md).
 | You pick a model provider (OpenAI, Anthropic, Gemini, local) in the Archi config. | Archi stores no model. The agent is configured with its own. |
 | Sources are listed under `data_manager.sources` (links, git, Indico, JIRA, Redmine). | Sources come in packs: `docsite`, `indico`, `jira`, `git-code` and more. See the [library](library/index.md). |
 | Queue bots (Redmine, JIRA, Mattermost) draft replies. | Automations under autonomy levels, with a shadow period before going live. See [the operations layer](operations-layer.md). |
-| Quality is checked with `archi evaluate` (Ragas benchmark). | Context evals and `archi eval`. Not in 3.0.0. See [archi eval](operating/evals.md). |
+| Quality is checked with `archi evaluate` (Ragas benchmark). | `archi eval` (smoke sets with deterministic checks) and `archi eval --context` (retrieval scored against gold evidence). See [archi eval](operating/evals.md). |
 | Redeploy with `archi restart`. | `archi up`, `archi down`, `archi add`, `archi diff`. See [Operating](operating/index.md). |
 
 ## What has no equivalent yet
@@ -35,7 +35,9 @@ does not have.
   is not in 3.0.0. When it ships it runs in shadow first. Promotion to live is
   a later goal. The v2 bots (Redmine, JIRA ticket responder, Mattermost) keep
   serving until then, on a tagged `v2.x`.
-- **`archi eval`.** The v2 benchmark (`archi evaluate`) has no replacement yet.
+- **The Ragas benchmark.** `archi evaluate` scored answers with an LLM judge.
+  `archi eval` replaces it with deterministic checks (cited records and required
+  strings) and a retrieval score; there is no LLM-judged score.
 - **The Piazza bot.** It is retired and will not be ported.
 - **The grader app, the A/B tools and the playbook store.** The design drops
   them. The `v2.x` tags keep them.
@@ -47,15 +49,15 @@ does not have.
 - **Web pages behind a login (`sso-` links).** The `docsite` pack reads public
   pages only. `hypernews` reads an SSO cookie file, which is interactive to
   make. There is no general SSO page scraper.
-- **Redmine as a source.** No pack reads Redmine.
 - **More than one Git repository per `git-code` pack,** and the v2 "MkDocs
   repository" mode. `git-code` reads one repository's tracked files and
   history.
 - **Restricted Indico events.** The `indico` pack reads public events and
   asks for no credential.
 - **Helm deployment.** 3.0 runs one compose project with podman or docker.
-- **The `cms-comp-ops` and `cluster-manager` bundles.** Planned for 3.0, not in
-  3.0.0. `cms-physics` and `cern-team` are.
+- **Live instances rebuilt from the bundles.** All four bundles ship
+  (`cern-team`, `cms-physics`, `cms-comp-ops`, `cluster-manager`), but the
+  live comp-ops and SubMIT instances have not been rebuilt from them yet.
 
 ## Before you start: back up v2
 

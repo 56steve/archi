@@ -14,7 +14,7 @@ CMS Site Support Team site status, from the cache the cmssst downloader writes.
 
 ## In which bundles
 
-- Default in: none
+- Default in: [`cms-comp-ops`](../bundles/cms-comp-ops.md)
 - Optional in: none
 
 Add it to an instance with `archi add cmssst`.

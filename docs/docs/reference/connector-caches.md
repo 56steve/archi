@@ -124,6 +124,22 @@ Upgrade note for `cmssw_releases`: release records now carry `production_archite
 
 Upgrade note for `twiki_eos`: TWiki pages whose topic name holds a CMS analysis id (HIG29991, B2G28992Review) now carry `analysis_id` (HIG-29-991) and the page text gains "HIG-29-991 CMS-HIG-29-991", so a search for the hyphenated id finds them. An earlier install keeps its own copy of `schemas/sources.yaml`; copy the new file over it (or reinstall), commit, run `okg catalog ownership claim --deployment .` and `okg catalog load --apply`, then re-ingest `twiki_eos` and publish. On the CMS dump, 4,282 of 43,431 page records change (new attribute and text); no chunk changes, so no chunk is re-embedded.
 
+## Cluster-manager caches
+
+The `cluster-manager` bundle's packs read these caches under `ARCHI_DATA_ROOT`
+(for example `servicenow/records.json`). Each downloader writes `records.json` and
+`meta.json` atomically; `meta.json`'s `record_count` is cross-checked against what the
+reader parses, and a mismatch withholds the scope claim. A cache that is missing, empty
+or the wrong JSON shape fails the run loudly, as above. Nothing is fetched at ingest.
+
+| pack | cache | refreshed by |
+|---|---|---|
+| `servicenow` | `servicenow/records.json`, a JSON **list** of Table API rows, each with a `table` (`incident`, `sc_request` or `kb_knowledge`) and a `number`. Reads `short_description`, `description` (`text` for an article), `state`, `priority`, `category`, `assignment_group`, `assigned_to`, `opened_by` / `caller_id` / `requested_for`, `author`, `cmdb_ci`, `opened_at`, `sys_updated_on`, `resolved_at`, `close_notes`. A reference may be a string or a `{"display_value": ...}` object. | `python -m archi.downloaders.servicenow --instance-url <url> --auth oauth\|basic`. OAuth reads `SERVICENOW_CLIENT_ID` and `SERVICENOW_CLIENT_SECRET`; basic auth reads `SERVICENOW_USERNAME` and `SERVICENOW_PASSWORD`. Read-only GETs; no value is written or printed. |
+| `tickets` | `tickets/records.json`, a JSON **list**: the flat shape (`system`, `key`, `subject`, `description`, `project`, `tracker`, `status`, `priority`, `author`, `assignee`, `created`, `updated`, `closed`, `notes`, optional `url`) or a Redmine REST issue (`id`, `subject`, `project`, `author`, `assigned_to`, `created_on`, `journals`). The node id is `tracker_ticket:<system>:<key>`, so a JIRA issue moved to another project (a new key) becomes a new node and the old one is retracted at the next complete download. | `python -m archi.downloaders.tickets --redmine-url <url>` and/or `--jira-url <url> --jira-project <KEY>` (or `--jql`); both URLs write one cache. `REDMINE_API_KEY` is optional: unset, only public projects are visible. A JIRA download needs `JIRA_API_TOKEN` (a personal access token, sent as a bearer header to the REST v2 search API) and an `https://` URL; it pages in key order, writes people as display names, replaces `[~login]` mentions, and skips comments restricted to a group or role unless `--include-restricted-comments` is given. Email addresses in text are removed when the cache is read. `python -m archi.downloaders.redmine --base-url <url>` still writes a Redmine-only cache. |
+| `slurm` | `slurm/records.json`, a JSON **object**: `cluster`, `collected_at`, and lists `partitions`, `nodes`, `reservations`, `jobs` (field list in `archi/sources/slurm.py`). No partitions and no nodes is a failed export. | `python -m archi.downloaders.slurm --cluster <name>` on a host with the Slurm client: it runs `sinfo`, `scontrol show reservation` and `sacct`, all read-only, and needs no credential from archi. |
+| `htcondor` | `htcondor/records.json`, a JSON **object**: `pool`, `collected_at`, `totals`, `machines`, `schedds`. No machines is a failed export. | `python -m archi.downloaders.htcondor --pool <name>`: two read-only `condor_status` queries. |
+| `node-health` | `node-health/records.json`, a JSON **list** of per-node reports: `node`, `cluster`, `observed_at`, optional `status`, and `checks` (`name`, `status` of `ok`, `warn` or `fail`, `detail`). | the site's own health exporter; nothing in archi runs a check. |
+
 ## Reference caches are different
 
 `docsite` and `gitlab_docs` can also read *reference* caches to emit

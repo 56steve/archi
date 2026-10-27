@@ -14,7 +14,7 @@ nav:
       - Overview: operating/index.md
       - What each command does: operating/commands.md
       - archi doctor: operating/doctor.md
-      - archi eval (coming): operating/evals.md
+      - archi eval: operating/evals.md
       - Data persistence: operating/persistence.md
       - Upgrade and migration: operating/upgrade-and-migration.md
       - Cutover runbook: operating/cutover.md

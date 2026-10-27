@@ -252,7 +252,7 @@ def doctor_report():
 
 
 def proposer(tmp_path, **kw):
-    return HealthProposer(HealthConfig(), instance_dir=tmp_path, deployment="inst", dsn="postgresql://x", now=lambda: T,
+    return HealthProposer(kw.get("config") or HealthConfig(eval_reports_dir="eval"), instance_dir=tmp_path, deployment="inst", dsn="postgresql://x", now=lambda: T,
                           read_doctor=kw.get("doctor", doctor_report), read_frontier=lambda: {"rows": []},
                           read_ops_records=lambda subtype: [])
 
@@ -278,6 +278,26 @@ def test_a_healthy_instance_still_gets_a_proposal_so_the_issues_can_close(tmp_pa
 
     raw = proposer(tmp_path, doctor=lambda: {"ok": True, "checks": []}).propose(request()).proposal
     assert raw["payload"]["problems"] == [] and raw["summary"].startswith("Instance health: no problems found in doctor")
+    validate_proposal(raw, auto, "L1", {"ops_incident:inc-1"})
+
+
+def test_eval_reports_under_the_instance_data_root_reach_the_proposal(tmp_path, auto):
+    """The default place: `archi eval` writes <data root>/eval/<bundle>/report.json; the proposer reads it there."""
+    from archi.ops.loop import validate_proposal
+    from archi.stack.instance import Instance, Ports
+    from health_eval_reports import scored, write_report
+
+    inst = Instance(dir=tmp_path / "inst", name="demo", bundles=["cern-team"], data_root=tmp_path / "data",
+                    runtime="docker", ports=Ports(graph_db=15432, mcp=18080, webui=13000))
+    inst.dir.mkdir()
+    inst.save()
+    write_report(tmp_path / "data" / "eval", started_at="2026-10-25T03:00:00Z", statuses=["execution_failed"] * 10,
+                 error="the MCP endpoint offers no tools, so the agent has nothing to read with")
+    raw = proposer(inst.dir, config=HealthConfig(), doctor=lambda: {"ok": True, "checks": []}).propose(request()).proposal
+    (problem,) = raw["payload"]["problems"]
+    assert problem["key"] == "eval/cern-team" and problem["family"] == "eval" and problem["severity"] == "error"
+    assert "not a low score" in problem["detail"] and "eval" in raw["payload"]["scope"]
+    assert "eval/cern-team" in raw["summary"] and "skipped" not in raw["summary"]  # a failed run is judged, not skipped
     validate_proposal(raw, auto, "L1", {"ops_incident:inc-1"})
 
 

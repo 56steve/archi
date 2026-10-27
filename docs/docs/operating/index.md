@@ -10,7 +10,7 @@ small:
 | Start or stop the stack | `archi up`, `archi down`. See [Data persistence](persistence.md). |
 | Add a source | `archi add <pack>`. See [Adding a source](../adding-a-source.md). |
 | See what drifted from the install | `archi diff` |
-| Check answer quality | `archi eval`. This is [coming](evals.md). |
+| Check that the instance answers | `archi eval`. See [archi eval](evals.md). |
 | Move to a newer Archi | [Upgrade and migration](upgrade-and-migration.md) |
 | Run automations | `archi ops`. See [the operations layer](../operations-layer.md). |
 | Something looks wrong | [Footgun ledger](footguns.md) |
