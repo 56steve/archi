@@ -103,7 +103,12 @@ For every group the build:
    the redactor reads control characters as part of an address, but the
    check below would refuse an address holding one. The lock records `text_pages`, `pages_valid_utf8`,
    `pages_with_fallback_runs`, `pages_bytes_dropped`, `fallback_bytes` (per
-   decoding). A text file with more than 1% control characters, and at
+   decoding). A file *name* that is not UTF-8 (a TWiki dump has
+   `DsTotauTo` + three Latin-1 `0xB5` bytes) gets the same fallback, so it
+   is archived as `DsTotauToµµµ.txt`; the lock lists each one in
+   `renamed_files` (`source_name` with the invalid bytes written as `\xNN`,
+   and `archive_name`). Two names that read the same once decoded refuse
+   the group, and a non-UTF-8 name in any other group refuses it. A text file with more than 1% control characters, and at
    least 16 of them, is refused as binary. Control characters here are C0
    controls, DEL and C1 controls (U+0080 to U+009F); tab, newline, vertical
    tab, form feed and carriage return do not count, and neither do the
@@ -263,7 +268,8 @@ configured), `archive`, `sha256`, `bytes`,
 `addresses_removed`, `obfuscated_addresses_removed`,
 `normalized_addresses_removed`, `input_file` (for CMSSW, which input was used),
 `text_pages`, `pages_valid_utf8`, `pages_with_fallback_runs`,
-`fallback_bytes`, `empty_topic_files` and `empty_topic_names` (TWiki),
+`fallback_bytes`, `renamed_files`, `empty_topic_files` and
+`empty_topic_names` (TWiki),
 `contents_sha256` (a digest of the unpacked files), `archive_dir`, and the
 dropped and extra kept fields. It also records who built it, when, on which
 host, the archi version and commit, and the zstd version and level.

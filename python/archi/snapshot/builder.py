@@ -414,8 +414,13 @@ def _prepare_group(group: GroupConfig, tmp_dir: str | Path | None) -> PreparedGr
                 "pages_with_fallback_runs": 0,
                 "pages_bytes_dropped": 0,
                 "fallback_bytes": {"cp1252": 0, "latin-1": 0},
+                "renamed_files": [
+                    {"source_name": shown, "archive_name": rel}
+                    for rel, _path, shown in text_files
+                    if shown is not None
+                ],
             }
-        for rel, path in text_files:
+        for rel, path, _shown in text_files:
             data = path.read_bytes()
             if empty_files is not None and is_blank_topic(data):
                 empty_files.append(rel)
@@ -783,7 +788,50 @@ def _text_files(spec: GroupSpec, source: Path) -> list[tuple[str, Path]]:
         if not (candidate.exists() or candidate.is_symlink()):
             raise GroupRefused(spec.name, f"{spec.text.pattern} is missing in {source}")
         names = [spec.text.pattern]
-    return [(rel, _safe_file(spec.name, source, rel)) for rel in sorted(names)]
+    files: list[tuple[str, Path, Optional[str]]] = []
+    seen: dict[str, str] = {}
+    for rel in sorted(names):
+        path = _safe_file(spec.name, source, rel)
+        archive_rel, renamed = _archive_name(
+            spec.name, rel, spec.text.fallback_invalid_bytes
+        )
+        if archive_rel in seen:
+            raise GroupRefused(
+                spec.name,
+                f"file names {_shown_name(seen[archive_rel])} and "
+                f"{_shown_name(rel)} both read as {archive_rel} once their "
+                "invalid bytes are decoded",
+            )
+        seen[archive_rel] = rel
+        files.append((archive_rel, path, _shown_name(rel) if renamed else None))
+    return files
+
+
+def _archive_name(group: str, rel: str, fallback: bool) -> tuple[str, bool]:
+    """``rel`` as valid Unicode, and whether its bytes had to be decoded.
+
+    Python reads a file name that is not UTF-8 with ``surrogateescape``: each
+    invalid byte becomes one lone surrogate (U+DC80 to U+DCFF), which UTF-8
+    cannot store, so the reader (and the archive) would fail on it. With
+    ``fallback`` each such byte becomes its cp1252 (else Latin-1) character,
+    as in page text (a TWiki ``DsTotauTo`` + ``0xB5`` x3 reads as ``µµµ``);
+    without it the group is refused.
+    """
+    if not _SURROGATE_RE.search(rel):
+        return rel, False
+    if not fallback:
+        raise GroupRefused(
+            group, f"file name {_shown_name(rel)} is not valid UTF-8"
+        )
+    return "".join(
+        _fallback_char(ord(char) - 0xDC00)[0] if "\udc80" <= char <= "\udcff" else char
+        for char in rel
+    ), True
+
+
+def _shown_name(rel: str) -> str:
+    """A file name as printable ASCII-safe text: invalid bytes as ``\\xNN``."""
+    return os.fsencode(rel).decode("utf-8", errors="backslashreplace")
 
 
 #: C0 controls other than tab, newline, vertical tab, form feed and carriage

@@ -859,6 +859,45 @@ def test_cp1252_and_latin1_runs_are_decoded_and_counted(tmp_path, sources):
     assert row["fallback_bytes"] == {"cp1252": 5, "latin-1": 1}
 
 
+def _write_bytes_name(folder: Path, name: bytes, data: bytes) -> None:
+    """Write a file whose name is raw bytes (not always valid UTF-8)."""
+    try:
+        with open(os.path.join(os.fsencode(folder), name), "wb") as handle:
+            handle.write(data)
+    except OSError as exc:  # APFS and some others refuse non-UTF-8 names
+        pytest.skip(f"this filesystem refuses the name {name!r}: {exc}")
+
+
+def test_a_latin1_file_name_is_decoded_and_listed(tmp_path, sources):
+    # A real TWiki dump: "DsTotauTo" + 0xB5 x3 (Latin-1 micro signs). Python
+    # reads the name with surrogates, which the reader could not re-encode.
+    twiki = sources["twiki-eos"]
+    _write_bytes_name(
+        twiki, b"BPH-DsTotauTo\xb5\xb5\xb5.txt", b"---+ Decay\nTau to three muons.\n" + PADDING
+    )
+    out = tmp_path / "out"
+    lock = build(load_config(write_config(tmp_path, sources, only=["twiki-eos"])), out)
+    members = read_archive(out / "twiki-eos.tar.zst")
+    page = members["data/twiki-eos/BPH-DsTotauToµµµ.txt"].decode("utf-8")
+    assert page.startswith("---+ Decay\nTau to three muons.\n")
+    row = lock["groups"]["twiki-eos"]
+    assert row["record_count"] == 3
+    assert row["renamed_files"] == [
+        {
+            "source_name": "BPH-DsTotauTo\\xb5\\xb5\\xb5.txt",
+            "archive_name": "BPH-DsTotauToµµµ.txt",
+        }
+    ]
+
+
+def test_file_names_that_decode_to_the_same_name_refuse_the_group(tmp_path, sources):
+    twiki = sources["twiki-eos"]
+    _write_bytes_name(twiki, b"Mu\xb5.txt", b"---+ Latin-1 name\n" + PADDING)
+    _write_bytes_name(twiki, "Muµ.txt".encode("utf-8"), b"---+ UTF-8 name\n" + PADDING)
+    with pytest.raises(BuildRefused, match=r"Muµ\.txt and Mu\\xb5\.txt both read as"):
+        build(load_config(write_config(tmp_path, sources, only=["twiki-eos"])), tmp_path / "out")
+
+
 def test_an_address_split_by_a_c1_fallback_byte_is_removed(tmp_path, sources):
     # 0x81 is undefined in cp1252; as Latin-1 it is the C1 control U+0081,
     # which would hide a.b@cd.ch. The page falls back to dropping the byte.
