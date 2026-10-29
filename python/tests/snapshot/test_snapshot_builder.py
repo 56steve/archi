@@ -861,8 +861,10 @@ def test_cp1252_and_latin1_runs_are_decoded_and_counted(tmp_path, sources):
 
 def _write_bytes_name(folder: Path, name: bytes, data: bytes) -> None:
     """Write a file whose name is raw bytes (not always valid UTF-8)."""
+    target = os.path.join(os.fsencode(folder), name)
     try:
-        with open(os.path.join(os.fsencode(folder), name), "wb") as handle:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as handle:
             handle.write(data)
     except OSError as exc:  # APFS and some others refuse non-UTF-8 names
         pytest.skip(f"this filesystem refuses the name {name!r}: {exc}")
@@ -875,6 +877,7 @@ def test_a_latin1_file_name_is_decoded_and_listed(tmp_path, sources):
     _write_bytes_name(
         twiki, b"BPH-DsTotauTo\xb5\xb5\xb5.txt", b"---+ Decay\nTau to three muons.\n" + PADDING
     )
+    _write_bytes_name(twiki, "Sub\u00b5/Empty".encode("utf-8") + b"\xb5.txt", b"")
     out = tmp_path / "out"
     lock = build(load_config(write_config(tmp_path, sources, only=["twiki-eos"])), out)
     members = read_archive(out / "twiki-eos.tar.zst")
@@ -886,7 +889,26 @@ def test_a_latin1_file_name_is_decoded_and_listed(tmp_path, sources):
         {
             "source_name": "BPH-DsTotauTo\\xb5\\xb5\\xb5.txt",
             "archive_name": "BPH-DsTotauToµµµ.txt",
-        }
+            "archived": True,
+        },
+        {
+            "source_name": "Subµ/Empty\\xb5.txt",
+            "archive_name": "Subµ/Emptyµ.txt",
+            "archived": False,
+        },
+    ]
+    assert row["empty_topic_names"] == ["Subµ/Emptyµ.txt"]
+    assert verify(out / LOCK_NAME, out).ok
+
+
+def test_a_latin1_folder_name_is_decoded(tmp_path, sources):
+    twiki = sources["twiki-eos"]
+    _write_bytes_name(twiki, b"Web\xe9/Page.txt", b"---+ Page\n" + PADDING)
+    out = tmp_path / "out"
+    lock = build(load_config(write_config(tmp_path, sources, only=["twiki-eos"])), out)
+    assert "data/twiki-eos/Webé/Page.txt" in read_archive(out / "twiki-eos.tar.zst")
+    assert [r["archive_name"] for r in lock["groups"]["twiki-eos"]["renamed_files"]] == [
+        "Webé/Page.txt"
     ]
 
 
@@ -894,7 +916,33 @@ def test_file_names_that_decode_to_the_same_name_refuse_the_group(tmp_path, sour
     twiki = sources["twiki-eos"]
     _write_bytes_name(twiki, b"Mu\xb5.txt", b"---+ Latin-1 name\n" + PADDING)
     _write_bytes_name(twiki, "Muµ.txt".encode("utf-8"), b"---+ UTF-8 name\n" + PADDING)
-    with pytest.raises(BuildRefused, match=r"Muµ\.txt and Mu\\xb5\.txt both read as"):
+    with pytest.raises(BuildRefused, match=r"Muµ\.txt and Mu\\xb5\.txt collide as"):
+        build(load_config(write_config(tmp_path, sources, only=["twiki-eos"])), tmp_path / "out")
+
+
+def test_a_file_name_that_decodes_to_a_folder_name_refuses_the_group(tmp_path, sources):
+    twiki = sources["twiki-eos"]
+    _write_bytes_name(twiki, "Aµ.txt".encode("utf-8"), b"---+ File\n" + PADDING)
+    _write_bytes_name(twiki, b"A\xb5.txt/x.txt", b"---+ Inside\n" + PADDING)
+    with pytest.raises(BuildRefused, match=r"collide as Aµ\.txt/x\.txt"):
+        build(load_config(write_config(tmp_path, sources, only=["twiki-eos"])), tmp_path / "out")
+
+
+@pytest.mark.parametrize("byte", [b"\x81", b"\x9d", b"\xa0", b"\xad"])
+def test_a_name_byte_that_becomes_a_hidden_character_refuses_the_group(
+    tmp_path, sources, byte
+):
+    _write_bytes_name(sources["twiki-eos"], b"Odd" + byte + b"Name.txt", b"---+ P\n" + PADDING)
+    with pytest.raises(BuildRefused, match=r"would become the hidden character U\+"):
+        build(load_config(write_config(tmp_path, sources, only=["twiki-eos"])), tmp_path / "out")
+
+
+def test_an_address_hidden_by_a_fallback_byte_in_a_name_refuses_the_group(
+    tmp_path, sources
+):
+    # Decoded, 0x93 is a left quote, which ends the address for the redactor.
+    _write_bytes_name(sources["twiki-eos"], b"jdoe\x93@cern.ch.txt", b"---+ P\n" + PADDING)
+    with pytest.raises(BuildRefused, match=r"file name jdoe\\x93@cern\.ch\.txt"):
         build(load_config(write_config(tmp_path, sources, only=["twiki-eos"])), tmp_path / "out")
 
 
