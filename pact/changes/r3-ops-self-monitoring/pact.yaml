@@ -98,7 +98,9 @@ evidence:
   note: 'task.r3-ops-self-monitoring.rollout, SubMIT half (#719): instance-health is enabled in shadow mode on the new
     SubMIT instance (r3-bundle-cluster-manager, #740), with local issue files only; the configuration is committed in
     the instance repository. Scheduled runs happen only while an okg runtime worker is up, and the worker is not a
-    service yet: two bounded worker runs were used, and no worker runs now. The runtime scanner started it from the
+    service yet: the worker was started four times; two bounded runs worked (18:52 to 19:07Z and 19:31 to 20:22Z), and
+    two starts in between exited at once (a broken script path in the rebuilt environment, then the refusal below).
+    No worker runs now. The runtime scanner started it from the
     pack''s schedule: the 18:07Z tick (caught up at 18:53Z) and the 20:07Z tick each ended SUCCESS with status observed,
     reason shadow, level L1, and wrote an ops incident, proposal and decision record; no issue file exists in the
     instance repository, as shadow mode requires. Each proposal (draft_issue) named one real problem, archi doctor

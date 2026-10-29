@@ -193,14 +193,14 @@ evidence:
     refuses condor_status from the build host. archi init did not finish on its own: its first okg provision died
     when okg''s cache under the home directory hit the home quota; with the cache moved, the steps init had left
     (archi''s own provision, role passwords, the .env) were run by a script that calls archi''s functions. The Slurm
-    snapshot came from read-only sinfo, scontrol and sacct; docsite holds 20 public SubMIT user-guide pages plus the
-    Slurm and HTCondor manual roots. At publish (generation 2): 5,150 nodes and 10,123 edges; per source, slurm appended
+    snapshot came from read-only sinfo, scontrol and sacct; docsite holds 20 public SubMIT site pages (user guide, home and blog) plus
+    the Slurm and HTCondor manual roots. At publish (generation 2): 5,150 nodes and 10,123 edges; per source, slurm appended
     5,082 nodes and 10,077 edges (5,000 jobs at the --max-jobs cap, 76 nodes, 4 partitions, 2 reservations) and docsite
     68 nodes and 46 edges (22 pages, 46 chunks); no source failed. okg deployment lint (static; live checks skipped):
     zero blockers. archi up exited 125 because graph-db and MCP were already running, but created chat-db and Open
     WebUI; archi doctor then passed every check, with all four services healthy (before the ops runtime was turned on
     for r3-ops-self-monitoring; instance-health later found okg-doctor failing, see that PACT). MCP search, no model,
-    6 SubMIT questions, top 10 rows each: all return rows with a source, but only 4 of 6 return relevant ones (the four
+    6 SubMIT questions, top 10 rows each (rerun with titles on a later generation, same sources): all return rows with a source, but only 4 of 6 return relevant ones (the four
     partitions; the backup and quota pages; the HTCondor manual and the SubMIT batch page; the one drained node ranked
     first). For the GPU-request and node-drain how-tos only Slurm node records come back, outranking the
     documentation. This row claims the rebuild, not answer quality. The chat site has no model wired, and the v2
