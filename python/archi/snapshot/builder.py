@@ -782,9 +782,7 @@ def _dump_json(payload: Any) -> bytes:
     ).encode("utf-8")
 
 
-def _text_files(
-    spec: GroupSpec, source: Path
-) -> list[tuple[str, Path, Optional[str]]]:
+def _text_files(spec: GroupSpec, source: Path) -> list[tuple[str, Path, Optional[str]]]:
     """``(archive name, path, source name if renamed)`` for each text file."""
     assert spec.text is not None
     if spec.text.recursive:
@@ -807,8 +805,10 @@ def _text_files(
             spec.name, rel, spec.text.fallback_invalid_bytes
         )
         parents = [p.as_posix() for p in PurePosixPath(archive_rel).parents][:-1]
-        clash = seen.get(archive_rel) or folders.get(archive_rel) or next(
-            (seen[p] for p in parents if p in seen), None
+        clash = (
+            seen.get(archive_rel)
+            or folders.get(archive_rel)
+            or next((seen[p] for p in parents if p in seen), None)
         )
         if clash is not None:
             raise GroupRefused(
